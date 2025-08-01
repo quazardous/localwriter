@@ -14,6 +14,11 @@ import re
 from com.sun.star.beans import PropertyValue
 from com.sun.star.container import XNamed
 
+USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+    'AppleWebKit/537.36 (KHTML, like Gecko) '
+    'Chrome/114.0.0.0 Safari/537.36'
+)
 
 def log_to_file(message):
     # Get the user's home directory
@@ -192,7 +197,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         VERT_SEP = 4
         LABEL_HEIGHT = BUTTON_HEIGHT  + 5
         EDIT_HEIGHT = 24
-        HEIGHT = VERT_MARGIN * 6 + LABEL_HEIGHT * 6 + VERT_SEP * 8 + EDIT_HEIGHT * 6
+        HEIGHT = VERT_MARGIN * 14 + LABEL_HEIGHT * 9 + VERT_SEP * 10 + EDIT_HEIGHT * 9
         import uno
         from com.sun.star.awt.PosSize import POS, SIZE, POSSIZE
         from com.sun.star.awt.PushButtonType import OK, CANCEL
@@ -245,7 +250,21 @@ class MainJob(unohelper.Base, XJobExecutor):
             {"Label": "Edit Selection System Prompt:", "NoLabel": True})
         add("edit_edit_selection_system_prompt", "Edit", HORI_MARGIN, LABEL_HEIGHT*10 + VERT_MARGIN + VERT_SEP*10 + EDIT_HEIGHT, 
                 WIDTH - HORI_MARGIN * 2, EDIT_HEIGHT, {"Text": str(self.get_config("edit_selection_system_prompt",""))})
-
+                
+        add("label_temperature", "FixedText", HORI_MARGIN, LABEL_HEIGHT*11 + VERT_MARGIN + VERT_SEP*11 + EDIT_HEIGHT, label_width, LABEL_HEIGHT, 
+            {"Label": "Temperature:", "NoLabel": True})
+        add("edit_temperature", "Edit", HORI_MARGIN, LABEL_HEIGHT*12 + VERT_MARGIN + VERT_SEP*12 + EDIT_HEIGHT, 
+                WIDTH - HORI_MARGIN * 2, EDIT_HEIGHT, {"Text": str(self.get_config("temperature","0.5"))})
+                
+        add("label_seed", "FixedText", HORI_MARGIN, LABEL_HEIGHT*13 + VERT_MARGIN + VERT_SEP*13 + EDIT_HEIGHT, label_width, LABEL_HEIGHT, 
+            {"Label": "Random Seed:", "NoLabel": True})
+        add("edit_seed", "Edit", HORI_MARGIN, LABEL_HEIGHT*14 + VERT_MARGIN + VERT_SEP*14 + EDIT_HEIGHT, 
+                WIDTH - HORI_MARGIN * 2, EDIT_HEIGHT, {"Text": str(self.get_config("seed",""))})
+                
+        add("label_api_key", "FixedText", HORI_MARGIN, LABEL_HEIGHT*15 + VERT_MARGIN + VERT_SEP*15 + EDIT_HEIGHT, label_width, LABEL_HEIGHT, 
+            {"Label": "API Key:", "NoLabel": True})
+        add("edit_api_key", "Edit", HORI_MARGIN, LABEL_HEIGHT*16 + VERT_MARGIN + VERT_SEP*16 + EDIT_HEIGHT, 
+                WIDTH - HORI_MARGIN * 2, EDIT_HEIGHT, {"Text": str(self.get_config("api_key",""))})
 
 
         frame = create("com.sun.star.frame.Desktop").getCurrentFrame()
@@ -279,12 +298,23 @@ class MainJob(unohelper.Base, XJobExecutor):
 
         edit_edit_selection_system_prompt = dialog.getControl("edit_edit_selection_system_prompt")
         edit_edit_selection_system_prompt.setSelection(uno.createUnoStruct("com.sun.star.awt.Selection", 0, len(str(self.get_config("edit_selection_system_prompt","")))))
-
+        
+        edit_temperature = dialog.getControl("edit_temperature")
+        edit_temperature.setSelection(uno.createUnoStruct("com.sun.star.awt.Selection", 0, len(str(self.get_config("temperature","0.5")))))
+        
+        edit_seed = dialog.getControl("edit_seed")
+        edit_seed.setSelection(uno.createUnoStruct("com.sun.star.awt.Selection", 0, len(str(self.get_config("seed","")))))
+        
+        edit_api_key = dialog.getControl("edit_api_key")
+        edit_api_key.setSelection(uno.createUnoStruct("com.sun.star.awt.Selection", 0, len(str(self.get_config("edit_api_key","")))))
 
         edit_endpoint.setFocus()
 
         if dialog.execute():
-            result = {"endpoint":edit_endpoint.getModel().Text, "model": edit_model.getModel().Text, "extend_selection_system_prompt": edit_extend_selection_system_prompt.getModel().Text, "edit_selection_system_prompt": edit_edit_selection_system_prompt.getModel().Text}
+            result = {"endpoint":edit_endpoint.getModel().Text, "model": edit_model.getModel().Text, "extend_selection_system_prompt": edit_extend_selection_system_prompt.getModel().Text, "edit_selection_system_prompt": edit_edit_selection_system_prompt.getModel().Text,
+            "temperature": edit_temperature.getModel().Text,
+            "seed": edit_seed.getModel().Text,
+            "api_key": edit_api_key.getModel().Text,}
             if edit_extend_selection_max_tokens.getModel().Text.isdigit():
                 result["extend_selection_max_tokens"] = int(edit_extend_selection_max_tokens.getModel().Text)
             if edit_edit_selection_max_new_tokens.getModel().Text.isdigit():
@@ -319,21 +349,33 @@ class MainJob(unohelper.Base, XJobExecutor):
                     #text_range = selection.getByIndex(0)
                     try:
 
-                        url = self.get_config("endpoint", "http://127.0.0.1:5000") + "/v1/completions" 
+                        url = self.get_config("endpoint", "http://127.0.0.1:5000") + "/v1/chat/completions" 
                         
                         
                         headers = {
-                            'Content-Type': 'application/json'
+                            'Content-Type': 'application/json',
+                            'User-Agent': USER_AGENT
                         }
+                        api_key = self.get_config("api_key", "")
+                        if api_key:
+                            headers['Authorization'] = 'Bearer ' + api_key
 
                         prompt = None
                         if self.get_config("extend_selection_system_prompt", "") != "":
                             prompt = "SYSTEM PROMPT\n" + self.get_config("extend_selection_system_prompt", "") + "\nEND SYSTEM PROMPT\n" + text_range.getString()
                         else:
                             prompt = text_range.getString()
+                            
+                        system_prompt = self.get_config("extend_selection_system_prompt", "")
+                        messages = []
+                        if system_prompt != "":
+                            messages.append({"role": "system", "content": system_prompt})
+                            
+                        messages.append({"role": "user", "content": text_range.getString()})
 
                         data = {
-                            'prompt': prompt,
+                            #'prompt': prompt,
+                            'messages': messages,
                             'max_tokens': self.get_config("extend_selection_max_tokens", 70),
                             'temperature': 1,
                             'top_p': 0.9,
@@ -360,7 +402,8 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                         # Append completion to selection
                         selected_text = text_range.getString()
-                        new_text = selected_text + response["choices"][0]["text"]
+                        #new_text = selected_text + response["choices"][0]["text"]
+                        new_text = selected_text + response["choices"][0]["message"]["content"]
 
                         # Set the new text
                         text_range.setString(new_text)
@@ -375,20 +418,32 @@ class MainJob(unohelper.Base, XJobExecutor):
                 try:
                     user_input= self.input_box("Please enter edit instructions!", "Input", "")
                     #text_range.setString(text_range.getString() + ": " + user_input)
-                    url = self.get_config("endpoint", "http://127.0.0.1:5000") + "/v1/completions" 
+                    url = self.get_config("endpoint", "http://127.0.0.1:5000") + "/v1/chat/completions" 
 
                     headers = {
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
+                        'User-Agent': USER_AGENT
                     }
+                    api_key = self.get_config("api_key", "")
+                    if api_key:
+                        headers['Authorization'] = 'Bearer ' + api_key
 
                     prompt =  "ORIGINAL VERSION:\n" + text_range.getString() + "\n Below is an edited version according to the following instructions. There are no comments in the edited version. The edited version is followed by the end of the document. The original version will be edited as follows to create the edited versio:\n" + user_input + "\nEDITED VERSION:\n"
 
-                    if self.get_config("edit_selection_system_prompt", "") != "":
-                        prompt = "SYSTEM PROMPT\n" + self.get_config("edit_selection_system_prompt","") + "\nEND SYSTEM PROMPT\n" + prompt
+                    system_prompt = self.get_config("edit_selection_system_prompt", "")
+                    messages = []
+                    if system_prompt != "":
+                        messages.append({"role": "system", "content": system_prompt})
+                        
+                    messages.append({"role": "user", "content": prompt})
+                    
+                    if system_prompt != "":
+                        prompt = "SYSTEM PROMPT\n" + system_prompt + "\nEND SYSTEM PROMPT\n" + prompt
 
 
                     data = {
-                        'prompt':prompt,
+                        #'prompt':prompt,
+                        'messages': messages,
                         'max_tokens': len(text_range.getString()) + self.get_config("edit_selection_max_new_tokens", 0), # this is a bit hacky, it's actually number of characters + max new tokens, so even if max new tokens is zero, max_tokens will often end up with more tokens than the selected text actually contains.
                         'temperature': 1,
                         'top_p': 0.9,
@@ -415,7 +470,8 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                     # replace selection with completion
                     selected_text = text_range.getString()
-                    new_text = response["choices"][0]["text"]
+                    #new_text = response["choices"][0]["text"]
+                    new_text = response["choices"][0]["message"]["content"]
 
                     # Set the new text
                     text_range.setString(new_text)
@@ -447,6 +503,15 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                     if "model" in result:                
                         self.set_config("model", result["model"])
+                        
+                    if "temperature" in result:                
+                        self.set_config("temperature", result["temperature"])
+                        
+                    if "seed" in result:                
+                        self.set_config("seed", result["seed"])
+                        
+                    if "api_key" in result:                
+                        self.set_config("api_key", result["api_key"])
 
 
                 except Exception as e:
@@ -456,7 +521,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         elif hasattr(model, "Sheets"):
             try:
                 #text_range.setString(text_range.getString() + ": " + user_input)
-                url = self.get_config("endpoint", "http://127.0.0.1:5000") + "/v1/completions" 
+                url = self.get_config("endpoint", "http://127.0.0.1:5000") + "/v1/chat/completions" 
                 # Get the active sheet
                 sheet = model.CurrentController.ActiveSheet
                 
@@ -488,21 +553,33 @@ class MainJob(unohelper.Base, XJobExecutor):
                             if len(cell.getString()) > 0:
                                 try:
 
-                                    url = self.get_config("endpoint", "http://127.0.0.1:5000") + "/v1/completions" 
+                                    url = self.get_config("endpoint", "http://127.0.0.1:5000") + "/v1/chat/completions" 
                                     
                                     
                                     headers = {
-                                        'Content-Type': 'application/json'
+                                        'Content-Type': 'application/json',
+                                        'User-Agent': USER_AGENT
                                     }
+                                    api_key = self.get_config("api_key", "")
+                                    if api_key:
+                                        headers['Authorization'] = 'Bearer ' + api_key
 
                                     prompt = None
                                     if self.get_config("extend_selection_system_prompt", "") != "":
                                         prompt = "SYSTEM PROMPT\n" + self.get_config("extend_selection_system_prompt", "") + "\nEND SYSTEM PROMPT\n" + cell.getString()
                                     else:
                                         prompt = cell.getString()
+                                        
+                                    system_prompt = self.get_config("extend_selection_system_prompt", "")
+                                    messages = []
+                                    if system_prompt != "":
+                                        messages.append({"role": "system", "content": system_prompt})
+                        
+                                    messages.append({"role": "user", "content": cell.getString()})
 
                                     data = {
-                                        'prompt': prompt,
+                                        #'prompt': prompt,
+                                        'messages': messages,
                                         'max_tokens': self.get_config("extend_selection_max_tokens", 70),
                                         'temperature': 1,
                                         'top_p': 0.9,
@@ -529,7 +606,8 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                                     # Append completion to selection
                                     selected_text = cell.getString()
-                                    new_text = selected_text + response["choices"][0]["text"]
+                                    #new_text = selected_text + response["choices"][0]["text"]
+                                    new_text = selected_text + response["choices"][0]["message"]["content"]
 
                                     # Set the new text
                                     cell.setString(new_text)
@@ -540,20 +618,32 @@ class MainJob(unohelper.Base, XJobExecutor):
                             # Access the current selection
                             try:
                                 #text_range.setString(text_range.getString() + ": " + user_input)
-                                url = self.get_config("endpoint", "http://127.0.0.1:5000") + "/v1/completions" 
+                                url = self.get_config("endpoint", "http://127.0.0.1:5000") + "/v1/chat/completions" 
 
                                 headers = {
-                                    'Content-Type': 'application/json'
+                                    'Content-Type': 'application/json',
+                                    'User-Agent': USER_AGENT
                                 }
+                                api_key = self.get_config("api_key", "")
+                                if api_key:
+                                    headers['Authorization'] = 'Bearer ' + api_key
 
                                 prompt =  "ORIGINAL VERSION:\n" + cell.getString() + "\n Below is an edited version according to the following instructions. Don't waste time thinking, be as fast as you can. There are no comments in the edited version. USER INSTRUCTIONS: \n" + user_input + "\nEDITED VERSION:\n"
+                                
+                                system_prompt = self.get_config("edit_selection_system_prompt", "")
+                                messages = []
+                                if system_prompt != "":
+                                    messages.append({"role": "system", "content": system_prompt})
+                    
+                                messages.append({"role": "user", "content": prompt})
 
-                                if self.get_config("edit_selection_system_prompt", "") != "":
-                                    prompt = "SYSTEM PROMPT\n" + self.get_config("edit_selection_system_prompt","") + "\nEND SYSTEM PROMPT\n" + prompt
+                                if system_prompt != "":
+                                    prompt = "SYSTEM PROMPT\n" + system_prompt + "\nEND SYSTEM PROMPT\n" + prompt
 
 
                                 data = {
-                                    'prompt':prompt,
+                                    #'prompt':prompt,
+                                    'messages': messages,
                                     'max_tokens': len(cell.getString()) + self.get_config("edit_selection_max_new_tokens", 0), # this is a bit hacky, it's actually number of characters + max new tokens, so even if max new tokens is zero, max_tokens will often end up with more tokens than the selected text actually contains.
                                     'temperature': 1,
                                     'top_p': 0.9,
@@ -582,7 +672,8 @@ class MainJob(unohelper.Base, XJobExecutor):
                                 selected_text = cell.getString()
 
                     
-                                raw_response = response["choices"][0]["text"]
+                                #raw_response = response["choices"][0]["text"]
+                                raw_response = response["choices"][0]["message"]["content"]
 
                                 #action, rather than thought
                                 new_text = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL)
@@ -617,6 +708,15 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                                 if "model" in result:                
                                     self.set_config("model", result["model"])
+                                    
+                                if "temperature" in result:                
+                                    self.set_config("temperature", result["temperature"])
+                        
+                                if "seed" in result:                
+                                    self.set_config("seed", result["seed"])
+                                    
+                                if "api_key" in result:                
+                                    self.set_config("api_key", result["api_key"])
 
 
                             except Exception as e:
@@ -639,10 +739,11 @@ def main():
 # Starting from command line
 if __name__ == "__main__":
     main()
+
 # pythonloader loads a static g_ImplementationHelper variable
 g_ImplementationHelper = unohelper.ImplementationHelper()
 g_ImplementationHelper.addImplementation(
     MainJob,  # UNO object class
-    "org.extension.sample.do",  # implementation name (customize for yourself)
+    "org.extension.localwriter.Main",  # implementation name (customize for yourself)
     ("com.sun.star.task.Job",), )  # implemented services (only 1)
 # vim: set shiftwidth=4 softtabstop=4 expandtab:
