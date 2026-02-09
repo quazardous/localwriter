@@ -94,7 +94,7 @@ For developers who want to modify or contribute to Localwriter, you can run and 
 1. **Clone the Repository (if not already done):**
    - Clone the Localwriter repository to your local machine if you haven't already:
      ```
-     git clone https://github.com/balis-john/localwriter.git
+     git clone https://github.com/balisujohn/localwriter.git
      cd localwriter
      ```
 
