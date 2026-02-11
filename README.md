@@ -2,6 +2,9 @@
 
 Consider donating to support development: https://ko-fi.com/johnbalis
 
+Contributors:
+- https://github.com/MageDoc/
+
 ## About
 
 This is a LibreOffice Writer extension that enables inline generative editing with local inference. It's compatible with language models supported by `text-generation-webui` and `ollama`.
@@ -41,6 +44,10 @@ This extension provides two powerful commands for LibreOffice Writer:
 
 *   A dialog box appears to prompt the user for instructions about how to edit the selected text, then the selected text is replaced by the edited text.
 *   Some examples for use cases for this include changing the tone of an email, translating text to a different language, and semantically editing a scene in a story.
+
+### Calc PROMPT function
+
+**=PROMPT(message, [system_prompt], [model], [max_tokens])**
 
 ## Setup
 
@@ -194,11 +201,17 @@ For developers who want to modify or contribute to Localwriter, you can run and 
 6. **Unregister the Extension (Optional):**
    - If you need to remove the temporary registration, use:
      ```
-     unopkg remove org.extension.sample
+     unopkg remove org.extension.localwriter
      ```
-   - Replace `org.extension.sample` with the identifier from `description.xml` if different.
+   - Replace `org.extension.localwriter` with the identifier from `description.xml` if different.
 
 ### Building the Extension Package
+
+To generate the custom function UNO interface rdb from interface definition idl:
+
+```
+"c:\Program Files\LibreOffice\sdk\bin\unoidl-write.exe" "c:\Program Files\LibreOffice\program\types.rdb" "c:\Program Files\LibreOffice\program\types\offapi.rdb" idl\XPromptFunction.idl XPromptFunction.rdb
+```
 
 To create a distributable `.oxt` package:
 
@@ -208,9 +221,12 @@ In a terminal, change directory into the localwriter repository top-level direct
 zip -r localwriter.oxt \
   Accelerators.xcu \
   Addons.xcu \
+  CalcAddIn.xcu \
+  XPromptFunction.rdb \
   assets \
   description.xml \
   main.py \
+  prompt_function.py \
   META-INF \
   registration \
   README.md

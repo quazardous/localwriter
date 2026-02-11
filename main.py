@@ -15,6 +15,11 @@ import re
 from com.sun.star.beans import PropertyValue
 from com.sun.star.container import XNamed
 
+USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+    'AppleWebKit/537.36 (KHTML, like Gecko) '
+    'Chrome/114.0.0.0 Safari/537.36'
+)
 
 def log_to_file(message):
     # Get the user's home directory
@@ -159,6 +164,13 @@ class MainJob(unohelper.Base, XJobExecutor):
         log_to_file(f"Is OpenWebUI: {is_openwebui}")
         log_to_file(f"API Path: {api_path}")
 
+        temperature = self.get_config("temperature", 0.5)
+        try:
+            temperature = float(temperature)
+        except (TypeError, ValueError):
+            temperature = 0.5
+        seed_val = self.get_config("seed", "")
+
         if api_type == "chat":
             url = endpoint + api_path + "/chat/completions"
             log_to_file(f"Full URL: {url}")
@@ -169,7 +181,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             data = {
                 'messages': messages,
                 'max_tokens': max_tokens,
-                'temperature': 1,
+                'temperature': temperature,
                 'top_p': 0.9,
                 'stream': True
             }
@@ -181,12 +193,15 @@ class MainJob(unohelper.Base, XJobExecutor):
             data = {
                 'prompt': full_prompt,
                 'max_tokens': max_tokens,
-                'temperature': 1,
+                'temperature': temperature,
                 'top_p': 0.9,
                 'stream': True
             }
-            if not self._is_openai_compatible():
-                data['seed'] = 10
+            if not self._is_openai_compatible() or seed_val:
+                try:
+                    data['seed'] = int(seed_val) if seed_val else 10
+                except (TypeError, ValueError):
+                    data['seed'] = 10
 
         if model:
             data["model"] = model
@@ -364,6 +379,8 @@ class MainJob(unohelper.Base, XJobExecutor):
             {"name": "api_type", "label": "API Type (completions/chat):", "value": str(self.get_config("api_type","completions"))},
             {"name": "is_openwebui", "label": "Is OpenWebUI endpoint? (true/false):", "value": is_openwebui_value, "type": "bool"},
             {"name": "openai_compatibility", "label": "OpenAI Compatible Endpoint? (true/false):", "value": openai_compatibility_value, "type": "bool"},
+            {"name": "temperature", "label": "Temperature:", "value": str(self.get_config("temperature","0.5")), "type": "float"},
+            {"name": "seed", "label": "Random Seed:", "value": str(self.get_config("seed",""))},
             {"name": "extend_selection_max_tokens", "label": "Extend Selection Max Tokens:", "value": str(self.get_config("extend_selection_max_tokens","70")), "type": "int"},
             {"name": "extend_selection_system_prompt", "label": "Extend Selection System Prompt:", "value": str(self.get_config("extend_selection_system_prompt",""))},
             {"name": "edit_selection_max_new_tokens", "label": "Edit Selection Max New Tokens:", "value": str(self.get_config("edit_selection_max_new_tokens","0")), "type": "int"},
@@ -429,6 +446,11 @@ class MainJob(unohelper.Base, XJobExecutor):
                         result[field["name"]] = int(control_text)
                 elif field_type == "bool":
                     result[field["name"]] = self._as_bool(control_text)
+                elif field_type == "float":
+                    try:
+                        result[field["name"]] = float(control_text)
+                    except ValueError:
+                        result[field["name"]] = control_text
                 else:
                     result[field["name"]] = control_text
         else:
@@ -467,7 +489,6 @@ class MainJob(unohelper.Base, XJobExecutor):
                             text_range.setString(text_range.getString() + chunk_text)
 
                         self.stream_request(request, api_type, append_text)
-                                      
                     except Exception as e:
                         text_range = selection.getByIndex(0)
                         # Append the user input to the selected text
@@ -493,7 +514,6 @@ class MainJob(unohelper.Base, XJobExecutor):
                         text_range.setString(text_range.getString() + chunk_text)
 
                     self.stream_request(request, api_type, append_text)
-
                 except Exception as e:
                     text_range = selection.getByIndex(0)
                     # Append the user input to the selected text
@@ -535,6 +555,12 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                     if "model" in result:                
                         self.set_config("model", result["model"])
+                        
+                    if "temperature" in result:                
+                        self.set_config("temperature", result["temperature"])
+                        
+                    if "seed" in result:                
+                        self.set_config("seed", result["seed"])
 
 
                 except Exception as e:
@@ -582,6 +608,12 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                         if "model" in result:                
                             self.set_config("model", result["model"])
+
+                        if "temperature" in result:                
+                            self.set_config("temperature", result["temperature"])
+
+                        if "seed" in result:                
+                            self.set_config("seed", result["seed"])
                     except Exception:
                         pass
                     return
@@ -619,10 +651,8 @@ class MainJob(unohelper.Base, XJobExecutor):
                                 continue
                             try:
                                 request = self.make_api_request(cell_text, extend_system_prompt, extend_max_tokens, api_type=api_type)
-
                                 def append_cell_text(chunk_text, target_cell=cell):
                                     target_cell.setString(target_cell.getString() + chunk_text)
-
                                 self.stream_request(request, api_type, append_cell_text)
                             except Exception as e:
                                 cell.setString(cell.getString() + ": " + str(e))
@@ -657,10 +687,11 @@ def main():
 # Starting from command line
 if __name__ == "__main__":
     main()
+
 # pythonloader loads a static g_ImplementationHelper variable
 g_ImplementationHelper = unohelper.ImplementationHelper()
 g_ImplementationHelper.addImplementation(
     MainJob,  # UNO object class
-    "org.extension.sample.do",  # implementation name (customize for yourself)
+    "org.extension.localwriter.Main",  # implementation name (customize for yourself)
     ("com.sun.star.task.Job",), )  # implemented services (only 1)
 # vim: set shiftwidth=4 softtabstop=4 expandtab:
