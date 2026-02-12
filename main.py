@@ -7,6 +7,8 @@ import urllib.parse
 import ssl
 from com.sun.star.task import XJobExecutor
 from com.sun.star.awt import MessageBoxButtons as MSG_BUTTONS
+from com.sun.star.awt.MessageBoxType import ERRORBOX
+from com.sun.star.awt.MessageBoxButtons import BUTTONS_OK
 import uno
 import os 
 import logging
@@ -241,6 +243,35 @@ class MainJob(unohelper.Base, XJobExecutor):
         ssl_context.verify_mode = ssl.CERT_NONE
         return ssl_context
 
+    def _get_request_timeout(self):
+        """Get request timeout in seconds from config (default 120)."""
+        try:
+            return int(self.get_config("request_timeout", 120))
+        except (TypeError, ValueError):
+            return 120
+
+    def show_error(self, message, title="LocalWriter Error"):
+        """Show an error message in a dialog instead of writing to the document."""
+        try:
+            desktop = self.sm.createInstanceWithContext(
+                "com.sun.star.frame.Desktop", self.ctx)
+            frame = desktop.getCurrentFrame()
+            if frame and frame.ActiveFrame:
+                frame = frame.ActiveFrame
+            window_peer = frame.getContainerWindow() if frame else None
+            if window_peer:
+                toolkit = self.sm.createInstanceWithContext(
+                    "com.sun.star.awt.Toolkit", self.ctx)
+                box = toolkit.createMessageBox(window_peer, ERRORBOX, BUTTONS_OK, title, str(message))
+                box.execute()
+        except Exception:
+            pass  # Fallback: if dialog fails, at least we don't crash
+
+    def stream_completion(self, prompt, system_prompt, max_tokens, api_type, append_callback):
+        """Single entry point for streaming completions. Raises on error."""
+        request = self.make_api_request(prompt, system_prompt, max_tokens, api_type=api_type)
+        self.stream_request(request, api_type, append_callback)
+
     def stream_request(self, request, api_type, append_callback):
         """
         Stream a completion/chat response and append incremental chunks via the provided callback.
@@ -254,8 +285,9 @@ class MainJob(unohelper.Base, XJobExecutor):
         log_to_file(f"Request URL: {request.full_url}")
         log_to_file(f"Request method: {request.get_method()}")
         
+        timeout = self._get_request_timeout()
         try:
-            with urllib.request.urlopen(request, context=ssl_context) as response:
+            with urllib.request.urlopen(request, context=ssl_context, timeout=timeout) as response:
                 log_to_file(f"Response status: {response.status}")
                 log_to_file(f"Response headers: {response.headers}")
                 
@@ -274,191 +306,84 @@ class MainJob(unohelper.Base, XJobExecutor):
                                 break
                     except Exception as e:
                         log_to_file(f"Error processing line: {str(e)}")
-                        append_callback(str(e))
-                        toolkit.processEventsToIdle()
+                        raise
         except Exception as e:
             log_to_file(f"ERROR in stream_request: {str(e)}")
-            append_callback(f"ERROR: {str(e)}")
-            toolkit.processEventsToIdle()
+            raise
 
-    #retrieved from https://wiki.documentfoundation.org/Macros/General/IO_to_Screen
-    #License: Creative Commons Attribution-ShareAlike 3.0 Unported License,
-    #License: The Document Foundation  https://creativecommons.org/licenses/by-sa/3.0/
-    #begin sharealike section 
-    def input_box(self,message, title="", default="", x=None, y=None):
-        """ Shows dialog with input box.
-            @param message message to show on the dialog
-            @param title window title
-            @param default default value
-            @param x optional dialog position in twips
-            @param y optional dialog position in twips
-            @return string if OK button pushed, otherwise zero length string
-        """
-        WIDTH = 600
-        HORI_MARGIN = VERT_MARGIN = 8
-        BUTTON_WIDTH = 100
-        BUTTON_HEIGHT = 26
-        HORI_SEP = VERT_SEP = 8
-        LABEL_HEIGHT = BUTTON_HEIGHT * 2 + 5
-        EDIT_HEIGHT = 24
-        HEIGHT = VERT_MARGIN * 2 + LABEL_HEIGHT + VERT_SEP + EDIT_HEIGHT
+    def input_box(self, message, title="", default="", x=None, y=None):
+        """ Shows input dialog (EditInputDialog.xdl). Returns edit text if OK, else "". """
         import uno
-        from com.sun.star.awt.PosSize import POS, SIZE, POSSIZE
-        from com.sun.star.awt.PushButtonType import OK, CANCEL
-        from com.sun.star.util.MeasureUnit import TWIP
         ctx = uno.getComponentContext()
-        def create(name):
-            return ctx.getServiceManager().createInstanceWithContext(name, ctx)
-        dialog = create("com.sun.star.awt.UnoControlDialog")
-        dialog_model = create("com.sun.star.awt.UnoControlDialogModel")
-        dialog.setModel(dialog_model)
-        dialog.setVisible(False)
-        dialog.setTitle(title)
-        dialog.setPosSize(0, 0, WIDTH, HEIGHT, SIZE)
-        def add(name, type, x_, y_, width_, height_, props):
-            model = dialog_model.createInstance("com.sun.star.awt.UnoControl" + type + "Model")
-            dialog_model.insertByName(name, model)
-            control = dialog.getControl(name)
-            control.setPosSize(x_, y_, width_, height_, POSSIZE)
-            for key, value in props.items():
-                setattr(model, key, value)
-        label_width = WIDTH - BUTTON_WIDTH - HORI_SEP - HORI_MARGIN * 2
-        add("label", "FixedText", HORI_MARGIN, VERT_MARGIN, label_width, LABEL_HEIGHT, 
-            {"Label": str(message), "NoLabel": True})
-        add("btn_ok", "Button", HORI_MARGIN + label_width + HORI_SEP, VERT_MARGIN, 
-                BUTTON_WIDTH, BUTTON_HEIGHT, {"PushButtonType": OK, "DefaultButton": True})
-        add("edit", "Edit", HORI_MARGIN, LABEL_HEIGHT + VERT_MARGIN + VERT_SEP, 
-                WIDTH - HORI_MARGIN * 2, EDIT_HEIGHT, {"Text": str(default)})
-        frame = create("com.sun.star.frame.Desktop").getCurrentFrame()
-        window = frame.getContainerWindow() if frame else None
-        dialog.createPeer(create("com.sun.star.awt.Toolkit"), window)
-        if not x is None and not y is None:
-            ps = dialog.convertSizeToPixel(uno.createUnoStruct("com.sun.star.awt.Size", x, y), TWIP)
-            _x, _y = ps.Width, ps.Height
-        elif window:
-            ps = window.getPosSize()
-            _x = ps.Width / 2 - WIDTH / 2
-            _y = ps.Height / 2 - HEIGHT / 2
-        dialog.setPosSize(_x, _y, 0, 0, POS)
-        edit = dialog.getControl("edit")
-        edit.setSelection(uno.createUnoStruct("com.sun.star.awt.Selection", 0, len(str(default))))
-        edit.setFocus()
-        ret = edit.getModel().Text if dialog.execute() else ""
-        dialog.dispose()
+        smgr = ctx.getServiceManager()
+        dp = smgr.createInstanceWithContext("com.sun.star.awt.DialogProvider", ctx)
+        dlg = dp.createDialog("vnd.sun.star.script:LocalWriterDialogs.EditInputDialog?location=application")
+        try:
+            dlg.getControl("label").getModel().Label = str(message)
+            dlg.getControl("edit").getModel().Text = str(default)
+            if title:
+                dlg.getModel().Title = title
+            dlg.getControl("edit").setFocus()
+            dlg.getControl("edit").setSelection(uno.createUnoStruct("com.sun.star.awt.Selection", 0, len(str(default))))
+            ret = dlg.getControl("edit").getModel().Text if dlg.execute() else ""
+        finally:
+            dlg.dispose()
         return ret
 
-    def settings_box(self,title="", x=None, y=None):
-        """ Settings dialog with configurable backend options """
-        WIDTH = 600
-        HORI_MARGIN = VERT_MARGIN = 8
-        BUTTON_WIDTH = 100
-        BUTTON_HEIGHT = 26
-        HORI_SEP = 8
-        VERT_SEP = 4
-        LABEL_HEIGHT = BUTTON_HEIGHT  + 5
-        EDIT_HEIGHT = 24
+    def settings_box(self, title="", x=None, y=None):
+        """ Settings dialog loaded from XDL (LocalWriterDialogs/SettingsDialog.xdl).
+        Uses DialogProvider for proper Map AppFont sizing. """
         import uno
-        from com.sun.star.awt.PosSize import POS, SIZE, POSSIZE
-        from com.sun.star.awt.PushButtonType import OK, CANCEL
-        from com.sun.star.util.MeasureUnit import TWIP
         ctx = uno.getComponentContext()
-        def create(name):
-            return ctx.getServiceManager().createInstanceWithContext(name, ctx)
-        dialog = create("com.sun.star.awt.UnoControlDialog")
-        dialog_model = create("com.sun.star.awt.UnoControlDialogModel")
-        dialog.setModel(dialog_model)
-        dialog.setVisible(False)
-        dialog.setTitle(title)
+        smgr = ctx.getServiceManager()
 
         openai_compatibility_value = "true" if self._as_bool(self.get_config("openai_compatibility", False)) else "false"
         is_openwebui_value = "true" if self._as_bool(self.get_config("is_openwebui", False)) else "false"
         field_specs = [
-            {"name": "endpoint", "label": "Endpoint URL/Port:", "value": str(self.get_config("endpoint","http://127.0.0.1:5000"))},
-            {"name": "model", "label": "Model (Required by Ollama/OpenAI):", "value": str(self.get_config("model",""))},
-            {"name": "api_key", "label": "API Key (for OpenAI-compatible endpoints):", "value": str(self.get_config("api_key",""))},
-            {"name": "api_type", "label": "API Type (completions/chat):", "value": str(self.get_config("api_type","completions"))},
-            {"name": "is_openwebui", "label": "Is OpenWebUI endpoint? (true/false):", "value": is_openwebui_value, "type": "bool"},
-            {"name": "openai_compatibility", "label": "OpenAI Compatible Endpoint? (true/false):", "value": openai_compatibility_value, "type": "bool"},
-            {"name": "temperature", "label": "Temperature:", "value": str(self.get_config("temperature","0.5")), "type": "float"},
-            {"name": "seed", "label": "Random Seed:", "value": str(self.get_config("seed",""))},
-            {"name": "extend_selection_max_tokens", "label": "Extend Selection Max Tokens:", "value": str(self.get_config("extend_selection_max_tokens","70")), "type": "int"},
-            {"name": "extend_selection_system_prompt", "label": "Extend Selection System Prompt:", "value": str(self.get_config("extend_selection_system_prompt",""))},
-            {"name": "edit_selection_max_new_tokens", "label": "Edit Selection Max New Tokens:", "value": str(self.get_config("edit_selection_max_new_tokens","0")), "type": "int"},
-            {"name": "edit_selection_system_prompt", "label": "Edit Selection System Prompt:", "value": str(self.get_config("edit_selection_system_prompt",""))},
+            {"name": "endpoint", "value": str(self.get_config("endpoint", "http://127.0.0.1:5000"))},
+            {"name": "model", "value": str(self.get_config("model", ""))},
+            {"name": "api_key", "value": str(self.get_config("api_key", ""))},
+            {"name": "api_type", "value": str(self.get_config("api_type", "completions"))},
+            {"name": "is_openwebui", "value": is_openwebui_value, "type": "bool"},
+            {"name": "openai_compatibility", "value": openai_compatibility_value, "type": "bool"},
+            {"name": "temperature", "value": str(self.get_config("temperature", "0.5")), "type": "float"},
+            {"name": "seed", "value": str(self.get_config("seed", ""))},
+            {"name": "extend_selection_max_tokens", "value": str(self.get_config("extend_selection_max_tokens", "70")), "type": "int"},
+            {"name": "extend_selection_system_prompt", "value": str(self.get_config("extend_selection_system_prompt", ""))},
+            {"name": "edit_selection_max_new_tokens", "value": str(self.get_config("edit_selection_max_new_tokens", "0")), "type": "int"},
+            {"name": "edit_selection_system_prompt", "value": str(self.get_config("edit_selection_system_prompt", ""))},
         ]
 
-        num_fields = len(field_specs)
-        total_field_height = num_fields * (LABEL_HEIGHT + EDIT_HEIGHT + 2 * VERT_SEP)
-        HEIGHT = VERT_MARGIN * 2 + total_field_height
-        dialog.setPosSize(0, 0, WIDTH, HEIGHT, SIZE)
-
-        def add(name, type, x_, y_, width_, height_, props):
-            model = dialog_model.createInstance("com.sun.star.awt.UnoControl" + type + "Model")
-            dialog_model.insertByName(name, model)
-            control = dialog.getControl(name)
-            control.setPosSize(x_, y_, width_, height_, POSSIZE)
-            for key, value in props.items():
-                setattr(model, key, value)
-
-        label_width = WIDTH - BUTTON_WIDTH - HORI_SEP - HORI_MARGIN * 2
-        field_controls = {}
-        current_y = VERT_MARGIN
-        for idx, field in enumerate(field_specs):
-            label_name = f"label_{field['name']}"
-            edit_name = f"edit_{field['name']}"
-            add(label_name, "FixedText", HORI_MARGIN, current_y, label_width, LABEL_HEIGHT,
-                {"Label": field["label"], "NoLabel": True})
-            if idx == 0:
-                add("btn_ok", "Button", HORI_MARGIN + label_width + HORI_SEP, current_y,
-                    BUTTON_WIDTH, BUTTON_HEIGHT, {"PushButtonType": OK, "DefaultButton": True})
-            current_y += LABEL_HEIGHT + VERT_SEP
-            add(edit_name, "Edit", HORI_MARGIN, current_y,
-                WIDTH - HORI_MARGIN * 2, EDIT_HEIGHT, {"Text": field["value"]})
-            field_controls[field["name"]] = dialog.getControl(edit_name)
-            current_y += EDIT_HEIGHT + VERT_SEP
-
-        frame = create("com.sun.star.frame.Desktop").getCurrentFrame()
-        window = frame.getContainerWindow() if frame else None
-        dialog.createPeer(create("com.sun.star.awt.Toolkit"), window)
-        if not x is None and not y is None:
-            ps = dialog.convertSizeToPixel(uno.createUnoStruct("com.sun.star.awt.Size", x, y), TWIP)
-            _x, _y = ps.Width, ps.Height
-        elif window:
-            ps = window.getPosSize()
-            _x = ps.Width / 2 - WIDTH / 2
-            _y = ps.Height / 2 - HEIGHT / 2
-        dialog.setPosSize(_x, _y, 0, 0, POS)
-
-        for field in field_specs:
-            control = field_controls[field["name"]]
-            text_value = str(field["value"])
-            control.setSelection(uno.createUnoStruct("com.sun.star.awt.Selection", 0, len(text_value)))
-
-        field_controls["endpoint"].setFocus()
-
-        if dialog.execute():
-            result = {}
+        dp = smgr.createInstanceWithContext("com.sun.star.awt.DialogProvider", ctx)
+        dlg = dp.createDialog("vnd.sun.star.script:LocalWriterDialogs.SettingsDialog?location=application")
+        try:
             for field in field_specs:
-                control_text = field_controls[field["name"]].getModel().Text
-                field_type = field.get("type", "text")
-                if field_type == "int":
-                    if control_text.isdigit():
-                        result[field["name"]] = int(control_text)
-                elif field_type == "bool":
-                    result[field["name"]] = self._as_bool(control_text)
-                elif field_type == "float":
-                    try:
-                        result[field["name"]] = float(control_text)
-                    except ValueError:
+                ctrl = dlg.getControl(field["name"])
+                if ctrl:
+                    ctrl.getModel().Text = field["value"]
+            dlg.getControl("endpoint").setFocus()
+            if dlg.execute():
+                result = {}
+                for field in field_specs:
+                    ctrl = dlg.getControl(field["name"])
+                    control_text = ctrl.getModel().Text if ctrl else ""
+                    field_type = field.get("type", "text")
+                    if field_type == "int":
+                        result[field["name"]] = int(control_text) if control_text.isdigit() else control_text
+                    elif field_type == "bool":
+                        result[field["name"]] = self._as_bool(control_text)
+                    elif field_type == "float":
+                        try:
+                            result[field["name"]] = float(control_text)
+                        except ValueError:
+                            result[field["name"]] = control_text
+                    else:
                         result[field["name"]] = control_text
-                else:
-                    result[field["name"]] = control_text
-        else:
-            result = {}
-
-        dialog.dispose()
+            else:
+                result = {}
+        finally:
+            dlg.dispose()
         return result
-    #end sharealike section 
 
     def trigger(self, args):
         desktop = self.ctx.ServiceManager.createInstanceWithContext(
@@ -477,47 +402,40 @@ class MainJob(unohelper.Base, XJobExecutor):
                 # Access the current selection
                 if len(text_range.getString()) > 0:
                     try:
-                        # Prepare request using the new unified method
                         system_prompt = self.get_config("extend_selection_system_prompt", "")
                         prompt = text_range.getString()
                         max_tokens = self.get_config("extend_selection_max_tokens", 70)
-                        
                         api_type = str(self.get_config("api_type", "completions")).lower()
-                        request = self.make_api_request(prompt, system_prompt, max_tokens, api_type=api_type)
 
                         def append_text(chunk_text):
                             text_range.setString(text_range.getString() + chunk_text)
 
-                        self.stream_request(request, api_type, append_text)
+                        self.stream_completion(prompt, system_prompt, max_tokens, api_type, append_text)
                     except Exception as e:
-                        text_range = selection.getByIndex(0)
-                        # Append the user input to the selected text
-                        text_range.setString(text_range.getString() + ": " + str(e))
+                        self.show_error(str(e), "LocalWriter: Extend Selection")
 
             elif args == "EditSelection":
                 # Access the current selection
+                original_text = text_range.getString()
                 try:
                     user_input = self.input_box("Please enter edit instructions!", "Input", "")
+                    if not user_input:
+                        return
                     
-                    # Prepare the prompt for editing
-                    prompt = "ORIGINAL VERSION:\n" + text_range.getString() + "\n Below is an edited version according to the following instructions. There are no comments in the edited version. The edited version is followed by the end of the document. The original version will be edited as follows to create the edited version:\n" + user_input + "\nEDITED VERSION:\n"
-                    
+                    prompt = "ORIGINAL VERSION:\n" + original_text + "\n Below is an edited version according to the following instructions. There are no comments in the edited version. The edited version is followed by the end of the document. The original version will be edited as follows to create the edited version:\n" + user_input + "\nEDITED VERSION:\n"
                     system_prompt = self.get_config("edit_selection_system_prompt", "")
-                    max_tokens = len(text_range.getString()) + self.get_config("edit_selection_max_new_tokens", 0)
-                    
+                    max_tokens = len(original_text) + self.get_config("edit_selection_max_new_tokens", 0)
                     api_type = str(self.get_config("api_type", "completions")).lower()
-                    request = self.make_api_request(prompt, system_prompt, max_tokens, api_type=api_type)
                     
                     text_range.setString("")
 
                     def append_text(chunk_text):
                         text_range.setString(text_range.getString() + chunk_text)
 
-                    self.stream_request(request, api_type, append_text)
+                    self.stream_completion(prompt, system_prompt, max_tokens, api_type, append_text)
                 except Exception as e:
-                    text_range = selection.getByIndex(0)
-                    # Append the user input to the selected text
-                    text_range.setString(text_range.getString() + ": " + str(e))
+                    text_range.setString(original_text)  # Restore original on failure
+                    self.show_error(str(e), "LocalWriter: Edit Selection")
             
             elif args == "settings":
                 try:
@@ -564,9 +482,7 @@ class MainJob(unohelper.Base, XJobExecutor):
 
 
                 except Exception as e:
-                    text_range = selection.getByIndex(0)
-                    # Append the user input to the selected text
-                    text_range.setString(text_range.getString() + ":error: " + str(e))
+                    self.show_error(str(e), "LocalWriter: Settings")
         elif hasattr(model, "Sheets"):
             try:
                 sheet = model.CurrentController.ActiveSheet
@@ -614,8 +530,8 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                         if "seed" in result:                
                             self.set_config("seed", result["seed"])
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self.show_error(str(e), "LocalWriter: Settings")
                     return
 
                 user_input = ""
@@ -650,27 +566,26 @@ class MainJob(unohelper.Base, XJobExecutor):
                             if not cell_text:
                                 continue
                             try:
-                                request = self.make_api_request(cell_text, extend_system_prompt, extend_max_tokens, api_type=api_type)
                                 def append_cell_text(chunk_text, target_cell=cell):
                                     target_cell.setString(target_cell.getString() + chunk_text)
-                                self.stream_request(request, api_type, append_cell_text)
+                                self.stream_completion(cell_text, extend_system_prompt, extend_max_tokens, api_type, append_cell_text)
                             except Exception as e:
-                                cell.setString(cell.getString() + ": " + str(e))
+                                self.show_error(str(e), "LocalWriter: Extend Selection (Calc)")
                         elif args == "EditSelection":
+                            cell_original = cell.getString()
                             try:
-                                prompt =  "ORIGINAL VERSION:\n" + cell.getString() + "\n Below is an edited version according to the following instructions. Don't waste time thinking, be as fast as you can. The edited text will be a shorter or longer version of the original text based on the instructions. There are no comments in the edited version. The edited version is followed by the end of the document. The original version will be edited as follows to create the edited version:\n" + user_input + "\nEDITED VERSION:\n"
-
-                                max_tokens = len(cell.getString()) + edit_max_new_tokens
-                                request = self.make_api_request(prompt, edit_system_prompt, max_tokens, api_type=api_type)
+                                prompt = "ORIGINAL VERSION:\n" + cell_original + "\n Below is an edited version according to the following instructions. Don't waste time thinking, be as fast as you can. The edited text will be a shorter or longer version of the original text based on the instructions. There are no comments in the edited version. The edited version is followed by the end of the document. The original version will be edited as follows to create the edited version:\n" + user_input + "\nEDITED VERSION:\n"
+                                max_tokens = len(cell_original) + edit_max_new_tokens
 
                                 cell.setString("")
 
                                 def append_edit_text(chunk_text, target_cell=cell):
                                     target_cell.setString(target_cell.getString() + chunk_text)
 
-                                self.stream_request(request, api_type, append_edit_text)
+                                self.stream_completion(prompt, edit_system_prompt, max_tokens, api_type, append_edit_text)
                             except Exception as e:
-                                cell.setString(cell.getString() + ": " + str(e))
+                                cell.setString(cell_original)  # Restore original on failure
+                                self.show_error(str(e), "LocalWriter: Edit Selection (Calc)")
             except Exception:
                 pass
 # Starting from Python IDE
