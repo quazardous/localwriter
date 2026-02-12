@@ -3,6 +3,7 @@
 # XUIElement wrapper creates panel in getRealInterface() via ContainerWindowProvider + XDL.
 
 import os
+import json
 import uno
 import unohelper
 
@@ -13,6 +14,19 @@ from com.sun.star.awt import XActionListener
 # Extension ID from description.xml; XDL path inside the .oxt
 EXTENSION_ID = "org.extension.localwriter"
 XDL_PATH = "LocalWriterDialogs/ChatPanelDialog.xdl"
+
+# Maximum tool-calling round-trips before giving up
+MAX_TOOL_ROUNDS = 5
+
+# Default system prompt for the chat sidebar
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a document editing assistant integrated into LibreOffice Writer.\n"
+    "You can read and modify the document using the tools provided.\n\n"
+    "When the user asks you to edit the document, use the appropriate tools.\n"
+    "When the user asks a question, answer it directly without using tools.\n\n"
+    "Always confirm what you changed after making edits.\n"
+    "Do not make changes the user did not ask for."
+)
 
 
 def _debug_log(ctx, msg):
@@ -50,87 +64,407 @@ def _get_arg(args, name):
     return None
 
 
-class SendButtonListener(unohelper.Base, XActionListener):
-    """Listener for the Send button - runs chat with document, updates response area."""
+def _ensure_extension_on_path(ctx):
+    """Add the extension's directory to sys.path so cross-module imports work.
+    LibreOffice registers each .py as a UNO component individually but does not
+    put the extension folder on sys.path, so 'from main import ...' and
+    'from document_tools import ...' fail without this."""
+    import sys
+    try:
+        pip = ctx.getValueByName(
+            "/singletons/com.sun.star.deployment.PackageInformationProvider")
+        ext_url = pip.getPackageLocation(EXTENSION_ID)
+        if ext_url.startswith("file://"):
+            ext_path = str(uno.fileUrlToSystemPath(ext_url))
+        else:
+            ext_path = ext_url
+        if ext_path and ext_path not in sys.path:
+            sys.path.insert(0, ext_path)
+            _debug_log(ctx, "Added extension path to sys.path: %s" % ext_path)
+        else:
+            _debug_log(ctx, "Extension path already on sys.path: %s" % ext_path)
+    except Exception as e:
+        _debug_log(ctx, "_ensure_extension_on_path ERROR: %s" % e)
 
-    def __init__(self, ctx, frame, query_control, response_control):
+
+# ---------------------------------------------------------------------------
+# ChatSession - holds conversation history for multi-turn chat
+# ---------------------------------------------------------------------------
+
+class ChatSession:
+    """Maintains the message history for one sidebar chat session."""
+
+    def __init__(self, system_prompt=DEFAULT_SYSTEM_PROMPT):
+        self.messages = []
+        if system_prompt:
+            self.messages.append({"role": "system", "content": system_prompt})
+
+    def add_user_message(self, content):
+        self.messages.append({"role": "user", "content": content})
+
+    def add_assistant_message(self, content=None, tool_calls=None):
+        msg = {"role": "assistant"}
+        if content:
+            msg["content"] = content
+        else:
+            msg["content"] = None
+        if tool_calls:
+            msg["tool_calls"] = tool_calls
+        self.messages.append(msg)
+
+    def add_tool_result(self, tool_call_id, content):
+        self.messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": content,
+        })
+
+    def update_document_context(self, doc_text):
+        """Update or insert the document context as a system message.
+        Replaces the existing document context if present, otherwise appends."""
+        context_marker = "[DOCUMENT CONTENT]"
+        context_msg = "%s\n%s\n[END DOCUMENT]" % (context_marker, doc_text)
+
+        # Check if we already have a document context message
+        for i, msg in enumerate(self.messages):
+            if msg["role"] == "system" and context_marker in (msg.get("content") or ""):
+                self.messages[i]["content"] = context_msg
+                return
+        # Insert after the first system prompt
+        insert_at = 1 if self.messages and self.messages[0]["role"] == "system" else 0
+        self.messages.insert(insert_at, {"role": "system", "content": context_msg})
+
+    def clear(self):
+        """Reset to just the system prompt."""
+        system = None
+        for msg in self.messages:
+            if msg["role"] == "system" and "[DOCUMENT CONTENT]" not in (msg.get("content") or ""):
+                system = msg
+                break
+        self.messages = []
+        if system:
+            self.messages.append(system)
+
+
+# ---------------------------------------------------------------------------
+# SendButtonListener - handles Send button click with tool-calling loop
+# ---------------------------------------------------------------------------
+
+class SendButtonListener(unohelper.Base, XActionListener):
+    """Listener for the Send button - runs chat with document, supports tool-calling."""
+
+    def __init__(self, ctx, frame, query_control, response_control, status_control, session):
         self.ctx = ctx
         self.frame = frame
         self.query_control = query_control
         self.response_control = response_control
+        self.status_control = status_control
+        self.session = session
+
+    def _set_status(self, text):
+        """Update the status label in the sidebar."""
+        try:
+            if self.status_control and self.status_control.getModel():
+                self.status_control.getModel().Label = text
+                toolkit = self.ctx.getServiceManager().createInstanceWithContext(
+                    "com.sun.star.awt.Toolkit", self.ctx)
+                toolkit.processEventsToIdle()
+        except Exception:
+            pass
+
+    def _append_response(self, text):
+        """Append text to the response area."""
+        try:
+            if self.response_control and self.response_control.getModel():
+                current = self.response_control.getModel().Text or ""
+                self.response_control.getModel().Text = current + text
+                toolkit = self.ctx.getServiceManager().createInstanceWithContext(
+                    "com.sun.star.awt.Toolkit", self.ctx)
+                toolkit.processEventsToIdle()
+        except Exception:
+            pass
+
+    def _get_document_model(self):
+        """Get the Writer document model."""
+        model = None
+        if self.frame:
+            try:
+                model = self.frame.getController().getModel()
+            except Exception:
+                pass
+        if not model:
+            desktop = self.ctx.getServiceManager().createInstanceWithContext(
+                "com.sun.star.frame.Desktop", self.ctx)
+            model = desktop.getCurrentComponent()
+        if model and hasattr(model, "getText"):
+            return model
+        return None
 
     def actionPerformed(self, evt):
         try:
-            query_text = ""
-            if self.query_control and self.query_control.getModel():
-                query_text = (self.query_control.getModel().Text or "").strip()
-            if not query_text:
-                from main import MainJob
-                job = MainJob(self.ctx)
-                query_text = job.input_box("Ask a question about your document:", "Chat with Document", "").strip()
-            if not query_text:
-                return
-
-            from main import MainJob
-            job = MainJob(self.ctx)
-            model = None
-            if self.frame:
-                try:
-                    model = self.frame.getController().getModel()
-                except Exception:
-                    pass
-            if not model:
-                desktop = job.ctx.getServiceManager().createInstanceWithContext(
-                    "com.sun.star.frame.Desktop", job.ctx)
-                model = desktop.getCurrentComponent()
-            if not model or not hasattr(model, "getText"):
-                job.show_error("No document open.", "Chat with Document")
-                return
-
-            max_context = int(job.get_config("chat_context_length", 8000))
-            doc_text = job.get_full_document_text(model, max_context)
-            if not doc_text.strip():
-                job.show_error("Document is empty.", "Chat with Document")
-                return
-
-            prompt = "Document content:\n\n%s\n\nUser question: %s" % (doc_text, query_text)
-            system_prompt = job.get_config("chat_system_prompt",
-                "You are a helpful assistant. Answer the user's question based on the document content provided.")
-            max_tokens = int(job.get_config("chat_max_tokens", 512))
-            api_type = str(job.get_config("api_type", "completions")).lower()
-
-            doc_cursor = None
-            if not (self.response_control and self.response_control.getModel()):
-                try:
-                    text = model.getText()
-                    doc_cursor = text.createTextCursor()
-                    doc_cursor.gotoEnd(False)
-                    doc_cursor.insertString("\n\n--- Chat response ---\n\n", False)
-                except Exception:
-                    pass
-
-            def append_chunk(chunk_text):
-                if self.response_control and self.response_control.getModel():
-                    current = self.response_control.getModel().Text or ""
-                    self.response_control.getModel().Text = current + chunk_text
-                elif doc_cursor is not None:
-                    doc_cursor.insertString(chunk_text, False)
-
-            job.stream_completion(prompt, system_prompt, max_tokens, api_type, append_chunk)
-
-            if self.query_control and self.query_control.getModel():
-                self.query_control.getModel().Text = ""
+            self._do_send()
         except Exception as e:
+            self._set_status("Error")
+            import traceback
+            tb = traceback.format_exc()
+            self._append_response("\n\n[Error: %s]\n%s\n" % (str(e), tb))
+            _debug_log(self.ctx, "SendButton error: %s\n%s" % (e, tb))
+
+    def _do_send(self):
+        self._set_status("Starting...")
+        _debug_log(self.ctx, "=== _do_send START ===")
+
+        # Ensure extension directory is on sys.path
+        _ensure_extension_on_path(self.ctx)
+
+        try:
+            _debug_log(self.ctx, "_do_send: importing MainJob...")
+            from main import MainJob
+            _debug_log(self.ctx, "_do_send: MainJob imported OK")
+        except Exception as e:
+            _debug_log(self.ctx, "_do_send: MainJob import FAILED: %s" % e)
+            self._append_response("\n[Import error - main: %s]\n" % e)
+            self._set_status("Error")
+            return
+
+        try:
+            _debug_log(self.ctx, "_do_send: importing document_tools...")
+            from document_tools import WRITER_TOOLS, execute_tool
+            _debug_log(self.ctx, "_do_send: document_tools imported OK (%d tools)" % len(WRITER_TOOLS))
+        except Exception as e:
+            _debug_log(self.ctx, "_do_send: document_tools import FAILED: %s" % e)
+            self._append_response("\n[Import error - document_tools: %s]\n" % e)
+            self._set_status("Error")
+            return
+
+        # 1. Get user query
+        query_text = ""
+        if self.query_control and self.query_control.getModel():
+            query_text = (self.query_control.getModel().Text or "").strip()
+        if not query_text:
+            self._set_status("")
+            return
+
+        # Clear the query field
+        if self.query_control and self.query_control.getModel():
+            self.query_control.getModel().Text = ""
+
+        # 2. Get document model
+        self._set_status("Getting document...")
+        _debug_log(self.ctx, "_do_send: getting document model...")
+        model = self._get_document_model()
+        if not model:
+            _debug_log(self.ctx, "_do_send: no Writer document found")
+            self._append_response("\n[No Writer document open.]\n")
+            self._set_status("Error")
+            return
+        _debug_log(self.ctx, "_do_send: got document model OK")
+
+        # 3. Set up MainJob and config
+        job = MainJob(self.ctx)
+        max_context = int(job.get_config("chat_context_length", 8000))
+        max_tokens = int(job.get_config("chat_max_tokens", 512))
+        api_type = str(job.get_config("api_type", "completions")).lower()
+        _debug_log(self.ctx, "_do_send: config loaded: api_type=%s, max_tokens=%d, max_context=%d" %
+                    (api_type, max_tokens, max_context))
+
+        # Determine if tool-calling is available (requires chat API)
+        use_tools = (api_type == "chat")
+
+        # 4. Refresh document context in session
+        self._set_status("Reading document...")
+        doc_text = job.get_full_document_text(model, max_context)
+        _debug_log(self.ctx, "_do_send: document text length=%d" % len(doc_text))
+        self.session.update_document_context(doc_text)
+
+        # 5. Add user message to session and display
+        self.session.add_user_message(query_text)
+        self._append_response("\nYou: %s\n" % query_text)
+        _debug_log(self.ctx, "_do_send: user query='%s'" % query_text[:100])
+
+        self._set_status("Sending to AI (api_type=%s, tools=%s)..." % (api_type, use_tools))
+        _debug_log(self.ctx, "_do_send: calling AI, use_tools=%s, messages=%d" %
+                    (use_tools, len(self.session.messages)))
+
+        if use_tools:
+            self._do_tool_calling_loop(job, model, max_tokens, WRITER_TOOLS, execute_tool)
+        else:
+            # Legacy path: simple streaming without tools
+            self._do_simple_stream(job, max_tokens, api_type)
+
+        _debug_log(self.ctx, "=== _do_send END ===")
+
+    def _do_tool_calling_loop(self, job, model, max_tokens, tools, execute_tool_fn):
+        """Run the tool-calling conversation loop."""
+        _debug_log(self.ctx, "=== Tool-calling loop START (max %d rounds) ===" % MAX_TOOL_ROUNDS)
+        for round_num in range(MAX_TOOL_ROUNDS):
+            self._set_status("Thinking..." if round_num == 0 else "Thinking (round %d)..." % (round_num + 1))
+            _debug_log(self.ctx, "Tool loop round %d: sending %d messages to API..." %
+                        (round_num, len(self.session.messages)))
+
             try:
-                from main import MainJob
-                job = MainJob(self.ctx)
-                job.show_error(str(e), "Chat with Document")
-            except Exception:
-                pass
+                response = job.request_with_tools(
+                    self.session.messages, max_tokens, tools=tools)
+                _debug_log(self.ctx, "Tool loop round %d: got response, content=%s, tool_calls=%s" %
+                            (round_num, bool(response.get("content")), bool(response.get("tool_calls"))))
+            except Exception as e:
+                _debug_log(self.ctx, "Tool loop round %d: API ERROR: %s" % (round_num, e))
+                self._append_response("\n[API error: %s]\n" % str(e))
+                self._set_status("Error")
+                return
+
+            tool_calls = response.get("tool_calls")
+            content = response.get("content")
+
+            if not tool_calls:
+                # No tool calls -- this is the final text response
+                _debug_log(self.ctx, "Tool loop: final text response (no tool calls)")
+                if content:
+                    self.session.add_assistant_message(content=content)
+                    self._append_response("\nAI: %s\n" % content)
+                else:
+                    _debug_log(self.ctx, "Tool loop: WARNING - no content and no tool_calls")
+                    self._append_response("\n[AI returned empty response]\n")
+                self._set_status("")
+                return
+
+            # Model wants to call tools
+            self.session.add_assistant_message(content=content, tool_calls=tool_calls)
+
+            if content:
+                self._append_response("\nAI: %s\n" % content)
+
+            for tc in tool_calls:
+                func_name = tc.get("function", {}).get("name", "unknown")
+                func_args_str = tc.get("function", {}).get("arguments", "{}")
+                call_id = tc.get("id", "")
+
+                self._set_status("Running: %s" % func_name)
+
+                try:
+                    func_args = json.loads(func_args_str)
+                except (json.JSONDecodeError, TypeError):
+                    func_args = {}
+
+                _debug_log(self.ctx, "Tool call: %s(%s)" % (func_name, func_args_str))
+
+                # Execute the tool
+                result = execute_tool_fn(func_name, func_args, model, self.ctx)
+
+                _debug_log(self.ctx, "Tool result: %s" % result)
+
+                # Show a brief note in chat
+                try:
+                    result_data = json.loads(result)
+                    note = result_data.get("message", result_data.get("status", "done"))
+                except Exception:
+                    note = "done"
+                self._append_response("[%s: %s]\n" % (func_name, note))
+
+                # Add tool result to session
+                self.session.add_tool_result(call_id, result)
+
+            # Continue the loop -- send tool results back to model
+
+        # If we exhausted rounds, stream a final response without tools
+        self._set_status("Finishing...")
+        self._append_response("\nAI: ")
+
+        def append_chunk(chunk_text):
+            self._append_response(chunk_text)
+            self.session._last_streamed = (self.session._last_streamed or "") + chunk_text
+
+        self.session._last_streamed = ""
+        try:
+            job.stream_chat_response(self.session.messages, max_tokens, append_chunk)
+            if self.session._last_streamed:
+                self.session.add_assistant_message(content=self.session._last_streamed)
+        except Exception as e:
+            self._append_response("[Stream error: %s]\n" % str(e))
+        self._append_response("\n")
+        self._set_status("")
+
+    def _do_simple_stream(self, job, max_tokens, api_type):
+        """Legacy path: simple streaming without tool-calling."""
+        _debug_log(self.ctx, "=== Simple stream START (api_type=%s) ===" % api_type)
+        self._set_status("Thinking...")
+        self._append_response("\nAI: ")
+
+        # Build a simple prompt from the last user message and doc context
+        last_user = ""
+        doc_context = ""
+        for msg in reversed(self.session.messages):
+            if msg["role"] == "user" and not last_user:
+                last_user = msg["content"]
+            if msg["role"] == "system" and "[DOCUMENT CONTENT]" in (msg.get("content") or ""):
+                doc_context = msg["content"]
+
+        prompt = "%s\n\nUser question: %s" % (doc_context, last_user) if doc_context else last_user
+        system_prompt = ""
+        for msg in self.session.messages:
+            if msg["role"] == "system" and "[DOCUMENT CONTENT]" not in (msg.get("content") or ""):
+                system_prompt = msg["content"]
+                break
+
+        collected = []
+
+        def append_chunk(chunk_text):
+            self._append_response(chunk_text)
+            collected.append(chunk_text)
+
+        try:
+            job.stream_completion(prompt, system_prompt, max_tokens, api_type, append_chunk)
+            full_response = "".join(collected)
+            self.session.add_assistant_message(content=full_response)
+        except Exception as e:
+            self._append_response("[Error: %s]\n" % str(e))
+
+        self._append_response("\n")
+        self._set_status("")
 
     def disposing(self, evt):
         pass
 
+
+# ---------------------------------------------------------------------------
+# ClearButtonListener - resets the conversation
+# ---------------------------------------------------------------------------
+
+class ClearButtonListener(unohelper.Base, XActionListener):
+    """Listener for the Clear button - resets conversation history."""
+
+    def __init__(self, session, response_control, status_control):
+        self.session = session
+        self.response_control = response_control
+        self.status_control = status_control
+
+    def actionPerformed(self, evt):
+        self.session.clear()
+        try:
+            if self.response_control and self.response_control.getModel():
+                self.response_control.getModel().Text = ""
+            if self.status_control and self.status_control.getModel():
+                self.status_control.getModel().Label = ""
+        except Exception:
+            pass
+
+    def disposing(self, evt):
+        pass
+
+
+# FIXME: Dynamic resizing of panel controls when sidebar is resized.
+# The sidebar allocates a fixed height (from getHeightForWidth) and does not
+# scroll, so a PanelResizeListener (XWindowListener) that repositions controls
+# bottom-up would be the right approach.  However, the sidebar gives the panel
+# window a very large initial height (1375px) before settling to the requested
+# size, which causes controls to be positioned off-screen during the first
+# layout pass.  Needs investigation into the sidebar's resize lifecycle.
+# For now the XDL uses a compact fixed layout that works at the default size.
+
+
+# ---------------------------------------------------------------------------
+# ChatToolPanel, ChatPanelElement, ChatPanelFactory (sidebar plumbing)
+# ---------------------------------------------------------------------------
 
 class ChatToolPanel(unohelper.Base, XToolPanel, XSidebarPanel):
     """Holds the panel window; implements XToolPanel and XSidebarPanel."""
@@ -147,6 +481,7 @@ class ChatToolPanel(unohelper.Base, XToolPanel, XSidebarPanel):
         return self.PanelWindow
 
     def getHeightForWidth(self, width):
+        # Min 280, preferred -1 (let sidebar decide), max 280 — matches working Git layout.
         return uno.createUnoStruct("com.sun.star.ui.LayoutSize", 280, -1, 280)
 
     def getMinimalWidth(self):
@@ -165,15 +500,19 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         self.Type = TOOLPANEL
         self.toolpanel = None
         self.m_panelRootWindow = None
+        self.session = None  # Created in _wireControls
 
     def getRealInterface(self):
-        _debug_log(self.ctx, "getRealInterface called")
+        _debug_log(self.ctx, "=== getRealInterface called ===")
         if not self.toolpanel:
             try:
+                # Ensure extension on path early so _wireControls imports work
+                _ensure_extension_on_path(self.ctx)
                 root_window = self._getOrCreatePanelRootWindow()
                 _debug_log(self.ctx, "root_window created: %s" % (root_window is not None))
                 self.toolpanel = ChatToolPanel(root_window, self.ctx)
-                self._wireSendButton(root_window)
+                self._wireControls(root_window)
+                _debug_log(self.ctx, "getRealInterface completed successfully")
             except Exception as e:
                 _debug_log(self.ctx, "getRealInterface ERROR: %s" % e)
                 import traceback
@@ -199,19 +538,85 @@ class ChatPanelElement(unohelper.Base, XUIElement):
             self.m_panelRootWindow.setVisible(True)
         return self.m_panelRootWindow
 
-    def _wireSendButton(self, root_window):
-        """Attach SendButtonListener to the send button. root_window may support XControlContainer."""
+    def _wireControls(self, root_window):
+        """Attach listeners to Send and Clear buttons."""
+        _debug_log(self.ctx, "_wireControls entered")
+        if not hasattr(root_window, "getControl"):
+            _debug_log(self.ctx, "_wireControls: root_window has no getControl, aborting")
+            return
+
+        # Get controls -- these must exist in the XDL
+        send_btn = root_window.getControl("send")
+        query_ctrl = root_window.getControl("query")
+        response_ctrl = root_window.getControl("response")
+        _debug_log(self.ctx, "_wireControls: got send/query/response controls")
+
+        # Status label (may not exist in older XDL)
+        status_ctrl = None
         try:
-            if hasattr(root_window, "getControl"):
-                send_btn = root_window.getControl("send")
-                query_ctrl = root_window.getControl("query")
-                response_ctrl = root_window.getControl("response")
-                send_btn.addActionListener(SendButtonListener(
-                    self.ctx, self.xFrame, query_ctrl, response_ctrl))
-                _debug_log(self.ctx, "Send button wired")
+            status_ctrl = root_window.getControl("status")
+            _debug_log(self.ctx, "_wireControls: got status control")
+        except Exception:
+            _debug_log(self.ctx, "_wireControls: no status control in XDL (ok)")
+
+        # Helper to show errors visibly in the response area
+        def _show_init_error(msg):
+            _debug_log(self.ctx, "_wireControls ERROR: %s" % msg)
+            try:
+                if response_ctrl and response_ctrl.getModel():
+                    current = response_ctrl.getModel().Text or ""
+                    response_ctrl.getModel().Text = current + "[Init error: %s]\n" % msg
+            except Exception:
+                pass
+
+        # Ensure extension directory is on sys.path for cross-module imports
+        _ensure_extension_on_path(self.ctx)
+
+        try:
+            # Read system prompt from config
+            _debug_log(self.ctx, "_wireControls: importing MainJob...")
+            from main import MainJob
+            job = MainJob(self.ctx)
+            system_prompt = job.get_config("chat_system_prompt", DEFAULT_SYSTEM_PROMPT)
+            _debug_log(self.ctx, "_wireControls: config loaded, api_type=%s" %
+                        job.get_config("api_type", "completions"))
         except Exception as e:
-            _debug_log(self.ctx, "_wireSendButton: %s" % e)
+            import traceback
+            _show_init_error("MainJob config: %s" % e)
+            _debug_log(self.ctx, traceback.format_exc())
+            system_prompt = DEFAULT_SYSTEM_PROMPT
+
+        # Create session
+        self.session = ChatSession(system_prompt)
+
+        # Wire Send button
+        try:
+            send_btn.addActionListener(SendButtonListener(
+                self.ctx, self.xFrame, query_ctrl, response_ctrl,
+                status_ctrl, self.session))
+            _debug_log(self.ctx, "Send button wired")
+        except Exception as e:
+            _show_init_error("Send button: %s" % e)
+
+        # Show ready message
+        try:
+            if response_ctrl and response_ctrl.getModel():
+                response_ctrl.getModel().Text = "Ready. Type a message and click Send.\n"
+        except Exception:
             pass
+
+        # Wire Clear button (may not exist in older XDL)
+        try:
+            clear_btn = root_window.getControl("clear")
+            if clear_btn:
+                clear_btn.addActionListener(ClearButtonListener(
+                    self.session, response_ctrl, status_ctrl))
+                _debug_log(self.ctx, "Clear button wired")
+        except Exception:
+            pass
+
+        # FIXME: Wire PanelResizeListener here once dynamic resizing is fixed.
+        # See FIXME comment above the commented-out PanelResizeListener class.
 
 
 class ChatPanelFactory(unohelper.Base, XUIElementFactory):

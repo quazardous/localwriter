@@ -272,6 +272,89 @@ class MainJob(unohelper.Base, XJobExecutor):
         request = self.make_api_request(prompt, system_prompt, max_tokens, api_type=api_type)
         self.stream_request(request, api_type, append_callback)
 
+    def make_chat_request(self, messages, max_tokens=512, tools=None, stream=False):
+        """
+        Build a chat completions request from a full messages array.
+        Supports tool-calling when tools are provided.
+        Returns a urllib Request object.
+        """
+        try:
+            max_tokens = int(max_tokens)
+        except (TypeError, ValueError):
+            max_tokens = 512
+
+        endpoint = str(self.get_config("endpoint", "http://127.0.0.1:5000")).rstrip("/")
+        api_key = str(self.get_config("api_key", ""))
+        model_name = str(self.get_config("model", ""))
+
+        is_openwebui = (self._as_bool(self.get_config("is_openwebui", False))
+                        or "open-webui" in endpoint.lower()
+                        or "openwebui" in endpoint.lower())
+        api_path = "/api" if is_openwebui else "/v1"
+        url = endpoint + api_path + "/chat/completions"
+
+        headers = {'Content-Type': 'application/json'}
+        if api_key:
+            headers['Authorization'] = 'Bearer %s' % api_key
+
+        temperature = self.get_config("temperature", 0.5)
+        try:
+            temperature = float(temperature)
+        except (TypeError, ValueError):
+            temperature = 0.5
+
+        data = {
+            'messages': messages,
+            'max_tokens': max_tokens,
+            'temperature': temperature,
+            'top_p': 0.9,
+            'stream': stream,
+        }
+        if model_name:
+            data['model'] = model_name
+        if tools:
+            data['tools'] = tools
+            data['tool_choice'] = 'auto'
+            data['parallel_tool_calls'] = False
+
+        json_data = json.dumps(data).encode('utf-8')
+        log_to_file("=== Chat Request (tools=%s, stream=%s) ===" % (bool(tools), stream))
+        log_to_file("URL: %s" % url)
+        log_to_file("Data: %s" % json.dumps(data, indent=2))
+
+        request = urllib.request.Request(url, data=json_data, headers=headers)
+        request.get_method = lambda: 'POST'
+        return request
+
+    def request_with_tools(self, messages, max_tokens=512, tools=None):
+        """
+        Non-streaming chat request that returns the parsed response.
+        Used for tool-calling rounds where we need the full response at once.
+        Returns dict: {"role": "assistant", "content": ..., "tool_calls": [...] or None}
+        """
+        request = self.make_chat_request(messages, max_tokens, tools=tools, stream=False)
+        ssl_context = self.get_ssl_context()
+        timeout = self._get_request_timeout()
+
+        with urllib.request.urlopen(request, context=ssl_context, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+            result = json.loads(body)
+
+        log_to_file("=== Tool response: %s" % json.dumps(result, indent=2))
+
+        choice = result.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        return {
+            "role": "assistant",
+            "content": message.get("content"),
+            "tool_calls": message.get("tool_calls"),
+        }
+
+    def stream_chat_response(self, messages, max_tokens, append_callback):
+        """Stream a final chat response (no tools) using the messages array."""
+        request = self.make_chat_request(messages, max_tokens, tools=None, stream=True)
+        self.stream_request(request, "chat", append_callback)
+
     def get_full_document_text(self, model, max_chars=8000):
         """Get full document text for Writer, truncated to max_chars."""
         try:

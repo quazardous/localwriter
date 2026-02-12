@@ -4,10 +4,12 @@
   dlg:id="ChatPanelDialog" dlg:left="0" dlg:top="0" dlg:width="220" dlg:height="280"
   dlg:closeable="false" dlg:moveable="false" dlg:resizeable="true" dlg:withtitlebar="false" dlg:title="">
  <dlg:bulletinboard>
-  <dlg:text dlg:id="response_label" dlg:left="4" dlg:top="4" dlg:width="212" dlg:height="10" dlg:value="Response:" dlg:align="left"/>
-  <dlg:textfield dlg:id="response" dlg:left="4" dlg:top="16" dlg:width="212" dlg:height="180" dlg:tabstop="true" dlg:value="" dlg:readonly="true" dlg:multiline="true"/>
-  <dlg:text dlg:id="query_label" dlg:left="4" dlg:top="200" dlg:width="212" dlg:height="10" dlg:value="Ask:" dlg:align="left"/>
-  <dlg:textfield dlg:id="query" dlg:left="4" dlg:top="212" dlg:width="212" dlg:height="24" dlg:tabstop="true" dlg:value=""/>
-  <dlg:button dlg:id="send" dlg:left="4" dlg:top="240" dlg:width="100" dlg:height="22" dlg:value="Send" dlg:tabstop="true"/>
+  <dlg:text dlg:id="response_label" dlg:left="4" dlg:top="4" dlg:width="212" dlg:height="10" dlg:value="Chat:" dlg:align="left"/>
+  <dlg:textfield dlg:id="response" dlg:left="4" dlg:top="16" dlg:width="212" dlg:height="160" dlg:tabstop="true" dlg:value="" dlg:readonly="true" dlg:multiline="true" dlg:vscroll="true"/>
+  <dlg:text dlg:id="status" dlg:left="4" dlg:top="178" dlg:width="212" dlg:height="10" dlg:value="" dlg:align="left"/>
+  <dlg:text dlg:id="query_label" dlg:left="4" dlg:top="190" dlg:width="212" dlg:height="10" dlg:value="Ask / instruct:" dlg:align="left"/>
+  <dlg:textfield dlg:id="query" dlg:left="4" dlg:top="202" dlg:width="212" dlg:height="30" dlg:tabstop="true" dlg:value="" dlg:multiline="true" dlg:vscroll="true"/>
+  <dlg:button dlg:id="send" dlg:left="4" dlg:top="234" dlg:width="100" dlg:height="22" dlg:value="Send" dlg:tabstop="true"/>
+  <dlg:button dlg:id="clear" dlg:left="110" dlg:top="234" dlg:width="106" dlg:height="22" dlg:value="Clear" dlg:tabstop="true"/>
  </dlg:bulletinboard>
 </dlg:window>
