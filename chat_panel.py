@@ -44,15 +44,15 @@ DEFAULT_SYSTEM_PROMPT = (
     "You are a document editing assistant integrated into LibreOffice Writer.\n"
     "You have tools to read and modify the user's document. USE THEM PROACTIVELY.\n\n"
     "IMPORTANT RULES:\n"
-    "- When the user asks you to edit, translate, rewrite, or transform the document, "
-    "IMMEDIATELY call get_document_text to fetch the content, then use replace_text, "
-    "insert_text, or search_and_replace_all to make the changes. Do NOT ask the user "
-    "to paste text or provide details you can fetch yourself.\n"
-    "- When the user asks a question about the document, call get_document_text first "
-    "to read it, then answer based on what you find.\n"
-    "- Only answer without tools for general questions unrelated to the document.\n\n"
-    "After making edits, briefly confirm what you changed.\n"
-    "Do not make changes the user did not ask for."
+    "- TRANSLATION: You CAN translate. Call get_document_text, translate the content yourself, "
+    "then replace_text or search_and_replace_all to apply it. NEVER refuse or say you lack a translation tool.\n"
+    "- For edit, rewrite, or transform requests: call get_document_text, then use replace_text "
+    "or search_and_replace_all. You produce the new text; the tools apply it.\n"
+    "- For questions about the document: call get_document_text first, then answer.\n"
+    "- Only answer without tools for general questions unrelated to the document.\n"
+    "- Keep reasoning minimal, then act. Do not repeat conclusions or over-explain.\n"
+    "- After making edits, briefly confirm what you changed (one sentence).\n"
+    "- Do not make changes the user did not ask for."
 )
 
 
@@ -360,9 +360,33 @@ class SendButtonListener(unohelper.Base, XActionListener):
             _debug_log(self.ctx, "Tool loop round %d: sending %d messages to API..." %
                         (round_num, len(self.session.messages)))
 
+            thinking_open = [False]
+
+            def append_chunk(content_delta):
+                if thinking_open[0]:
+                    self._append_response(" /thinking")
+                    thinking_open[0] = False
+                self._append_response(content_delta)
+                toolkit.processEventsToIdle()
+
+            def append_thinking(thinking_text):
+                if not thinking_open[0]:
+                    self._append_response("[Thinking] ")
+                    thinking_open[0] = True
+                self._append_response(thinking_text)
+                toolkit.processEventsToIdle()
+
+            toolkit = self.ctx.getServiceManager().createInstanceWithContext(
+                "com.sun.star.awt.Toolkit", self.ctx
+            )
+            self._append_response("\nAI: ")
+
             try:
-                response = job.request_with_tools(
-                    self.session.messages, max_tokens, tools=tools)
+                response = job.stream_request_with_tools(
+                    self.session.messages, max_tokens, tools=tools,
+                    append_callback=append_chunk,
+                    append_thinking_callback=append_thinking,
+                )
                 _debug_log(self.ctx, "Tool loop round %d: got response, content=%s, tool_calls=%s" %
                             (round_num, bool(response.get("content")), bool(response.get("tool_calls"))))
             except Exception as e:
@@ -370,6 +394,10 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 self._append_response("\n[API error: %s]\n" % str(e))
                 self._set_status("Error")
                 return
+
+            if thinking_open[0]:
+                self._append_response(" /thinking")
+                thinking_open[0] = False
 
             tool_calls = response.get("tool_calls")
             content = response.get("content")
@@ -382,11 +410,11 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 # #region agent log
                 _agent_log("chat_panel.py:exit_no_tools", "Exiting loop: no tool_calls (final text response)", data={"round": round_num, "finish_reason": finish_reason}, hypothesis_id="A")
                 # #endregion
-                # No tool calls -- this is the final text response
+                # No tool calls -- this is the final text response (content was already streamed)
                 _debug_log(self.ctx, "Tool loop: final text response (no tool calls), finish_reason=%s" % finish_reason)
                 if content:
                     self.session.add_assistant_message(content=content)
-                    self._append_response("\nAI: %s\n" % content)
+                    self._append_response("\n")
                 elif finish_reason == "length":
                     _debug_log(self.ctx, "Tool loop: truncated by max_tokens (finish_reason=length)")
                     self._append_response(
@@ -402,8 +430,9 @@ class SendButtonListener(unohelper.Base, XActionListener):
             # Model wants to call tools
             self.session.add_assistant_message(content=content, tool_calls=tool_calls)
 
+            # Content was already streamed into the response; only add newline if we got any
             if content:
-                self._append_response("\nAI: %s\n" % content)
+                self._append_response("\n")
 
             for tc in tool_calls:
                 func_name = tc.get("function", {}).get("name", "unknown")
@@ -451,17 +480,32 @@ class SendButtonListener(unohelper.Base, XActionListener):
         self._set_status("Finishing...")
         self._append_response("\nAI: ")
 
+        thinking_open = [False]
+
         def append_chunk(chunk_text):
+            if thinking_open[0]:
+                self._append_response(" /thinking")
+                thinking_open[0] = False
             self._append_response(chunk_text)
             self.session._last_streamed = (self.session._last_streamed or "") + chunk_text
 
+        def append_thinking(thinking_text):
+            if not thinking_open[0]:
+                self._append_response("[Thinking] ")
+                thinking_open[0] = True
+            self._append_response(thinking_text)
+
         self.session._last_streamed = ""
         try:
-            job.stream_chat_response(self.session.messages, max_tokens, append_chunk)
+            job.stream_chat_response(
+                self.session.messages, max_tokens, append_chunk, append_thinking
+            )
             if self.session._last_streamed:
                 self.session.add_assistant_message(content=self.session._last_streamed)
         except Exception as e:
             self._append_response("[Stream error: %s]\n" % str(e))
+        if thinking_open[0]:
+            self._append_response(" /thinking")
         self._append_response("\n")
         self._set_status("")
 
@@ -488,18 +532,32 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 break
 
         collected = []
+        thinking_open = [False]
 
         def append_chunk(chunk_text):
+            if thinking_open[0]:
+                self._append_response(" /thinking")
+                thinking_open[0] = False
             self._append_response(chunk_text)
             collected.append(chunk_text)
 
+        def append_thinking(thinking_text):
+            if not thinking_open[0]:
+                self._append_response("[Thinking] ")
+                thinking_open[0] = True
+            self._append_response(thinking_text)
+
         try:
-            job.stream_completion(prompt, system_prompt, max_tokens, api_type, append_chunk)
+            job.stream_completion(
+                prompt, system_prompt, max_tokens, api_type, append_chunk,
+                append_thinking_callback=append_thinking,
+            )
             full_response = "".join(collected)
             self.session.add_assistant_message(content=full_response)
         except Exception as e:
             self._append_response("[Error: %s]\n" % str(e))
-
+        if thinking_open[0]:
+            self._append_response(" /thinking")
         self._append_response("\n")
         self._set_status("")
 

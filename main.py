@@ -1,10 +1,19 @@
 import sys
+import os
+
+# Ensure extension directory is on path so streaming_deltas can be imported
+_ext_dir = os.path.dirname(os.path.abspath(__file__))
+if _ext_dir not in sys.path:
+    sys.path.insert(0, _ext_dir)
+
 import unohelper
 import officehelper
 import json
 import urllib.request
 import urllib.parse
 import ssl
+
+from streaming_deltas import accumulate_delta
 from com.sun.star.task import XJobExecutor
 from com.sun.star.awt import MessageBoxButtons as MSG_BUTTONS
 from com.sun.star.awt.MessageBoxType import ERRORBOX
@@ -217,21 +226,43 @@ class MainJob(unohelper.Base, XJobExecutor):
         request.get_method = lambda: 'POST'
         return request
 
+    def _extract_thinking_from_delta(self, delta):
+        """Extract reasoning/thinking text from a stream delta for display in UI."""
+        # OpenRouter / some providers: delta.reasoning_content (string)
+        reasoning = delta.get("reasoning_content") or ""
+        if isinstance(reasoning, str) and reasoning:
+            return reasoning
+        # OpenRouter-style: delta.reasoning_details (array of {type, text?, summary?})
+        details = delta.get("reasoning_details")
+        if not isinstance(details, list):
+            return ""
+        parts = []
+        for item in details:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "reasoning.text":
+                parts.append(item.get("text") or "")
+            elif item.get("type") == "reasoning.summary":
+                parts.append(item.get("summary") or "")
+        return "".join(parts) if parts else ""
+
     def extract_content_from_response(self, chunk, api_type="completions"):
         """
-        Extract text content from API response chunk based on API type.
+        Extract text content and optional thinking from API response chunk.
+        Returns (content, finish_reason, thinking) where thinking may be "".
         """
+        choice = chunk.get("choices", [{}])[0] if chunk.get("choices") else {}
+        delta = choice.get("delta", {})
+        finish_reason = choice.get("finish_reason")
+
         if api_type == "chat":
-            # OpenAI chat completions format
-            if "choices" in chunk and len(chunk["choices"]) > 0:
-                delta = chunk["choices"][0].get("delta", {})
-                return delta.get("content", ""), chunk["choices"][0].get("finish_reason")
+            content = (delta.get("content") or "") if delta else ""
         else:
-            # Legacy completions format
-            if "choices" in chunk and len(chunk["choices"]) > 0:
-                return chunk["choices"][0].get("text", ""), chunk["choices"][0].get("finish_reason")
-        
-        return "", None
+            content = (choice.get("text") or "") if choice else ""
+
+        thinking = self._extract_thinking_from_delta(delta) if delta else ""
+
+        return content, finish_reason, thinking
 
     def get_ssl_context(self):
         """
@@ -267,10 +298,11 @@ class MainJob(unohelper.Base, XJobExecutor):
         except Exception:
             pass  # Fallback: if dialog fails, at least we don't crash
 
-    def stream_completion(self, prompt, system_prompt, max_tokens, api_type, append_callback):
+    def stream_completion(self, prompt, system_prompt, max_tokens, api_type, append_callback,
+                          append_thinking_callback=None):
         """Single entry point for streaming completions. Raises on error."""
         request = self.make_api_request(prompt, system_prompt, max_tokens, api_type=api_type)
-        self.stream_request(request, api_type, append_callback)
+        self.stream_request(request, api_type, append_callback, append_thinking_callback)
 
     def make_chat_request(self, messages, max_tokens=512, tools=None, stream=False):
         """
@@ -312,6 +344,8 @@ class MainJob(unohelper.Base, XJobExecutor):
         }
         if model_name:
             data['model'] = model_name
+        # Limit reasoning verbosity for thinking models (OpenRouter and other providers)
+        data['reasoning'] = {'effort': 'minimal'}
         if tools:
             data['tools'] = tools
             data['tool_choice'] = 'auto'
@@ -373,10 +407,85 @@ class MainJob(unohelper.Base, XJobExecutor):
             "finish_reason": finish_reason,
         }
 
-    def stream_chat_response(self, messages, max_tokens, append_callback):
+    def stream_request_with_tools(
+        self,
+        messages,
+        max_tokens=512,
+        tools=None,
+        append_callback=None,
+        append_thinking_callback=None,
+    ):
+        """
+        Streaming chat request with tools. Accumulates deltas into a full message,
+        calls append_callback(content_delta) and append_thinking_callback(thinking) as chunks arrive,
+        then returns the same shape as request_with_tools so the tool loop can run tools.
+        """
+        request = self.make_chat_request(messages, max_tokens, tools=tools, stream=True)
+        toolkit = self.ctx.getServiceManager().createInstanceWithContext(
+            "com.sun.star.awt.Toolkit", self.ctx
+        )
+        ssl_context = self.get_ssl_context()
+        timeout = self._get_request_timeout()
+
+        message_snapshot = {}
+        last_finish_reason = None
+
+        append_callback = append_callback or (lambda t: None)
+        append_thinking_callback = append_thinking_callback or (lambda t: None)
+
+        try:
+            with urllib.request.urlopen(
+                request, context=ssl_context, timeout=timeout
+            ) as response:
+                for line in response:
+                    if not line.strip() or not line.startswith(b"data: "):
+                        continue
+                    payload = line[len(b"data: "):].decode("utf-8").strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    delta = choice.get("delta") or {}
+
+                    content, finish_reason, thinking = self.extract_content_from_response(
+                        chunk, "chat"
+                    )
+                    if thinking:
+                        append_thinking_callback(thinking)
+                        toolkit.processEventsToIdle()
+                    if content:
+                        append_callback(content)
+                        toolkit.processEventsToIdle()
+
+                    accumulate_delta(message_snapshot, delta)
+                    last_finish_reason = choice.get("finish_reason")
+                    if last_finish_reason:
+                        break
+        except Exception as e:
+            log_to_file("stream_request_with_tools ERROR: %s" % e)
+            raise
+
+        raw_content = message_snapshot.get("content")
+        content = self._normalize_message_content(raw_content)
+        tool_calls = message_snapshot.get("tool_calls")
+
+        return {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": tool_calls,
+            "finish_reason": last_finish_reason,
+        }
+
+    def stream_chat_response(self, messages, max_tokens, append_callback, append_thinking_callback=None):
         """Stream a final chat response (no tools) using the messages array."""
         request = self.make_chat_request(messages, max_tokens, tools=None, stream=True)
-        self.stream_request(request, "chat", append_callback)
+        self.stream_request(request, "chat", append_callback, append_thinking_callback)
 
     def get_full_document_text(self, model, max_chars=8000):
         """Get full document text for Writer, truncated to max_chars."""
@@ -392,9 +501,10 @@ class MainJob(unohelper.Base, XJobExecutor):
         except Exception:
             return ""
 
-    def stream_request(self, request, api_type, append_callback):
+    def stream_request(self, request, api_type, append_callback, append_thinking_callback=None):
         """
-        Stream a completion/chat response and append incremental chunks via the provided callback.
+        Stream a completion/chat response and append incremental chunks via callbacks.
+        Optional append_thinking_callback receives reasoning/thinking text when present.
         """
         toolkit = self.ctx.getServiceManager().createInstanceWithContext(
             "com.sun.star.awt.Toolkit", self.ctx
@@ -418,7 +528,12 @@ class MainJob(unohelper.Base, XJobExecutor):
                             if payload == "[DONE]":
                                 break
                             chunk = json.loads(payload)
-                            content, finish_reason = self.extract_content_from_response(chunk, api_type)
+                            content, finish_reason, thinking = self.extract_content_from_response(
+                                chunk, api_type
+                            )
+                            if thinking and append_thinking_callback:
+                                append_thinking_callback(thinking)
+                                toolkit.processEventsToIdle()
                             if content:
                                 append_callback(content)
                                 toolkit.processEventsToIdle()
