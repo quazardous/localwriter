@@ -61,7 +61,14 @@ localwriter/
 - `LocalWriterDialogs.EditInputDialog` — label + text field + OK
 
 ### Key implementation details
-- **DialogProvider**: `createDialog("vnd.sun.star.script:LocalWriterDialogs.SettingsDialog?location=application")`
+- **DialogProvider with direct package URL**: Dialogs are loaded by their XDL file URL, not the Basic library script URL. This avoids a deadlock that occurs when the sidebar panel is also registered as a UNO component.
+  ```python
+  pip = self.ctx.getValueByName("/singletons/com.sun.star.deployment.PackageInformationProvider")
+  base_url = pip.getPackageLocation("org.extension.localwriter")
+  dp = smgr.createInstanceWithContext("com.sun.star.awt.DialogProvider", ctx)
+  dlg = dp.createDialog(base_url + "/LocalWriterDialogs/SettingsDialog.xdl")
+  ```
+- **Use `self.ctx`**, not `uno.getComponentContext()` — the extension's component context is required for `PackageInformationProvider` singleton lookup.
 - **Populate**: `dlg.getControl("endpoint").getModel().Text = value`
 - **Read**: `dlg.getControl("endpoint").getModel().Text` after `dlg.execute()`
 - **Manifest** must register the Basic library: `LocalWriterDialogs/` with `application/vnd.sun.star.basic-library`
@@ -97,9 +104,10 @@ See [CHAT_SIDEBAR_IMPLEMENTATION.md](CHAT_SIDEBAR_IMPLEMENTATION.md) for impleme
 - LibreOffice dialogs have **no flexbox, no auto-size**. Every control needs explicit position/size.
 - Scrollbars require manual implementation (complex). Prefer splitting into tabs or keeping content compact.
 
-### Recommended approach: XDL + DialogProvider
+### Recommended approach: XDL + DialogProvider (direct package URL)
 - Design dialogs as **XDL files** (XML). Edit `LocalWriterDialogs/*.xdl` directly.
-- Load via `DialogProvider.createDialog("vnd.sun.star.script:LibraryName.DialogName?location=application")`
+- Load via `DialogProvider.createDialog(base_url + "/LocalWriterDialogs/DialogName.xdl")` where `base_url` comes from `PackageInformationProvider.getPackageLocation()`.
+- **Do NOT** use the Basic library script URL format (`vnd.sun.star.script:LibraryName.DialogName?location=application`) — it deadlocks when sidebar UNO components are also registered.
 - The Dialog Editor in LibreOffice Basic produces XDL; you can also hand-write or generate it.
 
 ### XDL format (condensed)
@@ -175,8 +183,9 @@ See [Chat Sidebar Improvement Plan.md](Chat%20Sidebar%20Improvement%20Plan.md) f
 ## 8. Gotchas
 
 - **PR dependency**: Settings dialog field list must match `get_config`/`set_config` keys. If submitting to a repo without PR #31 and #36 merged, either base on those PRs or remove unused fields from `SettingsDialog.xdl`.
-- **Library name**: `LocalWriterDialogs` (folder name) must match `library:name` in `dialog.xlb` and the URL.
-- **DialogProvider failure**: If the XDL library isn't loaded (e.g. extension not fully installed), `createDialog` throws. No fallback; ensure the extension is installed correctly.
+- **Library name**: `LocalWriterDialogs` (folder name) must match `library:name` in `dialog.xlb`.
+- **DialogProvider deadlock**: Using `vnd.sun.star.script:...?location=application` URLs with `DialogProvider.createDialog()` will deadlock when the sidebar panel (chat_panel.py) is also registered as a UNO component. Always use direct package URLs instead (see Section 3).
+- **Use `self.ctx` for PackageInformationProvider**: `uno.getComponentContext()` returns a limited global context that cannot look up extension singletons. Always use `self.ctx` (the context passed to the UNO component constructor).
 - **dtd reference**: XDL uses `<!DOCTYPE dlg:window PUBLIC "... "dialog.dtd">`. LibreOffice resolves this from its installation.
 - **Chat sidebar visibility**: After `createContainerWindow()`, call `setVisible(True)` on the returned window; otherwise the panel content stays blank.
 - **Chat panel imports**: `chat_panel.py` uses `_ensure_extension_on_path()` to add the extension dir to `sys.path` so `from main import MainJob` and `from document_tools import ...` work.
