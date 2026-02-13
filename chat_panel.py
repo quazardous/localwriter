@@ -167,9 +167,10 @@ class ChatSession:
 class SendButtonListener(unohelper.Base, XActionListener):
     """Listener for the Send button - runs chat with document, supports tool-calling."""
 
-    def __init__(self, ctx, frame, query_control, response_control, status_control, session):
+    def __init__(self, ctx, frame, send_control, query_control, response_control, status_control, session):
         self.ctx = ctx
         self.frame = frame
+        self.send_control = send_control
         self.query_control = query_control
         self.response_control = response_control
         self.status_control = status_control
@@ -231,6 +232,8 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
     def actionPerformed(self, evt):
         try:
+            if self.send_control:
+                self.send_control.setEnable(False)
             self._do_send()
         except Exception as e:
             self._set_status("Error")
@@ -238,6 +241,12 @@ class SendButtonListener(unohelper.Base, XActionListener):
             tb = traceback.format_exc()
             self._append_response("\n\n[Error: %s]\n%s\n" % (str(e), tb))
             _debug_log(self.ctx, "SendButton error: %s\n%s" % (e, tb))
+        finally:
+            try:
+                if self.send_control:
+                    self.send_control.setEnable(True)
+            except Exception:
+                pass
 
     def _do_send(self):
         self._set_status("Starting...")
@@ -732,7 +741,7 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         # Wire Send button
         try:
             send_btn.addActionListener(SendButtonListener(
-                self.ctx, self.xFrame, query_ctrl, response_ctrl,
+                self.ctx, self.xFrame, send_btn, query_ctrl, response_ctrl,
                 status_ctrl, self.session))
             _debug_log(self.ctx, "Send button wired")
         except Exception as e:
