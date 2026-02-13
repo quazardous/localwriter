@@ -17,8 +17,14 @@ zip -r "${EXTENSION_NAME}.oxt" \
     Addons.xcu \
     description.xml \
     main.py \
+    prompt_function.py \
+    chat_panel.py \
+    document_tools.py \
+    XPromptFunction.rdb \
+    LocalWriterDialogs/ \
     META-INF/ \
     registration/ \
+    registry/ \
     assets/ \
     -x "*.git*" -x "*.DS_Store"
 

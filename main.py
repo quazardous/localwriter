@@ -326,6 +326,22 @@ class MainJob(unohelper.Base, XJobExecutor):
         request.get_method = lambda: 'POST'
         return request
 
+    def _normalize_message_content(self, raw):
+        """Return a single string from API message content (string or list of parts)."""
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            return raw
+        if isinstance(raw, list):
+            parts = []
+            for item in raw:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(item.get("text") or "")
+                elif isinstance(item, dict) and "text" in item:
+                    parts.append(item.get("text") or "")
+            return "".join(parts) if parts else None
+        return str(raw)
+
     def request_with_tools(self, messages, max_tokens=512, tools=None):
         """
         Non-streaming chat request that returns the parsed response.
@@ -342,12 +358,17 @@ class MainJob(unohelper.Base, XJobExecutor):
 
         log_to_file("=== Tool response: %s" % json.dumps(result, indent=2))
 
-        choice = result.get("choices", [{}])[0]
-        message = choice.get("message", {})
-        finish_reason = choice.get("finish_reason")
+        # Support both OpenAI shape (choices[0].message) and Ollama shape (top-level message)
+        choice = result.get("choices", [{}])[0] if result.get("choices") else {}
+        message = choice.get("message") or result.get("message") or {}
+        finish_reason = choice.get("finish_reason") or result.get("done_reason")
+
+        raw_content = message.get("content")
+        content = self._normalize_message_content(raw_content)
+
         return {
             "role": "assistant",
-            "content": message.get("content"),
+            "content": content,
             "tool_calls": message.get("tool_calls"),
             "finish_reason": finish_reason,
         }

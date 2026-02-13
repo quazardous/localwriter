@@ -346,6 +346,17 @@ def execute_tool(tool_name, arguments, model, ctx):
     if not func:
         return json.dumps({"status": "error", "message": "Unknown tool: %s" % tool_name})
     try:
-        return func(model, ctx, arguments)
+        result = func(model, ctx, arguments)
+        # #region agent log
+        _debug_log_path = "/home/keithcu/Desktop/Python/localwriter/.cursor/debug.log"
+        try:
+            import time
+            payload = {"location": "document_tools.py:execute_tool", "message": "Tool result", "data": {"tool": tool_name, "result_snippet": (result or "")[:120]}, "hypothesisId": "C,E", "timestamp": int(time.time() * 1000)}
+            with open(_debug_log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        return result
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)})

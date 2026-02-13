@@ -18,6 +18,27 @@ XDL_PATH = "LocalWriterDialogs/ChatPanelDialog.xdl"
 # Maximum tool-calling round-trips before giving up
 MAX_TOOL_ROUNDS = 5
 
+# Agent debug log (NDJSON) for this session
+_AGENT_DEBUG_LOG_PATH = "/home/keithcu/Desktop/Python/localwriter/.cursor/debug.log"
+
+
+def _agent_log(location, message, data=None, hypothesis_id=None, run_id=None):
+    # #region agent log
+    import time
+    payload = {"location": location, "message": message, "timestamp": int(time.time() * 1000)}
+    if data is not None:
+        payload["data"] = data
+    if hypothesis_id is not None:
+        payload["hypothesisId"] = hypothesis_id
+    if run_id is not None:
+        payload["runId"] = run_id
+    try:
+        with open(_AGENT_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload) + "\n")
+    except Exception:
+        pass
+    # #endregion
+
 # Default system prompt for the chat sidebar
 DEFAULT_SYSTEM_PROMPT = (
     "You are a document editing assistant integrated into LibreOffice Writer.\n"
@@ -281,6 +302,9 @@ class SendButtonListener(unohelper.Base, XActionListener):
         self._set_status("Reading document...")
         doc_text = job.get_full_document_text(model, max_context)
         _debug_log(self.ctx, "_do_send: document text length=%d" % len(doc_text))
+        # #region agent log
+        _agent_log("chat_panel.py:doc_context", "Document context for AI", data={"doc_length": len(doc_text), "doc_prefix_first_200": (doc_text or "")[:200], "max_context": max_context}, hypothesis_id="B")
+        # #endregion
         self.session.update_document_context(doc_text)
 
         # 5. Add user message to session and display
@@ -301,7 +325,35 @@ class SendButtonListener(unohelper.Base, XActionListener):
         _debug_log(self.ctx, "=== _do_send END ===")
 
     def _do_tool_calling_loop(self, job, model, max_tokens, tools, execute_tool_fn):
-        """Run the tool-calling conversation loop."""
+        """Run the tool-calling conversation loop. Wraps tool execution in an
+        UndoManager context when the document supports it, so the user can undo
+        all AI edits with one Ctrl+Z."""
+        undo_manager = None
+        if hasattr(model, "getUndoManager"):
+            try:
+                undo_manager = model.getUndoManager()
+            except Exception as e:
+                _debug_log(self.ctx, "getUndoManager failed: %s" % e)
+        if undo_manager:
+            try:
+                undo_manager.enterUndoContext("AI Edit")
+                _debug_log(self.ctx, "Undo context entered (AI Edit)")
+            except Exception as e:
+                _debug_log(self.ctx, "enterUndoContext failed: %s" % e)
+                undo_manager = None
+
+        try:
+            self._do_tool_calling_loop_impl(job, model, max_tokens, tools, execute_tool_fn)
+        finally:
+            if undo_manager:
+                try:
+                    undo_manager.leaveUndoContext()
+                    _debug_log(self.ctx, "Undo context left (AI Edit)")
+                except Exception as e:
+                    _debug_log(self.ctx, "leaveUndoContext failed: %s" % e)
+
+    def _do_tool_calling_loop_impl(self, job, model, max_tokens, tools, execute_tool_fn):
+        """Inner implementation of the tool-calling loop (without undo wrapper)."""
         _debug_log(self.ctx, "=== Tool-calling loop START (max %d rounds) ===" % MAX_TOOL_ROUNDS)
         for round_num in range(MAX_TOOL_ROUNDS):
             self._set_status("Thinking..." if round_num == 0 else "Thinking (round %d)..." % (round_num + 1))
@@ -322,8 +374,14 @@ class SendButtonListener(unohelper.Base, XActionListener):
             tool_calls = response.get("tool_calls")
             content = response.get("content")
             finish_reason = response.get("finish_reason")
+            # #region agent log
+            _agent_log("chat_panel.py:tool_round", "Tool loop round response", data={"round": round_num, "has_tool_calls": bool(tool_calls), "num_tool_calls": len(tool_calls) if tool_calls else 0, "tool_names": [tc.get("function", {}).get("name") for tc in (tool_calls or [])]}, hypothesis_id="A")
+            # #endregion
 
             if not tool_calls:
+                # #region agent log
+                _agent_log("chat_panel.py:exit_no_tools", "Exiting loop: no tool_calls (final text response)", data={"round": round_num, "finish_reason": finish_reason}, hypothesis_id="A")
+                # #endregion
                 # No tool calls -- this is the final text response
                 _debug_log(self.ctx, "Tool loop: final text response (no tool calls), finish_reason=%s" % finish_reason)
                 if content:
@@ -359,6 +417,13 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 except (json.JSONDecodeError, TypeError):
                     func_args = {}
 
+                # #region agent log
+                snippet = {}
+                if func_name in ("replace_text", "search_and_replace_all") and isinstance(func_args, dict):
+                    snippet = {"search_snippet": (func_args.get("search") or "")[:80], "replacement_snippet": (func_args.get("replacement") or "")[:80]}
+                _agent_log("chat_panel.py:tool_execute", "Executing tool", data={"tool": func_name, "round": round_num, **snippet}, hypothesis_id="C,D,E")
+                # #endregion
+
                 _debug_log(self.ctx, "Tool call: %s(%s)" % (func_name, func_args_str))
 
                 # Execute the tool
@@ -379,6 +444,9 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
             # Continue the loop -- send tool results back to model
 
+        # #region agent log
+        _agent_log("chat_panel.py:exit_exhausted", "Exiting loop: exhausted MAX_TOOL_ROUNDS", data={"rounds": MAX_TOOL_ROUNDS}, hypothesis_id="A")
+        # #endregion
         # If we exhausted rounds, stream a final response without tools
         self._set_status("Finishing...")
         self._append_response("\nAI: ")
