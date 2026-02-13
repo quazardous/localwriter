@@ -21,10 +21,16 @@ MAX_TOOL_ROUNDS = 5
 # Default system prompt for the chat sidebar
 DEFAULT_SYSTEM_PROMPT = (
     "You are a document editing assistant integrated into LibreOffice Writer.\n"
-    "You can read and modify the document using the tools provided.\n\n"
-    "When the user asks you to edit the document, use the appropriate tools.\n"
-    "When the user asks a question, answer it directly without using tools.\n\n"
-    "Always confirm what you changed after making edits.\n"
+    "You have tools to read and modify the user's document. USE THEM PROACTIVELY.\n\n"
+    "IMPORTANT RULES:\n"
+    "- When the user asks you to edit, translate, rewrite, or transform the document, "
+    "IMMEDIATELY call get_document_text to fetch the content, then use replace_text, "
+    "insert_text, or search_and_replace_all to make the changes. Do NOT ask the user "
+    "to paste text or provide details you can fetch yourself.\n"
+    "- When the user asks a question about the document, call get_document_text first "
+    "to read it, then answer based on what you find.\n"
+    "- Only answer without tools for general questions unrelated to the document.\n\n"
+    "After making edits, briefly confirm what you changed.\n"
     "Do not make changes the user did not ask for."
 )
 
@@ -263,7 +269,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
         # 3. Set up MainJob and config
         job = MainJob(self.ctx)
         max_context = int(job.get_config("chat_context_length", 8000))
-        max_tokens = int(job.get_config("chat_max_tokens", 512))
+        max_tokens = int(job.get_config("chat_max_tokens", 4096))
         api_type = str(job.get_config("api_type", "completions")).lower()
         _debug_log(self.ctx, "_do_send: config loaded: api_type=%s, max_tokens=%d, max_context=%d" %
                     (api_type, max_tokens, max_context))
@@ -315,13 +321,20 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
             tool_calls = response.get("tool_calls")
             content = response.get("content")
+            finish_reason = response.get("finish_reason")
 
             if not tool_calls:
                 # No tool calls -- this is the final text response
-                _debug_log(self.ctx, "Tool loop: final text response (no tool calls)")
+                _debug_log(self.ctx, "Tool loop: final text response (no tool calls), finish_reason=%s" % finish_reason)
                 if content:
                     self.session.add_assistant_message(content=content)
                     self._append_response("\nAI: %s\n" % content)
+                elif finish_reason == "length":
+                    _debug_log(self.ctx, "Tool loop: truncated by max_tokens (finish_reason=length)")
+                    self._append_response(
+                        "\n[Response truncated -- the model ran out of tokens before "
+                        "producing a reply. Increase chat_max_tokens in localwriter.json "
+                        "(current value may be too low for reasoning models).]\n")
                 else:
                     _debug_log(self.ctx, "Tool loop: WARNING - no content and no tool_calls")
                     self._append_response("\n[AI returned empty response]\n")

@@ -344,10 +344,12 @@ class MainJob(unohelper.Base, XJobExecutor):
 
         choice = result.get("choices", [{}])[0]
         message = choice.get("message", {})
+        finish_reason = choice.get("finish_reason")
         return {
             "role": "assistant",
             "content": message.get("content"),
             "tool_calls": message.get("tool_calls"),
+            "finish_reason": finish_reason,
         }
 
     def stream_chat_response(self, messages, max_tokens, append_callback):
