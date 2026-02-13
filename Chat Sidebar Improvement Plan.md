@@ -9,6 +9,8 @@ The chat sidebar has conversation history, tool-calling, and 8 curated Writer do
 - **Reasoning verbosity**: Added `reasoning: { effort: 'minimal' }` to all chat requests (provider-agnostic). Thinking is still displayed for progress; model may remain verbose but no longer wastes tokens arguing with itself about whether it can perform tasks.
 - **Prompt brevity**: "Keep reasoning minimal, then act. Do not repeat conclusions or over-explain." Reduces circular reasoning in thinking output.
 - **Reasoning/thinking tokens**: Streamed and displayed as `[Thinking] ... /thinking` in the response area (progress indicator).
+- **Auto-scroll**: Response area automatically tracks to the bottom during streaming and tool calls.
+- **Undo grouping**: Tool-calling rounds are wrapped in an `UndoManager` context (`AI Edit`), allowing users to revert all AI changes from a single turn with one Ctrl+Z.
 
 Key files:
 - chat_panel.py -- ChatSession (conversation history), SendButtonListener (tool-calling loop), ClearButtonListener, ChatPanelElement/ChatToolPanel/ChatPanelFactory (sidebar plumbing)
@@ -81,11 +83,11 @@ Done:
 - Status label added (shows "Thinking...", "Calling tool_name...", "Streaming response...", etc.)
 - Query field is multiline with vertical scrollbar
 - Response area is multiline with vertical scrollbar and read-only
+- Auto-scroll response area to bottom after each update
 - Conversation turns prefixed with "You:" / "AI:"
 
 TODO:
 - Enter-to-send key listener (requires XKeyListener)
-- Auto-scroll response area to bottom after each update
 - Disable Send button during API call (busy state)
 - FIXME: Dynamic resizing -- panel uses fixed XDL layout (120x180 AppFont). PanelResizeListener was removed because the sidebar gives a large initial height (1375px) before settling, positioning controls off-screen. Needs investigation into sidebar resize lifecycle. See FIXME comments in chat_panel.py.
 
@@ -106,9 +108,9 @@ Done:
 - API errors displayed in the chat panel response area (not modal dialogs)
 - Fallback to simple streaming when api_type is not "chat" (completions-only models)
 - Iteration limit of 10 tool-calling rounds
+- Undo support: wrap tool-calling rounds in UndoManager context (model.getUndoManager().enterUndoContext("AI Edit") / leaveUndoContext()) so user can Ctrl+Z all AI edits as one step
 
 TODO:
-- Undo support: wrap tool-calling rounds in UndoManager context (model.getUndoManager().enterUndoContext("AI Edit") / leaveUndoContext()) so user can Ctrl+Z all AI edits as one step
 - chat_tool_calling config flag to let users disable tool-calling for models that don't support it
 - Better error messages for common failures (network timeout, invalid API key, etc.)
 
@@ -127,11 +129,10 @@ What To Work On Next
 Priority order for remaining work:
 
 1. Test end-to-end: Install extension, open a Writer document, try asking the AI to edit text, replace words, format bold/italic. Verify tool calls work and document is modified.
-2. Undo support (Phase 8): Wrap tool execution in UndoManager context so Ctrl+Z reverts AI edits.
-3. Settings UI (Phase 7): Expose chat_system_prompt, chat_max_tokens, chat_context_length, chat_tool_calling in Settings dialog.
-4. System prompt tuning (Phase 5): Iterate on the default prompt based on real testing.
-5. UI polish (Phase 6 remaining): Enter-to-send, auto-scroll, busy state (disable Send during API call).
-6. Dynamic resize (Phase 6 FIXME): Investigate sidebar resize lifecycle and re-implement PanelResizeListener. See FIXME comments in chat_panel.py.
+2. Settings UI (Phase 7): Expose chat_system_prompt, chat_max_tokens, chat_context_length, chat_tool_calling in Settings dialog.
+3. System prompt tuning (Phase 5): Iterate on the default prompt based on real testing.
+4. UI polish (Phase 6 remaining): Enter-to-send, auto-scroll, busy state (disable Send during API call).
+5. Dynamic resize (Phase 6 FIXME): Investigate sidebar resize lifecycle and re-implement PanelResizeListener. See FIXME comments in chat_panel.py.
 
 
 Advanced Roadmap (Future Phases)
