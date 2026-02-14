@@ -137,6 +137,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
         self.status_control = status_control
         self.session = session
         self.stop_requested = False
+        self._terminal_status = "Ready"
 
     def _set_status(self, text):
         """Update the status field in the sidebar (read-only TextField).
@@ -171,9 +172,6 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 current = self.response_control.getModel().Text or ""
                 self.response_control.getModel().Text = current + text
                 self._scroll_response_to_bottom()
-                toolkit = self.ctx.getServiceManager().createInstanceWithContext(
-                    "com.sun.star.awt.Toolkit", self.ctx)
-                toolkit.processEventsToIdle()
         except Exception:
             pass
 
@@ -194,38 +192,44 @@ class SendButtonListener(unohelper.Base, XActionListener):
         return None
 
     def _set_button_states(self, send_enabled, stop_enabled):
-        """Set Send/Stop button enabled states."""
-        # Button enable/disable functionality is currently not working
-        # This method is kept as a placeholder for future implementation
-        pass
+        """Set Send/Stop button enabled states via control model's Enabled property (UNO standard)."""
+        def set_control_enabled(control, enabled):
+            if control is None:
+                return
+            try:
+                model = control.getModel()
+                if model is not None and hasattr(model, "setPropertyValue"):
+                    model.setPropertyValue("Enabled", bool(enabled))
+                    return
+            except Exception as e1:
+                debug_log(self.ctx, "_set_button_states (model) failed: %s" % e1)
+            try:
+                if hasattr(control, "setEnable"):
+                    control.setEnable(enabled)
+            except Exception as e2:
+                debug_log(self.ctx, "_set_button_states (setEnable) failed: %s" % e2)
+        set_control_enabled(self.send_control, send_enabled)
+        set_control_enabled(self.stop_control, stop_enabled)
 
     def actionPerformed(self, evt):
         from core.logging import log_to_file
-        had_error = False
         try:
             self.stop_requested = False
+            self._terminal_status = "Ready"
             self._set_button_states(send_enabled=False, stop_enabled=True)
             self._do_send()
         except Exception as e:
-            had_error = True
-            self._set_status("Error")
+            self._terminal_status = "Error"
             import traceback
             tb = traceback.format_exc()
             self._append_response("\n\n[Error: %s]\n%s\n" % (str(e), tb))
             debug_log(self.ctx, "SendButton error: %s\n%s" % (e, tb))
         finally:
-            debug_log(self.ctx, "actionPerformed finally: resetting UI (had_error=%s)" % had_error)
-            if not had_error:
-                try:
-                    self._set_status("Ready")
-                    try:
-                        t = self.ctx.getServiceManager().createInstanceWithContext(
-                            "com.sun.star.awt.Toolkit", self.ctx)
-                        t.processEventsToIdle()
-                    except Exception:
-                        pass
-                except Exception as e:
-                    debug_log(self.ctx, "finally: _set_status failed: %s" % e)
+            debug_log(self.ctx, "actionPerformed finally: resetting UI")
+            try:
+                self._set_status(self._terminal_status)
+            except Exception as e:
+                debug_log(self.ctx, "actionPerformed finally: _set_status failed: %s" % e)
             self._set_button_states(send_enabled=True, stop_enabled=False)
             debug_log(self.ctx, "actionPerformed finally: done")
 
@@ -246,7 +250,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
         except Exception as e:
             debug_log(self.ctx, "_do_send: core import FAILED: %s" % e)
             self._append_response("\n[Import error - core: %s]\n" % e)
-            self._set_status("Error")
+            self._terminal_status = "Error"
             return
 
         try:
@@ -256,7 +260,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
         except Exception as e:
             debug_log(self.ctx, "_do_send: document_tools import FAILED: %s" % e)
             self._append_response("\n[Import error - document_tools: %s]\n" % e)
-            self._set_status("Error")
+            self._terminal_status = "Error"
             return
 
         # 1. Get user query
@@ -264,7 +268,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
         if self.query_control and self.query_control.getModel():
             query_text = (self.query_control.getModel().Text or "").strip()
         if not query_text:
-            self._set_status("")
+            self._terminal_status = ""
             return
 
         # Clear the query field
@@ -278,7 +282,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
         if not model:
             debug_log(self.ctx, "_do_send: no Writer document found")
             self._append_response("\n[No Writer document open.]\n")
-            self._set_status("Error")
+            self._terminal_status = "Error"
             return
         debug_log(self.ctx, "_do_send: got document model OK")
 
@@ -329,29 +333,30 @@ class SendButtonListener(unohelper.Base, XActionListener):
         """Run the tool-calling conversation loop. Wraps tool execution in an
         UndoManager context when the document supports it, so the user can undo
         all AI edits with one Ctrl+Z."""
-        undo_manager = None
-        if hasattr(model, "getUndoManager"):
-            try:
-                undo_manager = model.getUndoManager()
-            except Exception as e:
-                debug_log(self.ctx, "getUndoManager failed: %s" % e)
-        if undo_manager:
-            try:
-                undo_manager.enterUndoContext("AI Edit")
-                debug_log(self.ctx, "Undo context entered (AI Edit)")
-            except Exception as e:
-                debug_log(self.ctx, "enterUndoContext failed: %s" % e)
-                undo_manager = None
-
-        try:
-            self._do_tool_calling_loop_impl(client, model, max_tokens, tools, execute_tool_fn)
-        finally:
-            if undo_manager:
-                try:
-                    undo_manager.leaveUndoContext()
-                    debug_log(self.ctx, "Undo context left (AI Edit)")
-                except Exception as e:
-                    debug_log(self.ctx, "leaveUndoContext failed: %s" % e)
+        # Undo context disabled for now (leaveUndoContext was failing in some environments)
+        # undo_manager = None
+        # if hasattr(model, "getUndoManager"):
+        #     try:
+        #         undo_manager = model.getUndoManager()
+        #     except Exception as e:
+        #         debug_log(self.ctx, "getUndoManager failed: %s" % e)
+        # if undo_manager:
+        #     try:
+        #         undo_manager.enterUndoContext("AI Edit")
+        #         debug_log(self.ctx, "Undo context entered (AI Edit)")
+        #     except Exception as e:
+        #         debug_log(self.ctx, "enterUndoContext failed: %s" % e)
+        #         undo_manager = None
+        #
+        # try:
+        self._do_tool_calling_loop_impl(client, model, max_tokens, tools, execute_tool_fn)
+        # finally:
+        #     if undo_manager:
+        #         try:
+        #             undo_manager.leaveUndoContext()
+        #             debug_log(self.ctx, "Undo context left (AI Edit)")
+        #         except Exception as e:
+        #             debug_log(self.ctx, "leaveUndoContext failed: %s" % e)
 
     def _make_stream_callbacks(self, toolkit=None, waiting_for_model=None, thinking_open=None, on_chunk=None):
         """Create append_chunk and append_thinking callbacks for streaming."""
@@ -365,8 +370,6 @@ class SendButtonListener(unohelper.Base, XActionListener):
             self._append_response(content_delta)
             if on_chunk:
                 on_chunk(content_delta)
-            if toolkit:
-                toolkit.processEventsToIdle()
 
         def append_thinking(thinking_text):
             if waiting_for_model and waiting_for_model[0]:
@@ -376,8 +379,6 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 self._append_response("[Thinking] ")
                 thinking_open[0] = True
             self._append_response(thinking_text)
-            if toolkit:
-                toolkit.processEventsToIdle()
 
         return append_chunk, append_thinking
 
@@ -389,10 +390,6 @@ class SendButtonListener(unohelper.Base, XActionListener):
             "com.sun.star.awt.Toolkit", self.ctx)
         for round_num in range(MAX_TOOL_ROUNDS):
             self._set_status("Connecting..." if round_num == 0 else "Connecting (round %d)..." % (round_num + 1))
-            try:
-                toolkit.processEventsToIdle()
-            except Exception:
-                pass
             debug_log(self.ctx, "Tool loop round %d: sending %d messages to API..." %
                         (round_num, len(self.session.messages)))
             waiting_for_model = [True]
@@ -403,12 +400,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
             self._append_response("\nAI: ")
 
             try:
-                # Give a brief moment for 'Connecting' to show, then switch to 'Waiting'
                 self._set_status("Waiting for model...")
-                try:
-                    toolkit.processEventsToIdle()
-                except Exception:
-                    pass
                 log_to_file("Tool loop round %d: calling stream_request_with_tools (next: blocking until API responds)..." % round_num)
                 debug_log(self.ctx, "Tool loop round %d: calling stream_request_with_tools..." % round_num)
                 response = client.stream_request_with_tools(
@@ -419,6 +411,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 )
                 if self.stop_requested:
                     debug_log(self.ctx, "Tool loop round %d: STOPPED" % round_num)
+                    self._terminal_status = "Stopped"
                     return
 
                 debug_log(self.ctx, "Tool loop round %d: got response, content=%s, tool_calls=%s" %
@@ -427,7 +420,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 debug_log(self.ctx, "Tool loop round %d: API ERROR: %s" % (round_num, e))
                 log_to_file("Tool loop round %d: API ERROR: %s" % (round_num, e))
                 self._append_response("\n[API error: %s]\n" % str(e))
-                self._set_status("Error")
+                self._terminal_status = "Error"
                 return
 
             debug_log(self.ctx, "Tool loop round %d: stream_request_with_tools returned." % round_num)
@@ -467,11 +460,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                     debug_log(self.ctx, "Tool loop: WARNING - no content and no tool_calls")
                     self._append_response("\n[AI returned empty response]\n")
                 log_to_file(f"Tool loop: Finished on round {round_num}. Setting status to Ready.")
-                self._set_status("Ready")
-                try:
-                    toolkit.processEventsToIdle()
-                except Exception:
-                    pass
+                self._terminal_status = "Ready"
                 return
 
             # Model wants to call tools
@@ -490,10 +479,6 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 call_id = tc.get("id", "")
 
                 self._set_status("Running: %s" % func_name)
-                try:
-                    toolkit.processEventsToIdle()
-                except Exception:
-                    pass
 
                 try:
                     func_args = json.loads(func_args_str)
@@ -529,10 +514,6 @@ class SendButtonListener(unohelper.Base, XActionListener):
             # (prevents stale "Running: tool_name" during the blocking API call)
             if not self.stop_requested:
                 self._set_status("Sending results to AI...")
-                try:
-                    toolkit.processEventsToIdle()
-                except Exception:
-                    pass
 
             # Continue the loop -- send tool results back to model
 
@@ -558,16 +539,13 @@ class SendButtonListener(unohelper.Base, XActionListener):
             )
             if self.session._last_streamed:
                 self.session.add_assistant_message(content=self.session._last_streamed)
+            self._terminal_status = "Ready"
         except Exception as e:
             self._append_response("[Stream error: %s]\n" % str(e))
+            self._terminal_status = "Error"
         if thinking_open[0]:
             self._append_response(" /thinking")
         self._append_response("\n")
-        self._set_status("Ready")
-        try:
-            toolkit.processEventsToIdle()
-        except Exception:
-            pass
 
     def _do_simple_stream(self, client, max_tokens, api_type):
         """Legacy path: simple streaming without tool-calling."""
@@ -607,12 +585,13 @@ class SendButtonListener(unohelper.Base, XActionListener):
             )
             full_response = "".join(collected)
             self.session.add_assistant_message(content=full_response)
+            self._terminal_status = "Ready"
         except Exception as e:
             self._append_response("[Error: %s]\n" % str(e))
+            self._terminal_status = "Error"
         if thinking_open[0]:
             self._append_response(" /thinking")
         self._append_response("\n")
-        self._set_status("")
 
     def disposing(self, evt):
         pass

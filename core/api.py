@@ -334,10 +334,8 @@ class LlmClient:
                             )
                             if thinking and append_thinking_callback:
                                 append_thinking_callback(thinking)
-                                toolkit.processEventsToIdle()
                             if content:
                                 append_callback(content)
-                                toolkit.processEventsToIdle()
 
                             if finish_reason:
                                 break
@@ -485,10 +483,8 @@ class LlmClient:
 
                     if thinking:
                         append_thinking_callback(thinking)
-                        toolkit.processEventsToIdle()
                     if content:
                         append_callback(content)
-                        toolkit.processEventsToIdle()
 
                     if delta:
                         accumulate_delta(message_snapshot, delta)
