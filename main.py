@@ -33,7 +33,7 @@ USER_AGENT = (
 )
 
 DEFAULT_CHAT_SYSTEM_PROMPT = """You are a document editing assistant integrated into LibreOffice Writer.
-You have tools to read and modify the user's document. USE THEM PROACTIVELY.
+Use the tools to read and modify the user's document as requested.
 
 IMPORTANT RULES:
 - TRANSLATION: You CAN translate. Call get_document_text, translate the content yourself, then replace_text or search_and_replace_all to apply it. NEVER refuse or say you lack a translation tool.
@@ -47,17 +47,15 @@ IMPORTANT RULES:
 DEBUG_LOG_PATH = "/home/keithcu/Desktop/Python/localwriter/.cursor/debug.log"
 
 def log_to_file(message):
-    # Get the user's home directory
-    home_directory = os.path.expanduser('~')
-    
-    # Define the log file path
-    log_file_path = os.path.join(home_directory, 'log.txt')
-    
-    # Set up logging configuration
-    logging.basicConfig(filename=log_file_path, level=logging.INFO, format='%(asctime)s - %(message)s')
-    
-    # Log the input message
-    logging.info(message)
+    try:
+        import datetime
+        home = os.path.expanduser('~')
+        log_path = os.path.join(home, 'log.txt')
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{now} - {message}\n")
+    except Exception:
+        pass
 
 
 # The MainJob is a UNO component derived from unohelper.Base class
@@ -240,21 +238,24 @@ class MainJob(unohelper.Base, XJobExecutor):
         request.get_method = lambda: 'POST'
         return request
 
-    def _extract_thinking_from_delta(self, delta):
+    def _extract_thinking_from_delta(self, chunk_delta):
         """Extract reasoning/thinking text from a stream delta for display in UI."""
-        # OpenRouter / some providers: delta.reasoning_content (string)
-        reasoning = delta.get("reasoning_content") or ""
+        # OpenRouter / some providers: delta.reasoning_content or thought/thinking keys
+        reasoning = (chunk_delta.get("reasoning_content") or 
+                     chunk_delta.get("thought") or 
+                     chunk_delta.get("thinking") or "")
         if isinstance(reasoning, str) and reasoning:
             return reasoning
+        
         # OpenRouter-style: delta.reasoning_details (array of {type, text?, summary?})
-        details = delta.get("reasoning_details")
+        details = chunk_delta.get("reasoning_details")
         if not isinstance(details, list):
             return ""
         parts = []
         for item in details:
             if not isinstance(item, dict):
                 continue
-            if item.get("type") == "reasoning.text":
+            if item.get("type") in ("reasoning.text", "thought", "reasoning"):
                 parts.append(item.get("text") or "")
             elif item.get("type") == "reasoning.summary":
                 parts.append(item.get("summary") or "")
@@ -263,20 +264,33 @@ class MainJob(unohelper.Base, XJobExecutor):
     def extract_content_from_response(self, chunk, api_type="completions"):
         """
         Extract text content and optional thinking from API response chunk.
-        Returns (content, finish_reason, thinking) where thinking may be "".
+        Returns (content, finish_reason, thinking, delta) where thinking may be "".
         """
-        choice = chunk.get("choices", [{}])[0] if chunk.get("choices") else {}
+        choices = chunk.get("choices", [])
+        choice = choices[0] if choices else {}
         delta = choice.get("delta", {})
-        finish_reason = choice.get("finish_reason")
+        
+        # Check finish_reason in choice first, then top-level chunk, then anywhere in choices
+        finish_reason = choice.get("finish_reason") if choice else None
+        if not finish_reason:
+            finish_reason = chunk.get("finish_reason")
+        if not finish_reason and choices:
+            for c in choices:
+                if isinstance(c, dict) and c.get("finish_reason"):
+                    finish_reason = c.get("finish_reason")
+                    break
 
         if api_type == "chat":
             content = (delta.get("content") or "") if delta else ""
         else:
             content = (choice.get("text") or "") if choice else ""
 
+        # Extract thinking from delta or top-level (some models put it outside choices)
         thinking = self._extract_thinking_from_delta(delta) if delta else ""
+        if not thinking:
+            thinking = self._extract_thinking_from_delta(chunk)
 
-        return content, finish_reason, thinking
+        return content, finish_reason, thinking, delta
 
     def get_ssl_context(self):
         """
@@ -484,6 +498,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         append_callback = append_callback or (lambda t: None)
         append_thinking_callback = append_thinking_callback or (lambda t: None)
 
+        log_to_file(f"stream_request_with_tools: Opening URL: {request.full_url}")
         try:
             with urllib.request.urlopen(
                 request, context=ssl_context, timeout=timeout
@@ -499,20 +514,19 @@ class MainJob(unohelper.Base, XJobExecutor):
                         continue
                     payload = line[len(b"data: "):].decode("utf-8").strip()
                     if payload == "[DONE]":
+                        log_to_file("stream_request_with_tools: [DONE] received")
                         break
                     try:
                         chunk = json.loads(payload)
                     except json.JSONDecodeError:
+                        log_to_file(f"stream_request_with_tools: JSON decode error for payload: {payload[:100]}...")
                         continue
-                    choices = chunk.get("choices") or []
-                    if not choices:
-                        continue
-                    choice = choices[0]
-                    delta = choice.get("delta") or {}
 
-                    content, finish_reason, thinking = self.extract_content_from_response(
+                    content, finish_reason, thinking, delta = self.extract_content_from_response(
                         chunk, "chat"
                     )
+                    log_to_file(f"stream_request_with_tools chunk: content={len(content) if content else 0}, thinking={len(thinking) if thinking else 0}, finish={finish_reason}, has_delta={bool(delta)}")
+                    
                     if thinking:
                         append_thinking_callback(thinking)
                         toolkit.processEventsToIdle()
@@ -520,10 +534,15 @@ class MainJob(unohelper.Base, XJobExecutor):
                         append_callback(content)
                         toolkit.processEventsToIdle()
 
-                    accumulate_delta(message_snapshot, delta)
-                    last_finish_reason = choice.get("finish_reason")
+                    if delta:
+                        accumulate_delta(message_snapshot, delta)
+                    
+                    last_finish_reason = finish_reason
                     if last_finish_reason:
+                        log_to_file(f"stream_request_with_tools: Breaking on finish_reason: {last_finish_reason}")
                         break
+                
+                log_to_file("stream_request_with_tools: Response stream closed naturally.")
         except Exception as e:
             err_msg = self._format_error_message(e)
             log_to_file("stream_request_with_tools ERROR: %s -> %s" % (e, err_msg))
@@ -533,6 +552,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         content = self._normalize_message_content(raw_content)
         tool_calls = message_snapshot.get("tool_calls")
 
+        log_to_file(f"stream_request_with_tools: Returning. Content len={len(content) if content else 0}, finish={last_finish_reason}")
         return {
             "role": "assistant",
             "content": content,
@@ -589,10 +609,11 @@ class MainJob(unohelper.Base, XJobExecutor):
                     try:
                         if line.strip() and line.startswith(b"data: "):
                             payload = line[len(b"data: "):].decode("utf-8").strip()
-                            if payload == "[DONE]":
-                                break
-                            chunk = json.loads(payload)
-                            content, finish_reason, thinking = self.extract_content_from_response(
+                            try:
+                                chunk = json.loads(payload)
+                            except json.JSONDecodeError:
+                                continue
+                            content, finish_reason, thinking, _ = self.extract_content_from_response(
                                 chunk, api_type
                             )
                             if thinking and append_thinking_callback:
@@ -601,6 +622,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                             if content:
                                 append_callback(content)
                                 toolkit.processEventsToIdle()
+                            
                             if finish_reason:
                                 break
                     except Exception as e:

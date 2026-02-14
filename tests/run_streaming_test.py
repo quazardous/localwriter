@@ -20,14 +20,15 @@ import urllib.request
 # Add project 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-MODEL = "nvidia/nemotron-3-nano-30b-a3b"
+MODEL = "x-ai/grok-4.1-fast"
 
 from streaming_deltas import accumulate_delta
 from document_tools import WRITER_TOOLS
 
 
 def _extract_thinking(delta):
-    reasoning = delta.get("reasoning_content") or ""
+    # Check common reasoning keys
+    reasoning = delta.get("reasoning_content") or delta.get("thought") or delta.get("thinking") or ""
     if isinstance(reasoning, str) and reasoning:
         return reasoning
     details = delta.get("reasoning_details")
@@ -78,6 +79,7 @@ def run_streaming_with_tools(prompt: str):
         "stream": True,
         "tools": WRITER_TOOLS,
         "tool_choice": "auto",
+        "reasoning": {"effort": "minimal"},
     }
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
 
@@ -119,6 +121,8 @@ def run_streaming_with_tools(prompt: str):
                 if payload == "[DONE]":
                     break
                 try:
+                    # Print raw chunk for debugging field names
+                    print(f"DEBUG CHUNK: {payload}")
                     chunk = json.loads(payload)
                 except json.JSONDecodeError:
                     continue
@@ -129,15 +133,17 @@ def run_streaming_with_tools(prompt: str):
                 delta = choice.get("delta") or {}
 
                 content = (delta.get("content") or "") if delta else ""
-                thinking = _extract_thinking(delta)
-                finish_reason = choice.get("finish_reason")
-
+                thinking = _extract_thinking(delta) or _extract_thinking(chunk)
+                finish_reason = choice.get("finish_reason") or chunk.get("finish_reason")
+                
                 if thinking:
                     on_thinking(thinking)
                 if content:
                     on_content(content)
 
-                accumulate_delta(message_snapshot, delta)
+                if delta:
+                    accumulate_delta(message_snapshot, delta)
+                
                 last_finish_reason = finish_reason
                 if last_finish_reason:
                     break

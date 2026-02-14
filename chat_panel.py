@@ -233,6 +233,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
         return None
 
     def actionPerformed(self, evt):
+        from main import log_to_file
         try:
             self.stop_requested = False
             if self.send_control:
@@ -248,6 +249,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
             _debug_log(self.ctx, "SendButton error: %s\n%s" % (e, tb))
         finally:
             try:
+                log_to_file("actionPerformed: finally block - re-enabling send button")
                 if self.send_control:
                     self.send_control.setEnable(True)
                 if self.stop_control:
@@ -343,6 +345,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
         if self.stop_requested:
             self._append_response("\n[Stopped by user]\n")
 
+        log_to_file("=== _do_send END ===")
         _debug_log(self.ctx, "=== _do_send END ===")
 
     def _do_tool_calling_loop(self, job, model, max_tokens, tools, execute_tool_fn):
@@ -375,6 +378,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
     def _do_tool_calling_loop_impl(self, job, model, max_tokens, tools, execute_tool_fn):
         """Inner implementation of the tool-calling loop (without undo wrapper)."""
+        from main import MainJob, log_to_file
         _debug_log(self.ctx, "=== Tool-calling loop START (max %d rounds) ===" % MAX_TOOL_ROUNDS)
         for round_num in range(MAX_TOOL_ROUNDS):
             self._set_status("Connecting..." if round_num == 0 else "Connecting (round %d)..." % (round_num + 1))
@@ -427,9 +431,13 @@ class SendButtonListener(unohelper.Base, XActionListener):
                             (round_num, bool(response.get("content")), bool(response.get("tool_calls"))))
             except Exception as e:
                 _debug_log(self.ctx, "Tool loop round %d: API ERROR: %s" % (round_num, e))
+                log_to_file("Tool loop round %d: API ERROR: %s" % (round_num, e))
                 self._append_response("\n[API error: %s]\n" % str(e))
                 self._set_status("Error")
                 return
+
+            _debug_log(self.ctx, "Tool loop round %d: stream_request_with_tools returned." % round_num)
+            log_to_file("Tool loop round %d: stream_request_with_tools returned." % round_num)
 
             if thinking_open[0]:
                 self._append_response(" /thinking")
@@ -449,6 +457,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 # No tool calls -- this is the final text response (content was already streamed)
                 _debug_log(self.ctx, "Tool loop: final text response (no tool calls), finish_reason=%s" % finish_reason)
                 if content:
+                    log_to_file("Tool loop: Adding assistant message to session")
                     self.session.add_assistant_message(content=content)
                     self._append_response("\n")
                 elif finish_reason == "length":
@@ -460,7 +469,8 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 else:
                     _debug_log(self.ctx, "Tool loop: WARNING - no content and no tool_calls")
                     self._append_response("\n[AI returned empty response]\n")
-                self._set_status("")
+                log_to_file(f"Tool loop: Finished on round {round_num}. Setting status to Ready.")
+                self._set_status("Ready")
                 return
 
             # Model wants to call tools
