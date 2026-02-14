@@ -32,17 +32,21 @@ USER_AGENT = (
     'Chrome/114.0.0.0 Safari/537.36'
 )
 
-DEFAULT_CHAT_SYSTEM_PROMPT = """You are a document editing assistant integrated into LibreOffice Writer.
-You have tools to read and modify the user's document. USE THEM PROACTIVELY.
+DEFAULT_CHAT_SYSTEM_PROMPT = """You are a document editing assistant for LibreOffice Writer.
+YOU ARE THE EDITOR AND TRANSLATOR. Use your internal knowledge to process text.
+Use the tools to change the document as requested.
 
-IMPORTANT RULES:
-- TRANSLATION: You CAN translate. Call get_document_text, translate the content yourself, then replace_text or search_and_replace_all to apply it. NEVER refuse or say you lack a translation tool.
-- For edit, rewrite, or transform requests: call get_document_text, then use replace_text or search_and_replace_all. You produce the new text; the tools apply it.
-- For questions about the document: call get_document_text first, then answer.
-- Only answer without tools for general questions unrelated to the document.
-- Be concise. Do NOT write long reasoning chains, step-by-step plans, or repeated conclusions. Think briefly and act: call tools directly. Avoid phrases like 'Thus we need to...' or re-explaining the obvious.
-- After making edits, briefly confirm what you changed (one sentence).
-- Do not make changes the user did not ask for."""
+FAST WORKFLOW:
+1. Fetch: Call get_document_text().
+2. Process: Use translate_text() for translations; otherwise use internal knowledge.
+3. Apply: Use replace_text(search, replacement, all_matches=True) to update the document.
+
+RULES:
+- INTERNAL KNOWLEDGE: Use your own linguistic skills for general creative tasks.
+- NO PREAMBLE: Do not explain what you are going to do. Proceed to tool calls immediately.
+- CONCISE: Think briefly only to select the correct tools. Do not output long reasoning chains or conversational filler.
+- CONFIRM: After edits, provide a one-sentence confirmation of what was changed.
+- TRANSLATION: You MUST translate when asked. Fetch text, call translate_text(text, language), then apply it. Never refuse."""
 
 # Use workspace path so logs are readable when extension runs from LibreOffice install
 DEBUG_LOG_PATH = "/home/keithcu/Desktop/Python/localwriter/.cursor/debug.log"
@@ -313,6 +317,36 @@ class MainJob(unohelper.Base, XJobExecutor):
         except Exception:
             pass  # Fallback: if dialog fails, at least we don't crash
 
+    def _format_error_message(self, e):
+        """Map common exceptions to user-friendly advice."""
+        import urllib.error
+        import socket
+        
+        msg = str(e)
+        if isinstance(e, urllib.error.HTTPError):
+            if e.code == 401:
+                return "Invalid API Key. Please check your settings."
+            if e.code == 403:
+                return "API access Forbidden. Your key may lack permissions for this model."
+            if e.code == 404:
+                return "Endpoint not found (404). Check your URL and Model name."
+            if e.code >= 500:
+                return "Server error (%d). The AI provider is having issues." % e.code
+            return "HTTP Error %d: %s" % (e.code, e.reason)
+        
+        if isinstance(e, urllib.error.URLError):
+            reason = str(e.reason)
+            if "Connection refused" in reason or "111" in reason:
+                return "Connection Refused. Is your local AI server (Ollama/LM Studio) running?"
+            if "getaddrinfo failed" in reason:
+                return "DNS Error. Could not resolve the endpoint URL."
+            return "Connection Error: %s" % reason
+            
+        if isinstance(e, socket.timeout) or "timed out" in msg.lower():
+            return "Request Timed Out. Try increasing 'Request Timeout' in Settings."
+            
+        return msg
+
     def stream_completion(self, prompt, system_prompt, max_tokens, api_type, append_callback,
                           append_thinking_callback=None):
         """Single entry point for streaming completions. Raises on error."""
@@ -401,9 +435,14 @@ class MainJob(unohelper.Base, XJobExecutor):
         ssl_context = self.get_ssl_context()
         timeout = self._get_request_timeout()
 
-        with urllib.request.urlopen(request, context=ssl_context, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
-            result = json.loads(body)
+        try:
+            with urllib.request.urlopen(request, context=ssl_context, timeout=timeout) as response:
+                body = response.read().decode("utf-8")
+                result = json.loads(body)
+        except Exception as e:
+            err_msg = self._format_error_message(e)
+            log_to_file("request_with_tools ERROR: %s -> %s" % (e, err_msg))
+            raise Exception(err_msg)
 
         log_to_file("=== Tool response: %s" % json.dumps(result, indent=2))
 
@@ -429,11 +468,13 @@ class MainJob(unohelper.Base, XJobExecutor):
         tools=None,
         append_callback=None,
         append_thinking_callback=None,
+        stop_checker=None,
     ):
         """
         Streaming chat request with tools. Accumulates deltas into a full message,
         calls append_callback(content_delta) and append_thinking_callback(thinking) as chunks arrive,
         then returns the same shape as request_with_tools so the tool loop can run tools.
+        Optional stop_checker() callback can return True to abort the stream.
         """
         request = self.make_chat_request(messages, max_tokens, tools=tools, stream=True)
         toolkit = self.ctx.getServiceManager().createInstanceWithContext(
@@ -453,6 +494,12 @@ class MainJob(unohelper.Base, XJobExecutor):
                 request, context=ssl_context, timeout=timeout
             ) as response:
                 for line in response:
+                    # Check for stop request
+                    if stop_checker and stop_checker():
+                        log_to_file("stream_request_with_tools: Stop requested by user.")
+                        last_finish_reason = "stop"
+                        break
+
                     if not line.strip() or not line.startswith(b"data: "):
                         continue
                     payload = line[len(b"data: "):].decode("utf-8").strip()
@@ -483,8 +530,9 @@ class MainJob(unohelper.Base, XJobExecutor):
                     if last_finish_reason:
                         break
         except Exception as e:
-            log_to_file("stream_request_with_tools ERROR: %s" % e)
-            raise
+            err_msg = self._format_error_message(e)
+            log_to_file("stream_request_with_tools ERROR: %s -> %s" % (e, err_msg))
+            raise Exception(err_msg)
 
         raw_content = message_snapshot.get("content")
         content = self._normalize_message_content(raw_content)
@@ -497,10 +545,10 @@ class MainJob(unohelper.Base, XJobExecutor):
             "finish_reason": last_finish_reason,
         }
 
-    def stream_chat_response(self, messages, max_tokens, append_callback, append_thinking_callback=None):
+    def stream_chat_response(self, messages, max_tokens, append_callback, append_thinking_callback=None, stop_checker=None):
         """Stream a final chat response (no tools) using the messages array."""
         request = self.make_chat_request(messages, max_tokens, tools=None, stream=True)
-        self.stream_request(request, "chat", append_callback, append_thinking_callback)
+        self.stream_request(request, "chat", append_callback, append_thinking_callback, stop_checker=stop_checker)
 
     def get_full_document_text(self, model, max_chars=8000):
         """Get full document text for Writer, truncated to max_chars."""
@@ -516,10 +564,11 @@ class MainJob(unohelper.Base, XJobExecutor):
         except Exception:
             return ""
 
-    def stream_request(self, request, api_type, append_callback, append_thinking_callback=None):
+    def stream_request(self, request, api_type, append_callback, append_thinking_callback=None, stop_checker=None):
         """
         Stream a completion/chat response and append incremental chunks via callbacks.
         Optional append_thinking_callback receives reasoning/thinking text when present.
+        Optional stop_checker() callback can return True to abort the stream.
         """
         toolkit = self.ctx.getServiceManager().createInstanceWithContext(
             "com.sun.star.awt.Toolkit", self.ctx
@@ -537,6 +586,11 @@ class MainJob(unohelper.Base, XJobExecutor):
                 log_to_file(f"Response headers: {response.headers}")
                 
                 for line in response:
+                    # Check for stop request
+                    if stop_checker and stop_checker():
+                        log_to_file("stream_request: Stop requested by user.")
+                        break
+
                     try:
                         if line.strip() and line.startswith(b"data: "):
                             payload = line[len(b"data: "):].decode("utf-8").strip()
@@ -558,8 +612,9 @@ class MainJob(unohelper.Base, XJobExecutor):
                         log_to_file(f"Error processing line: {str(e)}")
                         raise
         except Exception as e:
-            log_to_file(f"ERROR in stream_request: {str(e)}")
-            raise
+            err_msg = self._format_error_message(e)
+            log_to_file("ERROR in stream_request: %s -> %s" % (e, err_msg))
+            raise Exception(err_msg)
 
     def input_box(self, message, title="", default="", x=None, y=None):
         """ Shows input dialog (EditInputDialog.xdl). Returns edit text if OK, else "". """
@@ -615,6 +670,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             {"name": "chat_max_tokens", "value": str(self.get_config("chat_max_tokens", "16384")), "type": "int"},
             {"name": "chat_context_length", "value": str(self.get_config("chat_context_length", "8000")), "type": "int"},
             {"name": "chat_system_prompt", "value": str(self.get_config("chat_system_prompt", "") or DEFAULT_CHAT_SYSTEM_PROMPT)},
+            {"name": "request_timeout", "value": str(self.get_config("request_timeout", "120")), "type": "int"},
         ]
 
         pip = ctx.getValueByName("/singletons/com.sun.star.deployment.PackageInformationProvider")
@@ -865,6 +921,9 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                     if "chat_system_prompt" in result:
                         self.set_config("chat_system_prompt", result["chat_system_prompt"])
+
+                    if "request_timeout" in result:
+                        self.set_config("request_timeout", result["request_timeout"])
 
 
                 except Exception as e:

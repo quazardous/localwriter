@@ -11,7 +11,7 @@
 - **Extend Selection** (Ctrl+Q): Model continues the selected text
 - **Edit Selection** (Ctrl+E): User enters instructions; model rewrites the selection
 - **Chat with Document**: (a) **Sidebar panel** (Writer): LocalWriter deck in the right sidebar, multi-turn chat with tool-calling that edits the document; (b) **Menu item** (fallback): Opens input dialog, appends response to end of document
-- **Settings**: Configure endpoint, model, API key, temperature, etc.
+- **Settings**: Configure endpoint, model, API key, temperature, request timeout, etc.
 - **Calc** `=PROMPT()`: Cell formula that calls the model
 
 Config is stored in `localwriter.json` in LibreOffice's user config directory. See `CONFIG_EXAMPLES.md` for examples (Ollama, OpenWebUI, OpenRouter, etc.).
@@ -77,8 +77,9 @@ localwriter/
 
 ## 3b. Chat with Document (Sidebar + Menu)
 
-- **Sidebar panel**: LocalWriter deck in Writer's right sidebar; panel has Response area, Ask field, Send button.
+- **Sidebar panel**: LocalWriter deck in Writer's right sidebar; panel has Response area, Ask field, Send button, Stop button, and Clear button.
   - **Auto-scroll**: The response area automatically scrolls to the bottom as text is streamed or tools are called, ensuring the latest AI output is always visible.
+  - **Stop button**: A dedicated "Stop" button allows users to halt AI generation mid-stream. It is enabled only while the AI is active and disabled when idle.
   - **Undo grouping**: AI edits performed during tool-calling rounds are grouped into a single undo context ("AI Edit"). Users can revert all changes from an AI turn with a single Ctrl+Z.
   - **Send button disable**: The Send button is programmatically disabled via `setEnable(False)` when the tool-calling loop starts and re-enabled in a `finally` block when done. This prevents multiple concurrent requests.
 - **Implementation**: `chat_panel.py` (ChatPanelFactory, ChatPanelElement, ChatToolPanel); `ContainerWindowProvider` + `ChatPanelDialog.xdl`; `setVisible(True)` required after `createContainerWindow()`.
@@ -88,9 +89,9 @@ localwriter/
 
 ### System prompt and reasoning (latest)
 
-- **DEFAULT_SYSTEM_PROMPT** in `chat_panel.py` instructs the model to: (1) use tools proactively; (2) for translate/edit/rewrite: call `get_document_text`, produce the new text, then `replace_text` or `search_and_replace_all` — never refuse translation; (3) keep reasoning minimal and act; (4) confirm edits briefly.
-- **Reasoning tokens**: `main.py` sends `reasoning: { effort: 'minimal' }` on all chat requests (OpenRouter and other providers). Providers that support it allocate fewer tokens for thinking; others ignore the param.
-- **Thinking display**: Reasoning/thinking tokens are streamed and shown in the response area as `[Thinking] ... /thinking` so users see progress. The model can still be verbose; `effort: 'minimal'` helps but does not eliminate it.
+- **DEFAULT_CHAT_SYSTEM_PROMPT** in `main.py` (imported by `chat_panel.py`) instructs the model to: (1) use tools proactively; (2) use internal linguistic knowledge for translate/proofread/edit; (3) for translate: call `get_document_text`, translate internally, then apply via tools — NEVER refuse translation; (4) keep reasoning minimal and act; (5) confirm edits briefly.
+- **Reasoning tokens**: `main.py` sends `reasoning: { effort: 'minimal' }` on all chat requests (OpenRouter and other providers).
+- **Thinking display**: Reasoning tokens are shown in the response area as `[Thinking] ... /thinking`.
 
 See [CHAT_SIDEBAR_IMPLEMENTATION.md](CHAT_SIDEBAR_IMPLEMENTATION.md) for implementation details.
 

@@ -167,14 +167,16 @@ class ChatSession:
 class SendButtonListener(unohelper.Base, XActionListener):
     """Listener for the Send button - runs chat with document, supports tool-calling."""
 
-    def __init__(self, ctx, frame, send_control, query_control, response_control, status_control, session):
+    def __init__(self, ctx, frame, send_control, stop_control, query_control, response_control, status_control, session):
         self.ctx = ctx
         self.frame = frame
         self.send_control = send_control
+        self.stop_control = stop_control
         self.query_control = query_control
         self.response_control = response_control
         self.status_control = status_control
         self.session = session
+        self.stop_requested = False
 
     def _set_status(self, text):
         """Update the status label in the sidebar."""
@@ -232,8 +234,11 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
     def actionPerformed(self, evt):
         try:
+            self.stop_requested = False
             if self.send_control:
                 self.send_control.setEnable(False)
+            if self.stop_control:
+                self.stop_control.setEnable(True)
             self._do_send()
         except Exception as e:
             self._set_status("Error")
@@ -245,6 +250,8 @@ class SendButtonListener(unohelper.Base, XActionListener):
             try:
                 if self.send_control:
                     self.send_control.setEnable(True)
+                if self.stop_control:
+                    self.stop_control.setEnable(False)
             except Exception:
                 pass
 
@@ -323,7 +330,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
         self._append_response("\nYou: %s\n" % query_text)
         _debug_log(self.ctx, "_do_send: user query='%s'" % query_text[:100])
 
-        self._set_status("Sending to AI (api_type=%s, tools=%s)..." % (api_type, use_tools))
+        self._set_status("Connecting to AI (api_type=%s, tools=%s)..." % (api_type, use_tools))
         _debug_log(self.ctx, "_do_send: calling AI, use_tools=%s, messages=%d" %
                     (use_tools, len(self.session.messages)))
 
@@ -332,6 +339,9 @@ class SendButtonListener(unohelper.Base, XActionListener):
         else:
             # Legacy path: simple streaming without tools
             self._do_simple_stream(job, max_tokens, api_type)
+
+        if self.stop_requested:
+            self._append_response("\n[Stopped by user]\n")
 
         _debug_log(self.ctx, "=== _do_send END ===")
 
@@ -367,13 +377,18 @@ class SendButtonListener(unohelper.Base, XActionListener):
         """Inner implementation of the tool-calling loop (without undo wrapper)."""
         _debug_log(self.ctx, "=== Tool-calling loop START (max %d rounds) ===" % MAX_TOOL_ROUNDS)
         for round_num in range(MAX_TOOL_ROUNDS):
-            self._set_status("Thinking..." if round_num == 0 else "Thinking (round %d)..." % (round_num + 1))
+            self._set_status("Connecting..." if round_num == 0 else "Connecting (round %d)..." % (round_num + 1))
             _debug_log(self.ctx, "Tool loop round %d: sending %d messages to API..." %
                         (round_num, len(self.session.messages)))
+            
+            waiting_for_model = [True]
 
             thinking_open = [False]
 
             def append_chunk(content_delta):
+                if waiting_for_model[0]:
+                    self._set_status("Receiving response...")
+                    waiting_for_model[0] = False
                 if thinking_open[0]:
                     self._append_response(" /thinking")
                     thinking_open[0] = False
@@ -381,6 +396,9 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 toolkit.processEventsToIdle()
 
             def append_thinking(thinking_text):
+                if waiting_for_model[0]:
+                    self._set_status("Receiving response...")
+                    waiting_for_model[0] = False
                 if not thinking_open[0]:
                     self._append_response("[Thinking] ")
                     thinking_open[0] = True
@@ -393,11 +411,18 @@ class SendButtonListener(unohelper.Base, XActionListener):
             self._append_response("\nAI: ")
 
             try:
+                # Give a brief moment for 'Connecting' to show, then switch to 'Waiting'
+                self._set_status("Waiting for model...")
                 response = job.stream_request_with_tools(
                     self.session.messages, max_tokens, tools=tools,
                     append_callback=append_chunk,
                     append_thinking_callback=append_thinking,
+                    stop_checker=lambda: self.stop_requested
                 )
+                if self.stop_requested:
+                    _debug_log(self.ctx, "Tool loop round %d: STOPPED" % round_num)
+                    return
+
                 _debug_log(self.ctx, "Tool loop round %d: got response, content=%s, tool_calls=%s" %
                             (round_num, bool(response.get("content")), bool(response.get("tool_calls"))))
             except Exception as e:
@@ -446,6 +471,9 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 self._append_response("\n")
 
             for tc in tool_calls:
+                if self.stop_requested:
+                    break
+
                 func_name = tc.get("function", {}).get("name", "unknown")
                 func_args_str = tc.get("function", {}).get("arguments", "{}")
                 call_id = tc.get("id", "")
@@ -467,7 +495,37 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 _debug_log(self.ctx, "Tool call: %s(%s)" % (func_name, func_args_str))
 
                 # Execute the tool
-                result = execute_tool_fn(func_name, func_args, model, self.ctx)
+                if func_name == "translate_text":
+                    self._set_status("Translating...")
+                    text_to_translate = func_args.get("text", "")
+                    target_lang = func_args.get("language", "English")
+                    
+                    _debug_log(self.ctx, "Sub-agent translation: lang=%s, text_len=%d" % (target_lang, len(text_to_translate)))
+                    
+                    sub_messages = [
+                        {"role": "system", "content": "You are a professional translator. Translate the text provided by the user into %s. Output ONLY the translated text, no preamble or explanation." % target_lang},
+                        {"role": "user", "content": text_to_translate}
+                    ]
+                    
+                    translation_chunks = []
+                    def _collect_sub(chunk):
+                        translation_chunks.append(chunk)
+
+                    try:
+                        # Use a separate streaming call without tools for the translation itself
+                        job.stream_chat_response(sub_messages, max_tokens, _collect_sub)
+                        translated_text = "".join(translation_chunks)
+                        result = json.dumps({
+                            "status": "ok", 
+                            "translation": translated_text, 
+                            "message": "Translated %d chars to %s" % (len(text_to_translate), target_lang)
+                        })
+                        _debug_log(self.ctx, "Sub-agent translation OK: result_len=%d" % len(translated_text))
+                    except Exception as e:
+                        result = json.dumps({"status": "error", "message": str(e)})
+                        _debug_log(self.ctx, "Sub-agent translation ERROR: %s" % e)
+                else:
+                    result = execute_tool_fn(func_name, func_args, model, self.ctx)
 
                 _debug_log(self.ctx, "Tool result: %s" % result)
 
@@ -509,7 +567,8 @@ class SendButtonListener(unohelper.Base, XActionListener):
         self.session._last_streamed = ""
         try:
             job.stream_chat_response(
-                self.session.messages, max_tokens, append_chunk, append_thinking
+                self.session.messages, max_tokens, append_chunk, append_thinking,
+                stop_checker=lambda: self.stop_requested
             )
             if self.session._last_streamed:
                 self.session.add_assistant_message(content=self.session._last_streamed)
@@ -523,8 +582,10 @@ class SendButtonListener(unohelper.Base, XActionListener):
     def _do_simple_stream(self, job, max_tokens, api_type):
         """Legacy path: simple streaming without tool-calling."""
         _debug_log(self.ctx, "=== Simple stream START (api_type=%s) ===" % api_type)
-        self._set_status("Thinking...")
+        self._set_status("Waiting for model...")
         self._append_response("\nAI: ")
+        
+        waiting_for_model = [True]
 
         # Build a simple prompt from the last user message and doc context
         last_user = ""
@@ -546,6 +607,9 @@ class SendButtonListener(unohelper.Base, XActionListener):
         thinking_open = [False]
 
         def append_chunk(chunk_text):
+            if waiting_for_model[0]:
+                self._set_status("Receiving response...")
+                waiting_for_model[0] = False
             if thinking_open[0]:
                 self._append_response(" /thinking")
                 thinking_open[0] = False
@@ -553,6 +617,9 @@ class SendButtonListener(unohelper.Base, XActionListener):
             collected.append(chunk_text)
 
         def append_thinking(thinking_text):
+            if waiting_for_model[0]:
+                self._set_status("Receiving response...")
+                waiting_for_model[0] = False
             if not thinking_open[0]:
                 self._append_response("[Thinking] ")
                 thinking_open[0] = True
@@ -562,6 +629,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
             job.stream_completion(
                 prompt, system_prompt, max_tokens, api_type, append_chunk,
                 append_thinking_callback=append_thinking,
+                stop_checker=lambda: self.stop_requested
             )
             full_response = "".join(collected)
             self.session.add_assistant_message(content=full_response)
@@ -571,6 +639,29 @@ class SendButtonListener(unohelper.Base, XActionListener):
             self._append_response(" /thinking")
         self._append_response("\n")
         self._set_status("")
+
+    def disposing(self, evt):
+        pass
+
+
+# ---------------------------------------------------------------------------
+# StopButtonListener - allows user to cancel the AI request
+# ---------------------------------------------------------------------------
+
+class StopButtonListener(unohelper.Base, XActionListener):
+    """Listener for the Stop button - sets a flag in SendButtonListener to halt loops."""
+
+    def __init__(self, send_listener):
+        self.send_listener = send_listener
+
+    def actionPerformed(self, evt):
+        if self.send_listener:
+            self.send_listener.stop_requested = True
+            # Update status immediately
+            try:
+                self.send_listener._set_status("Stopping...")
+            except Exception:
+                pass
 
     def disposing(self, evt):
         pass
@@ -740,17 +831,24 @@ class ChatPanelElement(unohelper.Base, XUIElement):
 
         # Wire Send button
         try:
-            send_btn.addActionListener(SendButtonListener(
-                self.ctx, self.xFrame, send_btn, query_ctrl, response_ctrl,
-                status_ctrl, self.session))
+            stop_btn = root_window.getControl("stop")
+            send_listener = SendButtonListener(
+                self.ctx, self.xFrame, send_btn, stop_btn, query_ctrl, response_ctrl,
+                status_ctrl, self.session)
+            send_btn.addActionListener(send_listener)
             _debug_log(self.ctx, "Send button wired")
+            
+            if stop_btn:
+                stop_btn.addActionListener(StopButtonListener(send_listener))
+                stop_btn.setEnable(False)  # Disabled until Send is clicked
+                _debug_log(self.ctx, "Stop button wired")
         except Exception as e:
-            _show_init_error("Send button: %s" % e)
+            _show_init_error("Send/Stop button: %s" % e)
 
         # Show ready message
         try:
             if response_ctrl and response_ctrl.getModel():
-                response_ctrl.getModel().Text = "Ready. Type a message and click Send.\n"
+                response_ctrl.getModel().Text = "Ready. I can edit or translate your document instantly. Try me!\n"
         except Exception:
             pass
 

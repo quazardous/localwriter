@@ -14,28 +14,13 @@ WRITER_TOOLS = [
         "type": "function",
         "function": {
             "name": "replace_text",
-            "description": "Find the first occurrence of 'search' text in the document and replace it with 'replacement' text.",
+            "description": "Find text in the document and replace it with new text.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "search": {"type": "string", "description": "Exact text to find in the document"},
-                    "replacement": {"type": "string", "description": "Text to replace it with"}
-                },
-                "required": ["search", "replacement"],
-                "additionalProperties": False
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_and_replace_all",
-            "description": "Replace ALL occurrences of a search string in the document.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "search": {"type": "string", "description": "Text to find (all occurrences)"},
+                    "search": {"type": "string", "description": "Exact text to find and replace"},
                     "replacement": {"type": "string", "description": "Replacement text"},
+                    "all_matches": {"type": "boolean", "description": "Replace ALL occurrences (true) or just the first (false). Default false."},
                     "case_sensitive": {"type": "boolean", "description": "Whether the search is case-sensitive. Default true."}
                 },
                 "required": ["search", "replacement"],
@@ -47,15 +32,15 @@ WRITER_TOOLS = [
         "type": "function",
         "function": {
             "name": "insert_text",
-            "description": "Insert text at a specific position in the document.",
+            "description": "Insert text at the beginning or end of the document.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "text": {"type": "string", "description": "The text to insert"},
                     "position": {
                         "type": "string",
-                        "enum": ["beginning", "end", "before_selection", "after_selection"],
-                        "description": "Where to insert: 'beginning' or 'end' of document, or 'before_selection'/'after_selection' relative to the current cursor selection"
+                        "enum": ["beginning", "end"],
+                        "description": "Where to insert: 'beginning' or 'end' of document"
                     }
                 },
                 "required": ["text", "position"],
@@ -142,6 +127,22 @@ WRITER_TOOLS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "translate_text",
+            "description": "Translate a block of text into another language using your internal linguistic knowledge.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The text content to translate"},
+                    "language": {"type": "string", "description": "Target language (e.g., 'Finnish', 'French')"}
+                },
+                "required": ["text", "language"],
+                "additionalProperties": False
+            }
+        }
+    },
 ]
 
 
@@ -153,58 +154,45 @@ WRITER_TOOLS = [
 # ---------------------------------------------------------------------------
 
 def tool_replace_text(model, ctx, args):
-    """Find first occurrence and replace."""
-    sd = model.createSearchDescriptor()
-    sd.SearchString = args["search"]
-    sd.SearchRegularExpression = False
-    sd.SearchCaseSensitive = True
-    found = model.findFirst(sd)
-    if found:
-        found.setString(args["replacement"])
-        return json.dumps({"status": "ok", "message": "Replaced 1 occurrence."})
-    return json.dumps({"status": "not_found", "message": "Text not found in document."})
-
-
-def tool_search_and_replace_all(model, ctx, args):
-    """Replace all occurrences."""
-    rd = model.createReplaceDescriptor()
-    rd.SearchString = args["search"]
-    rd.ReplaceString = args["replacement"]
-    rd.SearchCaseSensitive = args.get("case_sensitive", True)
-    rd.SearchRegularExpression = False
-    count = model.replaceAll(rd)
-    return json.dumps({"status": "ok", "message": "Replaced %d occurrence(s)." % count})
+    """Replace one or all occurrences."""
+    all_matches = args.get("all_matches", False)
+    case_sensitive = args.get("case_sensitive", True)
+    
+    if all_matches:
+        rd = model.createReplaceDescriptor()
+        rd.SearchString = args["search"]
+        rd.ReplaceString = args["replacement"]
+        rd.SearchCaseSensitive = case_sensitive
+        rd.SearchRegularExpression = False
+        count = model.replaceAll(rd)
+        return json.dumps({"status": "ok", "message": "Replaced %d occurrence(s)." % count})
+    else:
+        sd = model.createSearchDescriptor()
+        sd.SearchString = args["search"]
+        sd.SearchRegularExpression = False
+        sd.SearchCaseSensitive = case_sensitive
+        found = model.findFirst(sd)
+        if found:
+            found.setString(args["replacement"])
+            return json.dumps({"status": "ok", "message": "Replaced 1 occurrence."})
+        return json.dumps({"status": "not_found", "message": "Text not found in document."})
 
 
 def tool_insert_text(model, ctx, args):
-    """Insert text at a position."""
+    """Insert text at beginning or end."""
     text_obj = model.getText()
     position = args["position"]
     insert_str = args["text"]
 
+    cursor = text_obj.createTextCursor()
     if position == "beginning":
-        cursor = text_obj.createTextCursor()
         cursor.gotoStart(False)
-        text_obj.insertString(cursor, insert_str, False)
     elif position == "end":
-        cursor = text_obj.createTextCursor()
         cursor.gotoEnd(False)
-        text_obj.insertString(cursor, insert_str, False)
-    elif position in ("before_selection", "after_selection"):
-        sel = model.getCurrentController().getSelection()
-        if sel and sel.getCount() > 0:
-            rng = sel.getByIndex(0)
-            anchor = rng.getStart() if position == "before_selection" else rng.getEnd()
-            cursor = text_obj.createTextCursorByRange(anchor)
-            text_obj.insertString(cursor, insert_str, False)
-        else:
-            # No selection -- fall back to end of document
-            cursor = text_obj.createTextCursor()
-            cursor.gotoEnd(False)
-            text_obj.insertString(cursor, insert_str, False)
     else:
         return json.dumps({"status": "error", "message": "Unknown position: %s" % position})
 
+    text_obj.insertString(cursor, insert_str, False)
     return json.dumps({"status": "ok", "message": "Inserted text at %s." % position})
 
 
@@ -330,7 +318,6 @@ def tool_get_document_text(model, ctx, args):
 
 TOOL_DISPATCH = {
     "replace_text": tool_replace_text,
-    "search_and_replace_all": tool_search_and_replace_all,
     "insert_text": tool_insert_text,
     "get_selection": tool_get_selection,
     "replace_selection": tool_replace_selection,
