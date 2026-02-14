@@ -133,10 +133,9 @@ class PromptFunction(unohelper.Base, XPromptFunction):
                 client = LlmClient(config, self.ctx)
                 return client.chat_completion_sync(messages, max_tokens=max_tokens)
             except Exception as e:
-                from core.api import format_error_message
-                err_msg = format_error_message(e)
-                debug_log("PROMPT error: %s" % err_msg)
-                return "Error: %s" % err_msg
+                from core.api import format_error_for_display
+                debug_log("PROMPT error: %s" % str(e))
+                return format_error_for_display(e)
         return ""
 
     # XServiceInfo implementation

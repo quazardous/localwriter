@@ -42,6 +42,11 @@ def format_error_message(e):
     return msg
 
 
+def format_error_for_display(e):
+    """Return user-friendly error string for display in cells or dialogs."""
+    return "Error: %s" % format_error_message(e)
+
+
 def _get_ssl_context():
     """Create an SSL context that doesn't verify certificates."""
     ssl_context = ssl.create_default_context()

@@ -3,9 +3,17 @@
 # XUIElement wrapper creates panel in getRealInterface() via ContainerWindowProvider + XDL.
 
 import os
+import sys
 import json
 import uno
 import unohelper
+
+# Ensure extension directory is on path so core can be imported
+_ext_dir = os.path.dirname(os.path.abspath(__file__))
+if _ext_dir not in sys.path:
+    sys.path.insert(0, _ext_dir)
+
+from core.logging import agent_log, debug_log
 
 from com.sun.star.ui import XUIElementFactory, XUIElement, XToolPanel, XSidebarPanel
 from com.sun.star.ui.UIElementType import TOOLPANEL
@@ -18,56 +26,8 @@ XDL_PATH = "LocalWriterDialogs/ChatPanelDialog.xdl"
 # Maximum tool-calling round-trips before giving up
 MAX_TOOL_ROUNDS = 5
 
-# Agent debug log (NDJSON) for this session
-_AGENT_DEBUG_LOG_PATH = "/home/keithcu/Desktop/Python/localwriter/.cursor/debug.log"
-
-
-def _agent_log(location, message, data=None, hypothesis_id=None, run_id=None):
-    # #region agent log
-    import time
-    payload = {"location": location, "message": message, "timestamp": int(time.time() * 1000)}
-    if data is not None:
-        payload["data"] = data
-    if hypothesis_id is not None:
-        payload["hypothesisId"] = hypothesis_id
-    if run_id is not None:
-        payload["runId"] = run_id
-    try:
-        with open(_AGENT_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload) + "\n")
-    except Exception:
-        pass
-    # #endregion
-
 # Default system prompt for the chat sidebar (imported from main inside methods to avoid unopkg errors)
 DEFAULT_SYSTEM_PROMPT_FALLBACK = "You are a helpful assistant."
-
-
-def _debug_log(ctx, msg):
-    """Write one line to debug log (user config dir, ~/localwriter_chat_debug.log, /tmp)."""
-    for path in _debug_log_paths(ctx):
-        try:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(msg + "\n")
-            return
-        except Exception:
-            continue
-
-
-def _debug_log_paths(ctx):
-    out = []
-    try:
-        path_settings = ctx.getServiceManager().createInstanceWithContext(
-            "com.sun.star.util.PathSettings", ctx)
-        user_config = getattr(path_settings, "UserConfig", "")
-        if user_config and str(user_config).startswith("file://"):
-            user_config = str(uno.fileUrlToSystemPath(user_config))
-            out.append(os.path.join(user_config, "localwriter_chat_debug.log"))
-    except Exception:
-        pass
-    out.append(os.path.expanduser("~/localwriter_chat_debug.log"))
-    out.append("/tmp/localwriter_chat_debug.log")
-    return out
 
 
 def _get_arg(args, name):
@@ -94,11 +54,11 @@ def _ensure_extension_on_path(ctx):
             ext_path = ext_url
         if ext_path and ext_path not in sys.path:
             sys.path.insert(0, ext_path)
-            _debug_log(ctx, "Added extension path to sys.path: %s" % ext_path)
+            debug_log(ctx, "Added extension path to sys.path: %s" % ext_path)
         else:
-            _debug_log(ctx, "Extension path already on sys.path: %s" % ext_path)
+            debug_log(ctx, "Extension path already on sys.path: %s" % ext_path)
     except Exception as e:
-        _debug_log(ctx, "_ensure_extension_on_path ERROR: %s" % e)
+        debug_log(ctx, "_ensure_extension_on_path ERROR: %s" % e)
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +206,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
             import traceback
             tb = traceback.format_exc()
             self._append_response("\n\n[Error: %s]\n%s\n" % (str(e), tb))
-            _debug_log(self.ctx, "SendButton error: %s\n%s" % (e, tb))
+            debug_log(self.ctx, "SendButton error: %s\n%s" % (e, tb))
         finally:
             try:
                 log_to_file("actionPerformed: finally block - re-enabling send button")
@@ -259,30 +219,30 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
     def _do_send(self):
         self._set_status("Starting...")
-        _debug_log(self.ctx, "=== _do_send START ===")
+        debug_log(self.ctx, "=== _do_send START ===")
 
         # Ensure extension directory is on sys.path
         _ensure_extension_on_path(self.ctx)
 
         try:
-            _debug_log(self.ctx, "_do_send: importing core modules...")
+            debug_log(self.ctx, "_do_send: importing core modules...")
             from core.config import get_config, get_api_config
             from core.api import LlmClient
             from core.document import get_full_document_text
             from core.logging import log_to_file
-            _debug_log(self.ctx, "_do_send: core modules imported OK")
+            debug_log(self.ctx, "_do_send: core modules imported OK")
         except Exception as e:
-            _debug_log(self.ctx, "_do_send: core import FAILED: %s" % e)
+            debug_log(self.ctx, "_do_send: core import FAILED: %s" % e)
             self._append_response("\n[Import error - core: %s]\n" % e)
             self._set_status("Error")
             return
 
         try:
-            _debug_log(self.ctx, "_do_send: importing document_tools...")
+            debug_log(self.ctx, "_do_send: importing document_tools...")
             from document_tools import WRITER_TOOLS, execute_tool
-            _debug_log(self.ctx, "_do_send: document_tools imported OK (%d tools)" % len(WRITER_TOOLS))
+            debug_log(self.ctx, "_do_send: document_tools imported OK (%d tools)" % len(WRITER_TOOLS))
         except Exception as e:
-            _debug_log(self.ctx, "_do_send: document_tools import FAILED: %s" % e)
+            debug_log(self.ctx, "_do_send: document_tools import FAILED: %s" % e)
             self._append_response("\n[Import error - document_tools: %s]\n" % e)
             self._set_status("Error")
             return
@@ -301,20 +261,20 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
         # 2. Get document model
         self._set_status("Getting document...")
-        _debug_log(self.ctx, "_do_send: getting document model...")
+        debug_log(self.ctx, "_do_send: getting document model...")
         model = self._get_document_model()
         if not model:
-            _debug_log(self.ctx, "_do_send: no Writer document found")
+            debug_log(self.ctx, "_do_send: no Writer document found")
             self._append_response("\n[No Writer document open.]\n")
             self._set_status("Error")
             return
-        _debug_log(self.ctx, "_do_send: got document model OK")
+        debug_log(self.ctx, "_do_send: got document model OK")
 
         # 3. Set up config and LlmClient
         max_context = int(get_config(self.ctx, "chat_context_length", 8000))
         max_tokens = int(get_config(self.ctx, "chat_max_tokens", 16384))
         api_type = str(get_config(self.ctx, "api_type", "completions")).lower()
-        _debug_log(self.ctx, "_do_send: config loaded: api_type=%s, max_tokens=%d, max_context=%d" %
+        debug_log(self.ctx, "_do_send: config loaded: api_type=%s, max_tokens=%d, max_context=%d" %
                     (api_type, max_tokens, max_context))
 
         # Determine if tool-calling is available (requires chat API)
@@ -326,19 +286,19 @@ class SendButtonListener(unohelper.Base, XActionListener):
         # 4. Refresh document context in session
         self._set_status("Reading document...")
         doc_text = get_full_document_text(model, max_context)
-        _debug_log(self.ctx, "_do_send: document text length=%d" % len(doc_text))
+        debug_log(self.ctx, "_do_send: document text length=%d" % len(doc_text))
         # #region agent log
-        _agent_log("chat_panel.py:doc_context", "Document context for AI", data={"doc_length": len(doc_text), "doc_prefix_first_200": (doc_text or "")[:200], "max_context": max_context}, hypothesis_id="B")
+        agent_log("chat_panel.py:doc_context", "Document context for AI", data={"doc_length": len(doc_text), "doc_prefix_first_200": (doc_text or "")[:200], "max_context": max_context}, hypothesis_id="B")
         # #endregion
         self.session.update_document_context(doc_text)
 
         # 5. Add user message to session and display
         self.session.add_user_message(query_text)
         self._append_response("\nYou: %s\n" % query_text)
-        _debug_log(self.ctx, "_do_send: user query='%s'" % query_text[:100])
+        debug_log(self.ctx, "_do_send: user query='%s'" % query_text[:100])
 
         self._set_status("Connecting to AI (api_type=%s, tools=%s)..." % (api_type, use_tools))
-        _debug_log(self.ctx, "_do_send: calling AI, use_tools=%s, messages=%d" %
+        debug_log(self.ctx, "_do_send: calling AI, use_tools=%s, messages=%d" %
                     (use_tools, len(self.session.messages)))
 
         if use_tools:
@@ -351,7 +311,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
             self._append_response("\n[Stopped by user]\n")
 
         log_to_file("=== _do_send END ===")
-        _debug_log(self.ctx, "=== _do_send END ===")
+        debug_log(self.ctx, "=== _do_send END ===")
 
     def _do_tool_calling_loop(self, client, model, max_tokens, tools, execute_tool_fn):
         """Run the tool-calling conversation loop. Wraps tool execution in an
@@ -362,13 +322,13 @@ class SendButtonListener(unohelper.Base, XActionListener):
             try:
                 undo_manager = model.getUndoManager()
             except Exception as e:
-                _debug_log(self.ctx, "getUndoManager failed: %s" % e)
+                debug_log(self.ctx, "getUndoManager failed: %s" % e)
         if undo_manager:
             try:
                 undo_manager.enterUndoContext("AI Edit")
-                _debug_log(self.ctx, "Undo context entered (AI Edit)")
+                debug_log(self.ctx, "Undo context entered (AI Edit)")
             except Exception as e:
-                _debug_log(self.ctx, "enterUndoContext failed: %s" % e)
+                debug_log(self.ctx, "enterUndoContext failed: %s" % e)
                 undo_manager = None
 
         try:
@@ -377,46 +337,53 @@ class SendButtonListener(unohelper.Base, XActionListener):
             if undo_manager:
                 try:
                     undo_manager.leaveUndoContext()
-                    _debug_log(self.ctx, "Undo context left (AI Edit)")
+                    debug_log(self.ctx, "Undo context left (AI Edit)")
                 except Exception as e:
-                    _debug_log(self.ctx, "leaveUndoContext failed: %s" % e)
+                    debug_log(self.ctx, "leaveUndoContext failed: %s" % e)
+
+    def _make_stream_callbacks(self, toolkit=None, waiting_for_model=None, thinking_open=None, on_chunk=None):
+        """Create append_chunk and append_thinking callbacks for streaming."""
+        def append_chunk(content_delta):
+            if waiting_for_model and waiting_for_model[0]:
+                self._set_status("Receiving response...")
+                waiting_for_model[0] = False
+            if thinking_open and thinking_open[0]:
+                self._append_response(" /thinking")
+                thinking_open[0] = False
+            self._append_response(content_delta)
+            if on_chunk:
+                on_chunk(content_delta)
+            if toolkit:
+                toolkit.processEventsToIdle()
+
+        def append_thinking(thinking_text):
+            if waiting_for_model and waiting_for_model[0]:
+                self._set_status("Receiving response...")
+                waiting_for_model[0] = False
+            if thinking_open and not thinking_open[0]:
+                self._append_response("[Thinking] ")
+                thinking_open[0] = True
+            self._append_response(thinking_text)
+            if toolkit:
+                toolkit.processEventsToIdle()
+
+        return append_chunk, append_thinking
 
     def _do_tool_calling_loop_impl(self, client, model, max_tokens, tools, execute_tool_fn):
         """Inner implementation of the tool-calling loop (without undo wrapper)."""
         from core.logging import log_to_file
-        _debug_log(self.ctx, "=== Tool-calling loop START (max %d rounds) ===" % MAX_TOOL_ROUNDS)
+        debug_log(self.ctx, "=== Tool-calling loop START (max %d rounds) ===" % MAX_TOOL_ROUNDS)
+        toolkit = self.ctx.getServiceManager().createInstanceWithContext(
+            "com.sun.star.awt.Toolkit", self.ctx)
         for round_num in range(MAX_TOOL_ROUNDS):
             self._set_status("Connecting..." if round_num == 0 else "Connecting (round %d)..." % (round_num + 1))
-            _debug_log(self.ctx, "Tool loop round %d: sending %d messages to API..." %
+            debug_log(self.ctx, "Tool loop round %d: sending %d messages to API..." %
                         (round_num, len(self.session.messages)))
-            
             waiting_for_model = [True]
-
             thinking_open = [False]
-
-            def append_chunk(content_delta):
-                if waiting_for_model[0]:
-                    self._set_status("Receiving response...")
-                    waiting_for_model[0] = False
-                if thinking_open[0]:
-                    self._append_response(" /thinking")
-                    thinking_open[0] = False
-                self._append_response(content_delta)
-                toolkit.processEventsToIdle()
-
-            def append_thinking(thinking_text):
-                if waiting_for_model[0]:
-                    self._set_status("Receiving response...")
-                    waiting_for_model[0] = False
-                if not thinking_open[0]:
-                    self._append_response("[Thinking] ")
-                    thinking_open[0] = True
-                self._append_response(thinking_text)
-                toolkit.processEventsToIdle()
-
-            toolkit = self.ctx.getServiceManager().createInstanceWithContext(
-                "com.sun.star.awt.Toolkit", self.ctx
-            )
+            append_chunk, append_thinking = self._make_stream_callbacks(
+                toolkit=toolkit, waiting_for_model=waiting_for_model,
+                thinking_open=thinking_open)
             self._append_response("\nAI: ")
 
             try:
@@ -429,19 +396,19 @@ class SendButtonListener(unohelper.Base, XActionListener):
                     stop_checker=lambda: self.stop_requested
                 )
                 if self.stop_requested:
-                    _debug_log(self.ctx, "Tool loop round %d: STOPPED" % round_num)
+                    debug_log(self.ctx, "Tool loop round %d: STOPPED" % round_num)
                     return
 
-                _debug_log(self.ctx, "Tool loop round %d: got response, content=%s, tool_calls=%s" %
+                debug_log(self.ctx, "Tool loop round %d: got response, content=%s, tool_calls=%s" %
                             (round_num, bool(response.get("content")), bool(response.get("tool_calls"))))
             except Exception as e:
-                _debug_log(self.ctx, "Tool loop round %d: API ERROR: %s" % (round_num, e))
+                debug_log(self.ctx, "Tool loop round %d: API ERROR: %s" % (round_num, e))
                 log_to_file("Tool loop round %d: API ERROR: %s" % (round_num, e))
                 self._append_response("\n[API error: %s]\n" % str(e))
                 self._set_status("Error")
                 return
 
-            _debug_log(self.ctx, "Tool loop round %d: stream_request_with_tools returned." % round_num)
+            debug_log(self.ctx, "Tool loop round %d: stream_request_with_tools returned." % round_num)
             log_to_file("Tool loop round %d: stream_request_with_tools returned." % round_num)
 
             if thinking_open[0]:
@@ -452,27 +419,27 @@ class SendButtonListener(unohelper.Base, XActionListener):
             content = response.get("content")
             finish_reason = response.get("finish_reason")
             # #region agent log
-            _agent_log("chat_panel.py:tool_round", "Tool loop round response", data={"round": round_num, "has_tool_calls": bool(tool_calls), "num_tool_calls": len(tool_calls) if tool_calls else 0, "tool_names": [tc.get("function", {}).get("name") for tc in (tool_calls or [])]}, hypothesis_id="A")
+            agent_log("chat_panel.py:tool_round", "Tool loop round response", data={"round": round_num, "has_tool_calls": bool(tool_calls), "num_tool_calls": len(tool_calls) if tool_calls else 0, "tool_names": [tc.get("function", {}).get("name") for tc in (tool_calls or [])]}, hypothesis_id="A")
             # #endregion
 
             if not tool_calls:
                 # #region agent log
-                _agent_log("chat_panel.py:exit_no_tools", "Exiting loop: no tool_calls (final text response)", data={"round": round_num, "finish_reason": finish_reason}, hypothesis_id="A")
+                agent_log("chat_panel.py:exit_no_tools", "Exiting loop: no tool_calls (final text response)", data={"round": round_num, "finish_reason": finish_reason}, hypothesis_id="A")
                 # #endregion
                 # No tool calls -- this is the final text response (content was already streamed)
-                _debug_log(self.ctx, "Tool loop: final text response (no tool calls), finish_reason=%s" % finish_reason)
+                debug_log(self.ctx, "Tool loop: final text response (no tool calls), finish_reason=%s" % finish_reason)
                 if content:
                     log_to_file("Tool loop: Adding assistant message to session")
                     self.session.add_assistant_message(content=content)
                     self._append_response("\n")
                 elif finish_reason == "length":
-                    _debug_log(self.ctx, "Tool loop: truncated by max_tokens (finish_reason=length)")
+                    debug_log(self.ctx, "Tool loop: truncated by max_tokens (finish_reason=length)")
                     self._append_response(
                         "\n[Response truncated -- the model ran out of tokens before "
                         "producing a reply. Increase chat_max_tokens in localwriter.json "
                         "(current value may be too low for reasoning models).]\n")
                 else:
-                    _debug_log(self.ctx, "Tool loop: WARNING - no content and no tool_calls")
+                    debug_log(self.ctx, "Tool loop: WARNING - no content and no tool_calls")
                     self._append_response("\n[AI returned empty response]\n")
                 log_to_file(f"Tool loop: Finished on round {round_num}. Setting status to Ready.")
                 self._set_status("Ready")
@@ -504,15 +471,15 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 snippet = {}
                 if func_name in ("replace_text", "search_and_replace_all") and isinstance(func_args, dict):
                     snippet = {"search_snippet": (func_args.get("search") or "")[:80], "replacement_snippet": (func_args.get("replacement") or "")[:80]}
-                _agent_log("chat_panel.py:tool_execute", "Executing tool", data={"tool": func_name, "round": round_num, **snippet}, hypothesis_id="C,D,E")
+                agent_log("chat_panel.py:tool_execute", "Executing tool", data={"tool": func_name, "round": round_num, **snippet}, hypothesis_id="C,D,E")
                 # #endregion
 
-                _debug_log(self.ctx, "Tool call: %s(%s)" % (func_name, func_args_str))
+                debug_log(self.ctx, "Tool call: %s(%s)" % (func_name, func_args_str))
 
                 # Execute the tool
                 result = execute_tool_fn(func_name, func_args, model, self.ctx)
 
-                _debug_log(self.ctx, "Tool result: %s" % result)
+                debug_log(self.ctx, "Tool result: %s" % result)
 
                 # Show a brief note in chat
                 try:
@@ -528,28 +495,20 @@ class SendButtonListener(unohelper.Base, XActionListener):
             # Continue the loop -- send tool results back to model
 
         # #region agent log
-        _agent_log("chat_panel.py:exit_exhausted", "Exiting loop: exhausted MAX_TOOL_ROUNDS", data={"rounds": MAX_TOOL_ROUNDS}, hypothesis_id="A")
+        agent_log("chat_panel.py:exit_exhausted", "Exiting loop: exhausted MAX_TOOL_ROUNDS", data={"rounds": MAX_TOOL_ROUNDS}, hypothesis_id="A")
         # #endregion
         # If we exhausted rounds, stream a final response without tools
         self._set_status("Finishing...")
         self._append_response("\nAI: ")
 
         thinking_open = [False]
-
-        def append_chunk(chunk_text):
-            if thinking_open[0]:
-                self._append_response(" /thinking")
-                thinking_open[0] = False
-            self._append_response(chunk_text)
-            self.session._last_streamed = (self.session._last_streamed or "") + chunk_text
-
-        def append_thinking(thinking_text):
-            if not thinking_open[0]:
-                self._append_response("[Thinking] ")
-                thinking_open[0] = True
-            self._append_response(thinking_text)
-
         self.session._last_streamed = ""
+
+        def _accumulate_chunk(c):
+            self.session._last_streamed = (self.session._last_streamed or "") + c
+
+        append_chunk, append_thinking = self._make_stream_callbacks(
+            thinking_open=thinking_open, on_chunk=_accumulate_chunk)
         try:
             client.stream_chat_response(
                 self.session.messages, max_tokens, append_chunk, append_thinking,
@@ -566,7 +525,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
     def _do_simple_stream(self, client, max_tokens, api_type):
         """Legacy path: simple streaming without tool-calling."""
-        _debug_log(self.ctx, "=== Simple stream START (api_type=%s) ===" % api_type)
+        debug_log(self.ctx, "=== Simple stream START (api_type=%s) ===" % api_type)
         self._set_status("Waiting for model...")
         self._append_response("\nAI: ")
         
@@ -590,25 +549,9 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
         collected = []
         thinking_open = [False]
-
-        def append_chunk(chunk_text):
-            if waiting_for_model[0]:
-                self._set_status("Receiving response...")
-                waiting_for_model[0] = False
-            if thinking_open[0]:
-                self._append_response(" /thinking")
-                thinking_open[0] = False
-            self._append_response(chunk_text)
-            collected.append(chunk_text)
-
-        def append_thinking(thinking_text):
-            if waiting_for_model[0]:
-                self._set_status("Receiving response...")
-                waiting_for_model[0] = False
-            if not thinking_open[0]:
-                self._append_response("[Thinking] ")
-                thinking_open[0] = True
-            self._append_response(thinking_text)
+        append_chunk, append_thinking = self._make_stream_callbacks(
+            waiting_for_model=waiting_for_model, thinking_open=thinking_open,
+            on_chunk=collected.append)
 
         try:
             client.stream_completion(
@@ -729,36 +672,36 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         self.session = None  # Created in _wireControls
 
     def getRealInterface(self):
-        _debug_log(self.ctx, "=== getRealInterface called ===")
+        debug_log(self.ctx, "=== getRealInterface called ===")
         if not self.toolpanel:
             try:
                 # Ensure extension on path early so _wireControls imports work
                 _ensure_extension_on_path(self.ctx)
                 root_window = self._getOrCreatePanelRootWindow()
-                _debug_log(self.ctx, "root_window created: %s" % (root_window is not None))
+                debug_log(self.ctx, "root_window created: %s" % (root_window is not None))
                 self.toolpanel = ChatToolPanel(root_window, self.ctx)
                 self._wireControls(root_window)
-                _debug_log(self.ctx, "getRealInterface completed successfully")
+                debug_log(self.ctx, "getRealInterface completed successfully")
             except Exception as e:
-                _debug_log(self.ctx, "getRealInterface ERROR: %s" % e)
+                debug_log(self.ctx, "getRealInterface ERROR: %s" % e)
                 import traceback
-                _debug_log(self.ctx, traceback.format_exc())
+                debug_log(self.ctx, traceback.format_exc())
                 raise
         return self.toolpanel
 
     def _getOrCreatePanelRootWindow(self):
-        _debug_log(self.ctx, "_getOrCreatePanelRootWindow entered")
+        debug_log(self.ctx, "_getOrCreatePanelRootWindow entered")
         pip = self.ctx.getValueByName(
             "/singletons/com.sun.star.deployment.PackageInformationProvider")
         base_url = pip.getPackageLocation(EXTENSION_ID)
         dialog_url = base_url + "/" + XDL_PATH
-        _debug_log(self.ctx, "dialog_url: %s" % dialog_url)
+        debug_log(self.ctx, "dialog_url: %s" % dialog_url)
         provider = self.ctx.getServiceManager().createInstanceWithContext(
             "com.sun.star.awt.ContainerWindowProvider", self.ctx)
-        _debug_log(self.ctx, "calling createContainerWindow...")
+        debug_log(self.ctx, "calling createContainerWindow...")
         self.m_panelRootWindow = provider.createContainerWindow(
             dialog_url, "", self.xParentWindow, None)
-        _debug_log(self.ctx, "createContainerWindow returned")
+        debug_log(self.ctx, "createContainerWindow returned")
         # Sidebar does not show the panel content without this (framework does not make it visible).
         if self.m_panelRootWindow and hasattr(self.m_panelRootWindow, "setVisible"):
             self.m_panelRootWindow.setVisible(True)
@@ -766,28 +709,28 @@ class ChatPanelElement(unohelper.Base, XUIElement):
 
     def _wireControls(self, root_window):
         """Attach listeners to Send and Clear buttons."""
-        _debug_log(self.ctx, "_wireControls entered")
+        debug_log(self.ctx, "_wireControls entered")
         if not hasattr(root_window, "getControl"):
-            _debug_log(self.ctx, "_wireControls: root_window has no getControl, aborting")
+            debug_log(self.ctx, "_wireControls: root_window has no getControl, aborting")
             return
 
         # Get controls -- these must exist in the XDL
         send_btn = root_window.getControl("send")
         query_ctrl = root_window.getControl("query")
         response_ctrl = root_window.getControl("response")
-        _debug_log(self.ctx, "_wireControls: got send/query/response controls")
+        debug_log(self.ctx, "_wireControls: got send/query/response controls")
 
         # Status label (may not exist in older XDL)
         status_ctrl = None
         try:
             status_ctrl = root_window.getControl("status")
-            _debug_log(self.ctx, "_wireControls: got status control")
+            debug_log(self.ctx, "_wireControls: got status control")
         except Exception:
-            _debug_log(self.ctx, "_wireControls: no status control in XDL (ok)")
+            debug_log(self.ctx, "_wireControls: no status control in XDL (ok)")
 
         # Helper to show errors visibly in the response area
         def _show_init_error(msg):
-            _debug_log(self.ctx, "_wireControls ERROR: %s" % msg)
+            debug_log(self.ctx, "_wireControls ERROR: %s" % msg)
             try:
                 if response_ctrl and response_ctrl.getModel():
                     current = response_ctrl.getModel().Text or ""
@@ -800,15 +743,15 @@ class ChatPanelElement(unohelper.Base, XUIElement):
 
         try:
             # Read system prompt from config
-            _debug_log(self.ctx, "_wireControls: importing core config...")
+            debug_log(self.ctx, "_wireControls: importing core config...")
             from core.config import get_config
             from core.constants import DEFAULT_CHAT_SYSTEM_PROMPT
             system_prompt = get_config(self.ctx, "chat_system_prompt", DEFAULT_CHAT_SYSTEM_PROMPT)
-            _debug_log(self.ctx, "_wireControls: config loaded")
+            debug_log(self.ctx, "_wireControls: config loaded")
         except Exception as e:
             import traceback
             _show_init_error("Config: %s" % e)
-            _debug_log(self.ctx, traceback.format_exc())
+            debug_log(self.ctx, traceback.format_exc())
             system_prompt = DEFAULT_SYSTEM_PROMPT_FALLBACK
 
         # Create session
@@ -821,12 +764,12 @@ class ChatPanelElement(unohelper.Base, XUIElement):
                 self.ctx, self.xFrame, send_btn, stop_btn, query_ctrl, response_ctrl,
                 status_ctrl, self.session)
             send_btn.addActionListener(send_listener)
-            _debug_log(self.ctx, "Send button wired")
+            debug_log(self.ctx, "Send button wired")
             
             if stop_btn:
                 stop_btn.addActionListener(StopButtonListener(send_listener))
                 stop_btn.setEnable(False)  # Disabled until Send is clicked
-                _debug_log(self.ctx, "Stop button wired")
+                debug_log(self.ctx, "Stop button wired")
         except Exception as e:
             _show_init_error("Send/Stop button: %s" % e)
 
@@ -843,7 +786,7 @@ class ChatPanelElement(unohelper.Base, XUIElement):
             if clear_btn:
                 clear_btn.addActionListener(ClearButtonListener(
                     self.session, response_ctrl, status_ctrl))
-                _debug_log(self.ctx, "Clear button wired")
+                debug_log(self.ctx, "Clear button wired")
         except Exception:
             pass
 
@@ -858,14 +801,14 @@ class ChatPanelFactory(unohelper.Base, XUIElementFactory):
         self.ctx = ctx
 
     def createUIElement(self, resource_url, args):
-        _debug_log(self.ctx, "createUIElement: %s" % resource_url)
+        debug_log(self.ctx, "createUIElement: %s" % resource_url)
         if "ChatPanel" not in resource_url:
             from com.sun.star.container import NoSuchElementException
             raise NoSuchElementException("Unknown resource: " + resource_url)
 
         frame = _get_arg(args, "Frame")
         parent_window = _get_arg(args, "ParentWindow")
-        _debug_log(self.ctx, "ParentWindow: %s" % (parent_window is not None))
+        debug_log(self.ctx, "ParentWindow: %s" % (parent_window is not None))
         if not parent_window:
             from com.sun.star.lang import IllegalArgumentException
             raise IllegalArgumentException("ParentWindow is required")

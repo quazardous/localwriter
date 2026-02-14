@@ -8,12 +8,11 @@ if _ext_dir not in sys.path:
 
 import unohelper
 import officehelper
-import json
 
 from core.config import get_config, set_config, as_bool, get_api_config
 from core.api import LlmClient
 from core.document import get_full_document_text
-from core.logging import log_to_file
+from core.logging import log_to_file, agent_log
 from core.constants import DEFAULT_CHAT_SYSTEM_PROMPT
 from com.sun.star.task import XJobExecutor
 from com.sun.star.awt import MessageBoxButtons as MSG_BUTTONS
@@ -31,10 +30,6 @@ USER_AGENT = (
     'AppleWebKit/537.36 (KHTML, like Gecko) '
     'Chrome/114.0.0.0 Safari/537.36'
 )
-
-# Use workspace path so logs are readable when extension runs from LibreOffice install
-DEBUG_LOG_PATH = "/home/keithcu/Desktop/Python/localwriter/.cursor/debug.log"
-
 
 # The MainJob is a UNO component derived from unohelper.Base class
 # and also the XJobExecutor, the implemented interface
@@ -59,6 +54,44 @@ class MainJob(unohelper.Base, XJobExecutor):
     def set_config(self, key, value):
         """Delegate to core.config."""
         set_config(self.ctx, key, value)
+
+    def _apply_settings_result(self, result):
+        """Apply settings dialog result to config. Shared by Writer and Calc."""
+        if "extend_selection_max_tokens" in result:
+            self.set_config("extend_selection_max_tokens", result["extend_selection_max_tokens"])
+        if "extend_selection_system_prompt" in result:
+            self.set_config("extend_selection_system_prompt", result["extend_selection_system_prompt"])
+        if "edit_selection_max_new_tokens" in result:
+            self.set_config("edit_selection_max_new_tokens", result["edit_selection_max_new_tokens"])
+        if "edit_selection_system_prompt" in result:
+            self.set_config("edit_selection_system_prompt", result["edit_selection_system_prompt"])
+        if "endpoint" in result and result["endpoint"].startswith("http"):
+            self.set_config("endpoint", result["endpoint"])
+        if "api_key" in result:
+            self.set_config("api_key", result["api_key"])
+        if "api_type" in result:
+            api_type_value = str(result["api_type"]).strip().lower()
+            if api_type_value not in ("chat", "completions"):
+                api_type_value = "completions"
+            self.set_config("api_type", api_type_value)
+        if "is_openwebui" in result:
+            self.set_config("is_openwebui", result["is_openwebui"])
+        if "openai_compatibility" in result:
+            self.set_config("openai_compatibility", result["openai_compatibility"])
+        if "model" in result:
+            self.set_config("model", result["model"])
+        if "temperature" in result:
+            self.set_config("temperature", result["temperature"])
+        if "seed" in result:
+            self.set_config("seed", result["seed"])
+        if "chat_max_tokens" in result:
+            self.set_config("chat_max_tokens", result["chat_max_tokens"])
+        if "chat_context_length" in result:
+            self.set_config("chat_context_length", result["chat_context_length"])
+        if "chat_system_prompt" in result:
+            self.set_config("chat_system_prompt", result["chat_system_prompt"])
+        if "request_timeout" in result:
+            self.set_config("request_timeout", result["request_timeout"])
 
     def _get_client(self):
         """Create LlmClient with current config."""
@@ -179,14 +212,7 @@ class MainJob(unohelper.Base, XJobExecutor):
     def settings_box(self, title="", x=None, y=None):
         """ Settings dialog loaded from XDL (LocalWriterDialogs/SettingsDialog.xdl).
         Uses DialogProvider for proper Map AppFont sizing. """
-        # #region agent log
-        try:
-            _log = open(DEBUG_LOG_PATH, "a")
-            _log.write('{"location":"main.py:settings_box","message":"settings_box entered","data":{},"hypothesisId":"H3,H4","timestamp":%d}\n' % (int(__import__("time").time() * 1000)))
-            _log.close()
-        except Exception:
-            pass
-        # #endregion
+        agent_log("main.py:settings_box", "settings_box entered", hypothesis_id="H3,H4")
         import uno
         ctx = self.ctx
         smgr = ctx.getServiceManager()
@@ -215,66 +241,22 @@ class MainJob(unohelper.Base, XJobExecutor):
         pip = ctx.getValueByName("/singletons/com.sun.star.deployment.PackageInformationProvider")
         base_url = pip.getPackageLocation("org.extension.localwriter")
         dp = smgr.createInstanceWithContext("com.sun.star.awt.DialogProvider", ctx)
-        # #region agent log
-        try:
-            _log = open(DEBUG_LOG_PATH, "a")
-            _log.write('{"location":"main.py:settings_box","message":"before createDialog","data":{},"hypothesisId":"H3","timestamp":%d}\n' % (int(__import__("time").time() * 1000)))
-            _log.close()
-        except Exception:
-            pass
-        # #endregion
+        agent_log("main.py:settings_box", "before createDialog", hypothesis_id="H3")
         try:
             dlg = dp.createDialog(base_url + "/LocalWriterDialogs/SettingsDialog.xdl")
         except BaseException as ex:
-            # #region agent log
-            try:
-                _log = open(DEBUG_LOG_PATH, "a")
-                _log.write('{"location":"main.py:settings_box","message":"createDialog failed","data":{"error":%s,"type":%s},"hypothesisId":"H3","timestamp":%d}\n' % (json.dumps(str(ex)), json.dumps(type(ex).__name__), int(__import__("time").time() * 1000)))
-                _log.close()
-            except Exception:
-                pass
-            # #endregion
+            agent_log("main.py:settings_box", "createDialog failed", data={"error": str(ex), "type": type(ex).__name__}, hypothesis_id="H3")
             raise
-        finally:
-            # #region agent log
-            try:
-                _log = open(DEBUG_LOG_PATH, "a")
-                _log.write('{"location":"main.py:settings_box","message":"createDialog block exited","data":{},"hypothesisId":"H3","timestamp":%d}\n' % (int(__import__("time").time() * 1000)))
-                _log.close()
-            except Exception:
-                pass
-            # #endregion
-        # #region agent log
-        try:
-            _log = open(DEBUG_LOG_PATH, "a")
-            _log.write('{"location":"main.py:settings_box","message":"createDialog succeeded","data":{},"hypothesisId":"H3","timestamp":%d}\n' % (int(__import__("time").time() * 1000)))
-            _log.close()
-        except Exception:
-            pass
-        # #endregion
+        agent_log("main.py:settings_box", "createDialog succeeded", hypothesis_id="H3")
         try:
             for field in field_specs:
                 ctrl = dlg.getControl(field["name"])
                 if ctrl:
                     ctrl.getModel().Text = field["value"]
             dlg.getControl("endpoint").setFocus()
-            # #region agent log
-            try:
-                _log = open(DEBUG_LOG_PATH, "a")
-                _log.write('{"location":"main.py:settings_box","message":"before dlg.execute","data":{},"hypothesisId":"H4","timestamp":%d}\n' % (int(__import__("time").time() * 1000)))
-                _log.close()
-            except Exception:
-                pass
-            # #endregion
+            agent_log("main.py:settings_box", "before dlg.execute", hypothesis_id="H4")
             exec_result = dlg.execute()
-            # #region agent log
-            try:
-                _log = open(DEBUG_LOG_PATH, "a")
-                _log.write('{"location":"main.py:settings_box","message":"after dlg.execute","data":{"exec_result":%s},"hypothesisId":"H4","timestamp":%d}\n' % (str(exec_result), int(__import__("time").time() * 1000)))
-                _log.close()
-            except Exception:
-                pass
-            # #endregion
+            agent_log("main.py:settings_box", "after dlg.execute", data={"exec_result": exec_result}, hypothesis_id="H4")
             if exec_result:
                 result = {}
                 for field in field_specs:
@@ -299,37 +281,16 @@ class MainJob(unohelper.Base, XJobExecutor):
         return result
 
     def trigger(self, args):
-        # #region agent log
-        try:
-            _log = open(DEBUG_LOG_PATH, "a")
-            _log.write('{"location":"main.py:trigger","message":"trigger called","data":{"args":%s},"hypothesisId":"H1,H2","timestamp":%d}\n' % (json.dumps(str(args)), int(__import__("time").time() * 1000)))
-            _log.close()
-        except Exception:
-            pass
-        # #endregion
+        agent_log("main.py:trigger", "trigger called", data={"args": str(args)}, hypothesis_id="H1,H2")
         desktop = self.ctx.ServiceManager.createInstanceWithContext(
             "com.sun.star.frame.Desktop", self.ctx)
         model = desktop.getCurrentComponent()
-        # #region agent log
-        try:
-            _log = open(DEBUG_LOG_PATH, "a")
-            _log.write('{"location":"main.py:trigger","message":"model state","data":{"model_is_none":%s,"has_text":%s,"has_sheets":%s},"hypothesisId":"H2","timestamp":%d}\n' % (str(model is None), str(hasattr(model, "Text") if model else False), str(hasattr(model, "Sheets") if model else False), int(__import__("time").time() * 1000)))
-            _log.close()
-        except Exception:
-            pass
-        # #endregion
+        agent_log("main.py:trigger", "model state", data={"model_is_none": model is None, "has_text": hasattr(model, "Text") if model else False, "has_sheets": hasattr(model, "Sheets") if model else False}, hypothesis_id="H2")
         #if not hasattr(model, "Text"):
         #    model = self.desktop.loadComponentFromURL("private:factory/swriter", "_blank", 0, ())
 
         if args == "settings" and (not model or (not hasattr(model, "Text") and not hasattr(model, "Sheets"))):
-            # #region agent log
-            try:
-                _log = open(DEBUG_LOG_PATH, "a")
-                _log.write('{"location":"main.py:trigger","message":"settings requested but no Writer/Calc document","data":{"args":%s},"hypothesisId":"H2","timestamp":%d}\n' % (json.dumps(str(args)), int(__import__("time").time() * 1000)))
-                _log.close()
-            except Exception:
-                pass
-            # #endregion
+            agent_log("main.py:trigger", "settings requested but no Writer/Calc document", data={"args": str(args)}, hypothesis_id="H2")
         if hasattr(model, "Text"):
             text = model.Text
             selection = model.CurrentController.getSelection()
@@ -403,77 +364,11 @@ class MainJob(unohelper.Base, XJobExecutor):
             
             elif args == "settings":
                 try:
-                    # #region agent log
-                    try:
-                        _log = open(DEBUG_LOG_PATH, "a")
-                        _log.write('{"location":"main.py:trigger","message":"about to call settings_box (Writer)","data":{},"hypothesisId":"H1,H2","timestamp":%d}\n' % (int(__import__("time").time() * 1000)))
-                        _log.close()
-                    except Exception:
-                        pass
-                    # #endregion
+                    agent_log("main.py:trigger", "about to call settings_box (Writer)", hypothesis_id="H1,H2")
                     result = self.settings_box("Settings")
-                                    
-                    if "extend_selection_max_tokens" in result:
-                        self.set_config("extend_selection_max_tokens", result["extend_selection_max_tokens"])
-
-                    if "extend_selection_system_prompt" in result:
-                        self.set_config("extend_selection_system_prompt", result["extend_selection_system_prompt"])
-
-                    if "edit_selection_max_new_tokens" in result:
-                        self.set_config("edit_selection_max_new_tokens", result["edit_selection_max_new_tokens"])
-
-                    if "edit_selection_system_prompt" in result:
-                        self.set_config("edit_selection_system_prompt", result["edit_selection_system_prompt"])
-
-                    if "endpoint" in result and result["endpoint"].startswith("http"):
-                        self.set_config("endpoint", result["endpoint"])
-
-                    if "api_key" in result:
-                        self.set_config("api_key", result["api_key"])
-
-                    if "api_type" in result:
-                        api_type_value = str(result["api_type"]).strip().lower()
-                        if api_type_value not in ("chat", "completions"):
-                            api_type_value = "completions"
-                        self.set_config("api_type", api_type_value)
-
-                    if "is_openwebui" in result:
-                        self.set_config("is_openwebui", result["is_openwebui"])
-
-                    if "openai_compatibility" in result:
-                        self.set_config("openai_compatibility", result["openai_compatibility"])
-
-                    if "model" in result:                
-                        self.set_config("model", result["model"])
-                        
-                    if "temperature" in result:                
-                        self.set_config("temperature", result["temperature"])
-                        
-                    if "seed" in result:                
-                        self.set_config("seed", result["seed"])
-
-                    if "chat_max_tokens" in result:
-                        self.set_config("chat_max_tokens", result["chat_max_tokens"])
-
-                    if "chat_context_length" in result:
-                        self.set_config("chat_context_length", result["chat_context_length"])
-
-                    if "chat_system_prompt" in result:
-                        self.set_config("chat_system_prompt", result["chat_system_prompt"])
-
-                    if "request_timeout" in result:
-                        self.set_config("request_timeout", result["request_timeout"])
-
-
+                    self._apply_settings_result(result)
                 except Exception as e:
-                    # #region agent log
-                    try:
-                        _log = open(DEBUG_LOG_PATH, "a")
-                        _log.write('{"location":"main.py:trigger","message":"settings exception (Writer)","data":{"error":%s},"hypothesisId":"H5","timestamp":%d}\n' % (json.dumps(str(e)), int(__import__("time").time() * 1000)))
-                        _log.close()
-                    except Exception:
-                        pass
-                    # #endregion
+                    agent_log("main.py:trigger", "settings exception (Writer)", data={"error": str(e)}, hypothesis_id="H5")
                     self.show_error(str(e), "LocalWriter: Settings")
         elif hasattr(model, "Sheets"):
             try:
@@ -485,72 +380,11 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                 if args == "settings":
                     try:
-                        # #region agent log
-                        try:
-                            _log = open(DEBUG_LOG_PATH, "a")
-                            _log.write('{"location":"main.py:trigger","message":"about to call settings_box (Calc)","data":{},"hypothesisId":"H1,H2","timestamp":%d}\n' % (int(__import__("time").time() * 1000)))
-                            _log.close()
-                        except Exception:
-                            pass
-                        # #endregion
+                        agent_log("main.py:trigger", "about to call settings_box (Calc)", hypothesis_id="H1,H2")
                         result = self.settings_box("Settings")
-                                        
-                        if "extend_selection_max_tokens" in result:
-                            self.set_config("extend_selection_max_tokens", result["extend_selection_max_tokens"])
-
-                        if "extend_selection_system_prompt" in result:
-                            self.set_config("extend_selection_system_prompt", result["extend_selection_system_prompt"])
-
-                        if "edit_selection_max_new_tokens" in result:
-                            self.set_config("edit_selection_max_new_tokens", result["edit_selection_max_new_tokens"])
-
-                        if "edit_selection_system_prompt" in result:
-                            self.set_config("edit_selection_system_prompt", result["edit_selection_system_prompt"])
-
-                        if "endpoint" in result and result["endpoint"].startswith("http"):
-                            self.set_config("endpoint", result["endpoint"])
-
-                        if "api_key" in result:
-                            self.set_config("api_key", result["api_key"])
-
-                        if "api_type" in result:
-                            api_type_value = str(result["api_type"]).strip().lower()
-                            if api_type_value not in ("chat", "completions"):
-                                api_type_value = "completions"
-                            self.set_config("api_type", api_type_value)
-
-                        if "is_openwebui" in result:
-                            self.set_config("is_openwebui", result["is_openwebui"])
-
-                        if "openai_compatibility" in result:
-                            self.set_config("openai_compatibility", result["openai_compatibility"])
-
-                        if "model" in result:                
-                            self.set_config("model", result["model"])
-
-                        if "temperature" in result:                
-                            self.set_config("temperature", result["temperature"])
-
-                        if "seed" in result:                
-                            self.set_config("seed", result["seed"])
-
-                        if "chat_max_tokens" in result:
-                            self.set_config("chat_max_tokens", result["chat_max_tokens"])
-
-                        if "chat_context_length" in result:
-                            self.set_config("chat_context_length", result["chat_context_length"])
-
-                        if "chat_system_prompt" in result:
-                            self.set_config("chat_system_prompt", result["chat_system_prompt"])
+                        self._apply_settings_result(result)
                     except Exception as e:
-                        # #region agent log
-                        try:
-                            _log = open(DEBUG_LOG_PATH, "a")
-                            _log.write('{"location":"main.py:trigger","message":"settings exception (Calc)","data":{"error":%s},"hypothesisId":"H5","timestamp":%d}\n' % (json.dumps(str(e)), int(__import__("time").time() * 1000)))
-                            _log.close()
-                        except Exception:
-                            pass
-                        # #endregion
+                        agent_log("main.py:trigger", "settings exception (Calc)", data={"error": str(e)}, hypothesis_id="H5")
                         self.show_error(str(e), "LocalWriter: Settings")
                     return
 

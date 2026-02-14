@@ -4,6 +4,8 @@
 
 import json
 
+from core.logging import agent_log
+
 
 # ---------------------------------------------------------------------------
 # Tool JSON schemas (sent to the LLM in the API request)
@@ -318,16 +320,7 @@ def execute_tool(tool_name, arguments, model, ctx):
         return json.dumps({"status": "error", "message": "Unknown tool: %s" % tool_name})
     try:
         result = func(model, ctx, arguments)
-        # #region agent log
-        _debug_log_path = "/home/keithcu/Desktop/Python/localwriter/.cursor/debug.log"
-        try:
-            import time
-            payload = {"location": "document_tools.py:execute_tool", "message": "Tool result", "data": {"tool": tool_name, "result_snippet": (result or "")[:120]}, "hypothesisId": "C,E", "timestamp": int(time.time() * 1000)}
-            with open(_debug_log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(payload) + "\n")
-        except Exception:
-            pass
-        # #endregion
+        agent_log("document_tools.py:execute_tool", "Tool result", data={"tool": tool_name, "result_snippet": (result or "")[:120]}, hypothesis_id="C,E")
         return result
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)})
