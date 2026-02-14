@@ -85,7 +85,7 @@ localwriter/
 - **Implementation**: `chat_panel.py` (ChatPanelFactory, ChatPanelElement, ChatToolPanel); `ContainerWindowProvider` + `ChatPanelDialog.xdl`; `setVisible(True)` required after `createContainerWindow()`.
 - **Tool-calling**: `document_tools.py` defines 8 tools: `replace_text`, `search_and_replace_all`, `insert_text`, `get_selection`, `replace_selection`, `format_text`, `set_paragraph_style`, `get_document_text`.
 - **Menu fallback**: Menu item "Chat with Document" opens input dialog, appends streaming response to document end (no tool-calling).
-- **Config keys** (used by chat): `chat_context_length`, `chat_max_tokens`, `chat_system_prompt` (in Settings); `chat_tool_calling` (config-only).
+- **Config keys** (used by chat): `chat_context_length`, `chat_max_tokens`, `chat_system_prompt` (in Settings).
 
 ### System prompt and reasoning (latest)
 
@@ -135,7 +135,7 @@ See [CHAT_SIDEBAR_IMPLEMENTATION.md](CHAT_SIDEBAR_IMPLEMENTATION.md) for impleme
 - **Single file**: No presets or multiple configs. To use a different setup (e.g. `localwriter.openrouter.json`), copy it to the path above as `localwriter.json`.
 - **Settings dialog** reads/writes this file via `get_config()` / `set_config()`.
 - **Chat-related keys** (used by `chat_panel.py` and menu Chat): `chat_context_length` (default 8000), `chat_max_tokens` (default 512 menu / 16384 sidebar), `chat_system_prompt`. Also `api_key`, `api_type` (in Settings) for OpenRouter/OpenAI-compatible endpoints.
-- **Note**: `chat_context_length`, `chat_max_tokens`, `chat_system_prompt` are now in the Settings dialog; `chat_tool_calling` remains config-only.
+- **Note**: `chat_context_length`, `chat_max_tokens`, `chat_system_prompt` are now in the Settings dialog.
 
 ---
 
@@ -176,7 +176,7 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 - Impress support; Calc range-aware behavior.
 
 ### Chat settings in UI — DONE
-- ~~Expose `chat_context_length`, `chat_max_tokens`, `chat_system_prompt` in the Settings dialog~~ (implemented in SettingsDialog.xdl). Optional future: `chat_tool_calling` toggle.
+- ~~Expose `chat_context_length`, `chat_max_tokens`, `chat_system_prompt` in the Settings dialog~~ (implemented in SettingsDialog.xdl).
 
 ### Chat Sidebar Enhancement Roadmap
 
