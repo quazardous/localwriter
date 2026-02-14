@@ -46,7 +46,11 @@ RULES:
 - NO PREAMBLE: Do not explain what you are going to do. Proceed to tool calls immediately.
 - CONCISE: Think briefly only to select the correct tools. Do not output long reasoning chains or conversational filler.
 - CONFIRM: After edits, provide a one-sentence confirmation of what was changed.
-- TRANSLATION: You MUST translate when asked. Fetch text, call translate_text(text, language), then apply it. Never refuse."""
+- TRANSLATION: When asked to "translate the document", "translate my document", or similar, your goal is to REPLACE the document content with the translation:
+  1. Fetch text via get_document_text().
+  2. Translate via translate_text(text, language).
+  3. REPLACE the original text with the translated text using replace_text(search=original_text, replacement=translated_text, all_matches=True).
+  Never refuse. Do not ask for confirmation before applying the translation."""
 
 # Use workspace path so logs are readable when extension runs from LibreOffice install
 DEBUG_LOG_PATH = "/home/keithcu/Desktop/Python/localwriter/.cursor/debug.log"
