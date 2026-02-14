@@ -312,10 +312,20 @@ class LlmClient:
                             payload = (
                                 line[len(b"data: ") :].decode("utf-8").strip()
                             )
+                            if payload == "[DONE]":
+                                log_to_file("stream_request: [DONE] received")
+                                break
                             try:
                                 chunk = json.loads(payload)
                             except json.JSONDecodeError:
                                 continue
+                            # Grok/xAI sends a final chunk with empty choices
+                            choices = chunk.get("choices", [])
+                            if not choices:
+                                log_to_file(
+                                    "stream_request: empty choices (Grok-style), breaking"
+                                )
+                                break
                             content, finish_reason, thinking, _ = (
                                 self.extract_content_from_response(
                                     chunk, api_type
@@ -414,6 +424,7 @@ class LlmClient:
 
         message_snapshot = {}
         last_finish_reason = None
+        last_chunk = None
 
         append_callback = append_callback or (lambda t: None)
         append_thinking_callback = append_thinking_callback or (lambda t: None)
@@ -431,9 +442,12 @@ class LlmClient:
                         last_finish_reason = "stop"
                         break
 
-                    if not line.strip() or not line.startswith(b"data: "):
+                    line_str = line.strip()
+                    if not line_str or not line_str.startswith(b"data:"):
                         continue
-                    payload = line[len(b"data: ") :].decode("utf-8").strip()
+                    # Payload is everything after "data:" (with or without space)
+                    idx = line_str.find(b":") + 1
+                    payload = line_str[idx:].decode("utf-8").strip()
                     if payload == "[DONE]":
                         log_to_file(
                             "stream_request_with_tools: [DONE] received"
@@ -443,9 +457,25 @@ class LlmClient:
                         chunk = json.loads(payload)
                     except json.JSONDecodeError:
                         log_to_file(
-                            "stream_request_with_tools: JSON decode error"
+                            "stream_request_with_tools: JSON decode error, payload=%s"
+                            % payload[:200]
                         )
                         continue
+
+                    last_chunk = chunk
+
+                    # Grok/xAI sends a final chunk with empty choices + usage
+                    # after the finish_reason chunk; treat it as end-of-stream
+                    choices = chunk.get("choices", [])
+                    if not choices and (
+                        message_snapshot.get("content")
+                        or message_snapshot.get("tool_calls")
+                    ):
+                        log_to_file(
+                            "stream_request_with_tools: empty choices (Grok-style), breaking"
+                        )
+                        last_finish_reason = last_finish_reason or "stop"
+                        break
 
                     content, finish_reason, thinking, delta = (
                         self.extract_content_from_response(chunk, "chat")
@@ -463,11 +493,24 @@ class LlmClient:
 
                     last_finish_reason = finish_reason
                     if last_finish_reason:
+                        log_to_file(
+                            "stream_request_with_tools: Breaking on finish_reason=%s"
+                            % last_finish_reason
+                        )
                         break
 
                 log_to_file(
-                    "stream_request_with_tools: Response stream closed naturally."
+                    "stream_request_with_tools: Exited stream loop."
                 )
+                if last_chunk:
+                    choices = last_chunk.get("choices", [])
+                    fr = None
+                    if choices and isinstance(choices[0], dict):
+                        fr = choices[0].get("finish_reason")
+                    log_to_file(
+                        "stream_request_with_tools: last chunk choices_len=%s finish_reason=%s keys=%s"
+                        % (len(choices), fr, list(last_chunk.keys()))
+                    )
         except Exception as e:
             err_msg = format_error_message(e)
             log_to_file(

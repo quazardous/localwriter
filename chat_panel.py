@@ -194,6 +194,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
     def actionPerformed(self, evt):
         from core.logging import log_to_file
+        had_error = False
         try:
             self.stop_requested = False
             if self.send_control:
@@ -202,6 +203,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 self.stop_control.setEnable(True)
             self._do_send()
         except Exception as e:
+            had_error = True
             self._set_status("Error")
             import traceback
             tb = traceback.format_exc()
@@ -209,11 +211,27 @@ class SendButtonListener(unohelper.Base, XActionListener):
             debug_log(self.ctx, "SendButton error: %s\n%s" % (e, tb))
         finally:
             try:
-                log_to_file("actionPerformed: finally block - re-enabling send button")
+                if not had_error:
+                    self._set_status("Ready")
                 if self.send_control:
                     self.send_control.setEnable(True)
+                    try:
+                        m = self.send_control.getModel()
+                        if m and hasattr(m, "setPropertyValue"):
+                            m.setPropertyValue("Enabled", True)
+                    except Exception:
+                        pass
                 if self.stop_control:
                     self.stop_control.setEnable(False)
+                    try:
+                        m = self.stop_control.getModel()
+                        if m and hasattr(m, "setPropertyValue"):
+                            m.setPropertyValue("Enabled", False)
+                    except Exception:
+                        pass
+                t = self.ctx.getServiceManager().createInstanceWithContext(
+                    "com.sun.star.awt.Toolkit", self.ctx)
+                t.processEventsToIdle()
             except Exception:
                 pass
 
