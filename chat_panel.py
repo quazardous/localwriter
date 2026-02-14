@@ -495,37 +495,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 _debug_log(self.ctx, "Tool call: %s(%s)" % (func_name, func_args_str))
 
                 # Execute the tool
-                if func_name == "translate_text":
-                    self._set_status("Translating...")
-                    text_to_translate = func_args.get("text", "")
-                    target_lang = func_args.get("language", "English")
-                    
-                    _debug_log(self.ctx, "Sub-agent translation: lang=%s, text_len=%d" % (target_lang, len(text_to_translate)))
-                    
-                    sub_messages = [
-                        {"role": "system", "content": "You are a professional translator. Translate the text provided by the user into %s. Output ONLY the translated text, no preamble or explanation." % target_lang},
-                        {"role": "user", "content": text_to_translate}
-                    ]
-                    
-                    translation_chunks = []
-                    def _collect_sub(chunk):
-                        translation_chunks.append(chunk)
-
-                    try:
-                        # Use a separate streaming call without tools for the translation itself
-                        job.stream_chat_response(sub_messages, max_tokens, _collect_sub)
-                        translated_text = "".join(translation_chunks)
-                        result = json.dumps({
-                            "status": "ok", 
-                            "translation": translated_text, 
-                            "message": "Translated %d chars to %s" % (len(text_to_translate), target_lang)
-                        })
-                        _debug_log(self.ctx, "Sub-agent translation OK: result_len=%d" % len(translated_text))
-                    except Exception as e:
-                        result = json.dumps({"status": "error", "message": str(e)})
-                        _debug_log(self.ctx, "Sub-agent translation ERROR: %s" % e)
-                else:
-                    result = execute_tool_fn(func_name, func_args, model, self.ctx)
+                result = execute_tool_fn(func_name, func_args, model, self.ctx)
 
                 _debug_log(self.ctx, "Tool result: %s" % result)
 

@@ -25,7 +25,7 @@ localwriter/
 ├── main.py              # MainJob: trigger(), API calls, config, dialogs
 ├── prompt_function.py   # Calc =PROMPT() formula
 ├── chat_panel.py        # Chat sidebar: ChatPanelFactory, ChatPanelElement, ChatToolPanel
-├── document_tools.py    # 8 Writer tools + executor for OpenAI tool-calling
+├── document_tools.py    # 7 Writer tools + executor for OpenAI tool-calling
 ├── XPromptFunction.rdb  # Type library for PromptFunction
 ├── LocalWriterDialogs/  # XDL dialogs (XML, Map AppFont units)
 │   ├── SettingsDialog.xdl
@@ -83,7 +83,7 @@ localwriter/
   - **Undo grouping**: AI edits performed during tool-calling rounds are grouped into a single undo context ("AI Edit"). Users can revert all changes from an AI turn with a single Ctrl+Z.
   - **Send button disable**: The Send button is programmatically disabled via `setEnable(False)` when the tool-calling loop starts and re-enabled in a `finally` block when done. This prevents multiple concurrent requests.
 - **Implementation**: `chat_panel.py` (ChatPanelFactory, ChatPanelElement, ChatToolPanel); `ContainerWindowProvider` + `ChatPanelDialog.xdl`; `setVisible(True)` required after `createContainerWindow()`.
-- **Tool-calling**: `document_tools.py` defines 8 tools: `replace_text`, `search_and_replace_all`, `insert_text`, `get_selection`, `replace_selection`, `format_text`, `set_paragraph_style`, `get_document_text`.
+- **Tool-calling**: `document_tools.py` defines 7 tools: `replace_text`, `insert_text`, `get_selection`, `replace_selection`, `format_text`, `set_paragraph_style`, `get_document_text`.
 - **Menu fallback**: Menu item "Chat with Document" opens input dialog, appends streaming response to document end (no tool-calling).
 - **Config keys** (used by chat): `chat_context_length`, `chat_max_tokens`, `chat_system_prompt` (in Settings).
 

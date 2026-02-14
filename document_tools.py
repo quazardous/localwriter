@@ -127,22 +127,6 @@ WRITER_TOOLS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "translate_text",
-            "description": "Translate a block of text into another language using your internal linguistic knowledge.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "The text content to translate"},
-                    "language": {"type": "string", "description": "Target language (e.g., 'Finnish', 'French')"}
-                },
-                "required": ["text", "language"],
-                "additionalProperties": False
-            }
-        }
-    },
 ]
 
 

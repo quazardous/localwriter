@@ -32,25 +32,16 @@ USER_AGENT = (
     'Chrome/114.0.0.0 Safari/537.36'
 )
 
-DEFAULT_CHAT_SYSTEM_PROMPT = """You are a document editing assistant for LibreOffice Writer.
-YOU ARE THE EDITOR AND TRANSLATOR. Use your internal knowledge to process text.
-Use the tools to change the document as requested.
+DEFAULT_CHAT_SYSTEM_PROMPT = """You are a document editing assistant integrated into LibreOffice Writer.
+You have tools to read and modify the user's document. USE THEM PROACTIVELY.
 
-FAST WORKFLOW:
-1. Fetch: Call get_document_text().
-2. Process: Use translate_text() for translations; otherwise use internal knowledge.
-3. Apply: Use replace_text(search, replacement, all_matches=True) to update the document.
-
-RULES:
-- INTERNAL KNOWLEDGE: Use your own linguistic skills for general creative tasks.
+IMPORTANT RULES:
+- TRANSLATION: You CAN translate. Call get_document_text, translate the content yourself, then replace_text or search_and_replace_all to apply it. NEVER refuse or say you lack a translation tool.
+- For edit, rewrite, or transform requests: call get_document_text, then use replace_text or search_and_replace_all. You produce the new text; the tools apply it.
+- For questions about the document: call get_document_text first, then answer.
 - NO PREAMBLE: Do not explain what you are going to do. Proceed to tool calls immediately.
 - CONCISE: Think briefly only to select the correct tools. Do not output long reasoning chains or conversational filler.
-- CONFIRM: After edits, provide a one-sentence confirmation of what was changed.
-- TRANSLATION: When asked to "translate the document", "translate my document", or similar, your goal is to REPLACE the document content with the translation:
-  1. Fetch text via get_document_text().
-  2. Translate via translate_text(text, language).
-  3. REPLACE the original text with the translated text using replace_text(search=original_text, replacement=translated_text, all_matches=True).
-  Never refuse. Do not ask for confirmation before applying the translation."""
+- CONFIRM: After edits, provide a one-sentence confirmation of what was changed."""
 
 # Use workspace path so logs are readable when extension runs from LibreOffice install
 DEBUG_LOG_PATH = "/home/keithcu/Desktop/Python/localwriter/.cursor/debug.log"
