@@ -72,7 +72,7 @@ Implemented:
 - main.py sends `reasoning: { effort: 'minimal' }` on all chat requests (provider-agnostic).
 
 Still TODO:
-- Make chat_system_prompt editable in the Settings dialog
+- ~~Make chat_system_prompt editable in the Settings dialog~~ (DONE)
 - Add instructions about formatting tools (bold, italic, paragraph styles) so the AI uses them effectively
 
 
@@ -92,13 +92,13 @@ TODO:
 - FIXME: Dynamic resizing -- panel uses fixed XDL layout (120x180 AppFont). PanelResizeListener was removed because the sidebar gives a large initial height (1375px) before settling, positioning controls off-screen. Needs investigation into sidebar resize lifecycle. See FIXME comments in chat_panel.py.
 
 
-Phase 7: Configuration and Settings -- TODO
+Phase 7: Configuration and Settings -- MOSTLY DONE
 
 New config keys to expose in SettingsDialog.xdl and settings handling in main.py:
-- chat_system_prompt -- multiline field (already in config, not yet in Settings dialog)
-- chat_max_tokens -- already used, not yet in Settings
-- chat_context_length -- already used, not yet in Settings
-- chat_tool_calling -- boolean toggle to enable/disable tool-calling (some models don't support it)
+- chat_system_prompt -- DONE: multiline field in Settings dialog
+- chat_max_tokens -- DONE: in Settings dialog
+- chat_context_length -- DONE: in Settings dialog
+- chat_tool_calling -- TODO: boolean toggle to enable/disable tool-calling (some models don't support it)
 
 
 Phase 8: Robustness and Error Handling -- PARTIALLY DONE
@@ -129,7 +129,7 @@ What To Work On Next
 Priority order for remaining work:
 
 1. Test end-to-end: Install extension, open a Writer document, try asking the AI to edit text, replace words, format bold/italic. Verify tool calls work and document is modified.
-2. Settings UI (Phase 7): Expose chat_system_prompt, chat_max_tokens, chat_context_length, chat_tool_calling in Settings dialog.
+2. ~~Settings UI (Phase 7): Expose chat_system_prompt, chat_max_tokens, chat_context_length~~ (DONE). Optional: chat_tool_calling toggle.
 3. System prompt tuning (Phase 5): Iterate on the default prompt based on real testing.
 4. UI polish (Phase 6 remaining): Enter-to-send, auto-scroll, busy state (disable Send during API call).
 5. Dynamic resize (Phase 6 FIXME): Investigate sidebar resize lifecycle and re-implement PanelResizeListener. See FIXME comments in chat_panel.py.
@@ -139,8 +139,8 @@ Advanced Roadmap (Future Phases)
 
 Key findings: Phase 1 scope was overreaching — `get_document_structure()` and viewport content are expensive/fragile in UNO. Safety and observability must come before new features. Prioritize low-risk context primitives first.
 
-**Phase 0: Foundation and Safety (Prerequisite)**
-- Shared API helper and request timeout
+**Phase 0: Foundation and Safety (Prerequisite)** -- DONE
+- Shared API helper and request timeout (implemented in main.py)
 - Unified user-facing error handling (message boxes; never write errors into document)
 - Token/context budget guardrails
 - Structured logging toggles
