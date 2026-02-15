@@ -246,7 +246,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
             debug_log(self.ctx, "_do_send: importing core modules...")
             from core.config import get_config, get_api_config
             from core.api import LlmClient
-            from core.document import get_full_document_text
+            from core.document import get_document_context_for_chat
             from core.logging import log_to_file
             debug_log(self.ctx, "_do_send: core modules imported OK")
         except Exception as e:
@@ -301,10 +301,10 @@ class SendButtonListener(unohelper.Base, XActionListener):
         api_config = get_api_config(self.ctx)
         client = LlmClient(api_config, self.ctx)
 
-        # 4. Refresh document context in session
+        # 4. Refresh document context in session (start + end excerpts, inline selection/cursor markers)
         self._set_status("Reading document...")
-        doc_text = get_full_document_text(model, max_context)
-        debug_log(self.ctx, "_do_send: document text length=%d" % len(doc_text))
+        doc_text = get_document_context_for_chat(model, max_context, include_end=True, include_selection=True)
+        debug_log(self.ctx, "_do_send: document context length=%d" % len(doc_text))
         # #region agent log
         agent_log("chat_panel.py:doc_context", "Document context for AI", data={"doc_length": len(doc_text), "doc_prefix_first_200": (doc_text or "")[:200], "max_context": max_context}, hypothesis_id="B")
         # #endregion
@@ -367,7 +367,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 self._set_status("Receiving response...")
                 waiting_for_model[0] = False
             if thinking_open and thinking_open[0]:
-                self._append_response(" /thinking")
+                self._append_response(" /thinking\n")
                 thinking_open[0] = False
             self._append_response(content_delta)
             if on_chunk:
@@ -429,7 +429,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
             log_to_file("Tool loop round %d: stream_request_with_tools returned." % round_num)
 
             if thinking_open[0]:
-                self._append_response(" /thinking")
+                self._append_response(" /thinking\n")
                 thinking_open[0] = False
 
             tool_calls = response.get("tool_calls")
@@ -546,7 +546,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
             self._append_response("[Stream error: %s]\n" % str(e))
             self._terminal_status = "Error"
         if thinking_open[0]:
-            self._append_response(" /thinking")
+            self._append_response(" /thinking\n")
         self._append_response("\n")
 
     def _do_simple_stream(self, client, max_tokens, api_type):
@@ -592,7 +592,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
             self._append_response("[Error: %s]\n" % str(e))
             self._terminal_status = "Error"
         if thinking_open[0]:
-            self._append_response(" /thinking")
+            self._append_response(" /thinking\n")
         self._append_response("\n")
 
     def disposing(self, evt):

@@ -11,7 +11,7 @@ import officehelper
 
 from core.config import get_config, set_config, as_bool, get_api_config
 from core.api import LlmClient
-from core.document import get_full_document_text
+from core.document import get_full_document_text, get_document_context_for_chat
 from core.logging import log_to_file, agent_log
 from core.constants import DEFAULT_CHAT_SYSTEM_PROMPT
 from com.sun.star.task import XJobExecutor
@@ -334,7 +334,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             elif args == "ChatWithDocument":
                 try:
                     max_context = int(self.get_config("chat_context_length", 8000))
-                    doc_text = self.get_full_document_text(model, max_context)
+                    doc_text = get_document_context_for_chat(model, max_context, include_end=True, include_selection=True)
                     if not doc_text.strip():
                         self.show_error("Document is empty.", "Chat with Document")
                         return

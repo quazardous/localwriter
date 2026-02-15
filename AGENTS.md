@@ -26,7 +26,7 @@ localwriter/
 ├── core/                # Shared core logic
 │   ├── config.py        # get_config, set_config, get_api_config (localwriter.json)
 │   ├── api.py           # LlmClient: streaming, chat, tool-calling
-│   ├── document.py      # get_full_document_text (Writer)
+│   ├── document.py      # get_full_document_text, get_document_end, get_selection_range, get_document_context_for_chat (Writer)
 │   ├── logging.py       # log_to_file, agent_log, debug_log, debug_log_paths
 │   └── constants.py     # DEFAULT_CHAT_SYSTEM_PROMPT
 ├── prompt_function.py   # Calc =PROMPT() formula
@@ -90,14 +90,24 @@ localwriter/
   - **Send button disable**: The Send button is programmatically disabled via `setEnable(False)` when the tool-calling loop starts and re-enabled in a `finally` block when done. This prevents multiple concurrent requests.
 - **Implementation**: `chat_panel.py` (ChatPanelFactory, ChatPanelElement, ChatToolPanel); `ContainerWindowProvider` + `ChatPanelDialog.xdl`; `setVisible(True)` required after `createContainerWindow()`.
 - **Tool-calling**: `document_tools.py` defines 7 tools: `replace_text`, `insert_text`, `get_selection`, `replace_selection`, `format_text`, `set_paragraph_style`, `get_document_text`.
-- **Menu fallback**: Menu item "Chat with Document" opens input dialog, appends streaming response to document end (no tool-calling).
+- **Menu fallback**: Menu item "Chat with Document" opens input dialog, appends streaming response to document end (no tool-calling). Both sidebar and menu use the same document context (see below).
 - **Config keys** (used by chat): `chat_context_length`, `chat_max_tokens`, `chat_system_prompt` (in Settings).
+
+### Document context for chat (current implementation)
+
+- **Refreshed every Send**: On each user message we re-read the document and rebuild the context; the single `[DOCUMENT CONTENT]` system message is **replaced** (not appended), so the conversation history grows but the context block does not duplicate.
+- **Rich context**: `core/document.py` provides `get_document_context_for_chat(model, max_context, include_end=True, include_selection=True)` which builds one string with:
+  - Document length (metadata).
+  - **Start and end excerpts**: For long documents, first half and last half of `chat_context_length` (e.g. 4000 + 4000), with `[DOCUMENT START]` / `[DOCUMENT END]` / `[END DOCUMENT]` labels and a middle-omitted note. For short documents, one full block.
+  - **Selection/cursor inside the document**: No separate selection block and no duplicated text. We get `(start_offset, end_offset)` from `get_selection_range(model)` (cursor = same start and end; no selection uses view cursor). We inject **`[SELECTION_START]`** and **`[SELECTION_END]`** at those character positions in the excerpt text so the model sees exactly where the selection/cursor is. When there is no selection, both markers are placed at the cursor so the model knows where text would be inserted. Very long selections are capped (e.g. 2000 chars) so context stays usable.
+- **Scope**: Chat with Document only. Extend Selection and Edit Selection are legacy and unchanged.
+- **Helpers**: `get_document_end(model, max_chars)`, `get_selection_range(model)` → `(start_offset, end_offset)`; `_inject_markers_into_excerpt()` for placing markers in start/end excerpts.
 
 ### System prompt and reasoning (latest)
 
 - **DEFAULT_CHAT_SYSTEM_PROMPT** in `core/constants.py` (imported by `main.py`, `chat_panel.py`) instructs the model to: (1) use tools proactively; (2) use internal linguistic knowledge for translate/proofread/edit; (3) for translate: call `get_document_text`, translate internally, then apply via tools — NEVER refuse translation; (4) keep reasoning minimal and act; (5) confirm edits briefly.
 - **Reasoning tokens**: `main.py` sends `reasoning: { effort: 'minimal' }` on all chat requests (OpenRouter and other providers).
-- **Thinking display**: Reasoning tokens are shown in the response area as `[Thinking] ... /thinking`.
+- **Thinking display**: Reasoning tokens are shown in the response area as `[Thinking] ... /thinking`. When thinking ends we append a newline after ` /thinking` so the following response text starts on a new line.
 
 See [CHAT_SIDEBAR_IMPLEMENTATION.md](CHAT_SIDEBAR_IMPLEMENTATION.md) for implementation details.
 
@@ -200,7 +210,7 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 
 ### Chat Sidebar Enhancement Roadmap
 
-See [Chat Sidebar Improvement Plan.md](Chat%20Sidebar%20Improvement%20Plan.md) for current capabilities, recent improvements, and advanced roadmap.
+- **Document context (DONE)**: Start + end excerpts and inline selection/cursor markers via `get_document_context_for_chat()`; see "Document context for chat" above and [Chat Sidebar Improvement Plan.md](Chat%20Sidebar%20Improvement%20Plan.md) for design decisions and current implementation.
 
 ---
 

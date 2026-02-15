@@ -1,10 +1,12 @@
 Chat Sidebar Improvement Plan
 
-Current State (updated 2026-02-13)
+Current State (updated 2026-02-14)
 
 The chat sidebar has conversation history, tool-calling, and 8 curated Writer document tools. The AI can read, search, replace, format, and style text in the open Writer document via the OpenAI-compatible tool-calling protocol.
 
 **Recent improvements (Feb 2026):**
+- **Document context for chat**: Context sent to the AI now includes (1) **start and end excerpts** of the document (split of `chat_context_length`, e.g. 4000 + 4000) so long documents show both beginning and end; (2) **selection/cursor as inline markers** inside that text: `[SELECTION_START]` and `[SELECTION_END]` at the actual character positions. No separate selection block and no duplication—the selection is the span between the two markers (or both markers at the cursor when nothing is selected, indicating insertion point). Implemented in `core/document.py`: `get_document_end()`, `get_selection_range()` (start/end character offsets), `get_document_context_for_chat()`, and marker injection. Context is refreshed every Send; the single `[DOCUMENT CONTENT]` message is replaced so conversation history grows without duplicating the document. Both sidebar and menu "Chat with Document" use this. Scope: Chat with Document only; Extend Selection / Edit Selection are legacy and unchanged. Very long selections are capped (e.g. 2000 chars) so context stays usable.
+- **Thinking display**: When the AI finishes thinking we append a newline after ` /thinking` so the following response starts on a new line.
 - **Translation behavior**: Models were refusing translation ("I don't have a translation tool"). Prompt now explicitly states: "You CAN translate. Call get_document_text, translate the content yourself, then replace_text or search_and_replace_all. NEVER refuse." Result: model correctly uses get_document_text → translate → replace_text.
 - **Reasoning verbosity**: Added `reasoning: { effort: 'minimal' }` to all chat requests (provider-agnostic). Thinking is still displayed for progress; model may remain verbose but no longer wastes tokens arguing with itself about whether it can perform tasks.
 - **Prompt brevity**: "Keep reasoning minimal, then act. Do not repeat conclusions or over-explain." Reduces circular reasoning in thinking output.
@@ -13,10 +15,18 @@ The chat sidebar has conversation history, tool-calling, and 8 curated Writer do
 - **Undo grouping**: Tool-calling rounds are wrapped in an `UndoManager` context (`AI Edit`), allowing users to revert all AI changes from a single turn with one Ctrl+Z.
 
 Key files:
+- core/document.py -- get_full_document_text(), get_document_end(), get_selection_range(), get_document_context_for_chat() (start/end excerpts + inline selection markers)
 - chat_panel.py -- ChatSession (conversation history), SendButtonListener (tool-calling loop), ClearButtonListener, ChatPanelElement/ChatToolPanel/ChatPanelFactory (sidebar plumbing)
 - document_tools.py -- WRITER_TOOLS JSON schemas, executor functions, TOOL_DISPATCH table
 - main.py -- make_chat_request(), request_with_tools(), stream_chat_response() (API plumbing for tool-calling)
 - LocalWriterDialogs/ChatPanelDialog.xdl -- compact fixed-size panel layout (120x180 AppFont units)
+
+**Document context design decisions (for future reference):**
+- Selection/cursor is represented **inside the document** as inline markers, not a separate block, so there is no duplicated text and the model unambiguously knows which span is the user's focus (or where the cursor is for insertion).
+- When there is no selection, both markers are placed at the cursor position so the model sees where text would be inserted.
+- Context is refreshed every Send; the single [DOCUMENT CONTENT] message is replaced (not appended), so the conversation history grows without sending the document again and again.
+- Scope: Chat with Document only; Extend Selection and Edit Selection are legacy and were not changed.
+- Multiselect can be added later with the same approach (multiple marker pairs).
 
 Known issue: The panel uses a fixed layout (no dynamic resizing). The PanelResizeListener was removed because the sidebar's resize lifecycle gives the panel a very large initial height before settling, which positions controls off-screen. See FIXME comments in chat_panel.py. The XDL is set to a compact fixed size that works at the default sidebar width.
 
@@ -25,7 +35,8 @@ Phase 1: Conversation History and Chat State -- DONE
 
 Implemented:
 - ChatSession class in chat_panel.py holds messages list (system, user, assistant, tool roles)
-- System prompt and document context injected as first messages, refreshed each turn
+- System prompt and document context injected as first messages, refreshed each turn (single [DOCUMENT CONTENT] message replaced, not appended)
+- Document context built by get_document_context_for_chat(): start + end excerpts, inline [SELECTION_START]/[SELECTION_END] at cursor/selection positions (no separate block, no duplication)
 - Conversation accumulates in response area with "You:" / "AI:" prefixes
 - Clear button resets conversation history and UI
 
@@ -143,9 +154,9 @@ Key findings: Phase 1 scope was overreaching — `get_document_structure()` and 
 - Token/context budget guardrails
 - Structured logging toggles
 
-**Phase 1: Enhanced Context Awareness**
-- `get_selection_context()`, `get_cursor_context()`, lightweight `get_current_position()`
-- `get_document_metadata()`, `get_style_information()`
+**Phase 1: Enhanced Context Awareness** -- PARTIALLY DONE (for Chat with Document)
+- **Done**: `get_selection_range(model)` returns (start_offset, end_offset) for cursor/selection; `get_document_end(model, max_chars)`; `get_document_context_for_chat()` builds start/end excerpts and injects [SELECTION_START]/[SELECTION_END] inline (no separate block). Used by sidebar and menu Chat with Document only.
+- Still open: `get_document_metadata()`, `get_style_information()`
 - Deferred: `get_document_structure()`, `get_visible_content()` (too hard/expensive)
 
 **Phase 2: Intelligent Editing Assistance**
