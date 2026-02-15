@@ -533,48 +533,82 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
         # Main-thread drain loop: queue + processEventsToIdle only (no UNO Timer)
         while not job_done[0]:
+            items = []
             try:
-                item = q.get(timeout=0.05)
+                # Wait for at least one item or timeout
+                items.append(q.get(timeout=0.05))
+                # Drain all currently available items to batch updates
+                try:
+                    while True:
+                        items.append(q.get_nowait())
+                except queue.Empty:
+                    pass
             except queue.Empty:
                 toolkit.processEventsToIdle()
                 continue
+
             try:
-                kind = item[0] if isinstance(item, tuple) else item
-                if kind == "chunk":
-                    if thinking_open[0]:
-                        self._append_response(" /thinking\n")
-                        thinking_open[0] = False
-                    self._append_response(item[1])
-                elif kind == "thinking":
-                    if not thinking_open[0]:
-                        self._append_response("[Thinking] ")
-                        thinking_open[0] = True
-                    self._append_response(item[1])
-                elif kind == "stream_done":
-                    if thinking_open[0]:
-                        self._append_response(" /thinking\n")
-                        thinking_open[0] = False
-                    process_stream_done(item[1])
-                elif kind == "stopped":
-                    if thinking_open[0]:
-                        self._append_response(" /thinking\n")
-                    job_done[0] = True
-                    self._terminal_status = "Stopped"
-                    self._set_status("Stopped")
-                    self._append_response("\n[Stopped by user]\n")
-                elif kind == "error":
-                    if thinking_open[0]:
-                        self._append_response(" /thinking\n")
-                    job_done[0] = True
-                    self._append_response("\n[API error: %s]\n" % str(item[1]))
-                    self._terminal_status = "Error"
-                    self._set_status("Error")
+                current_chunks = []
+                current_thinking = []
+
+                def flush_buffers():
+                    if current_thinking:
+                        if not thinking_open[0]:
+                            self._append_response("[Thinking] ")
+                            thinking_open[0] = True
+                        self._append_response("".join(current_thinking))
+                        current_thinking.clear()
+                    if current_chunks:
+                        if thinking_open[0]:
+                            self._append_response(" /thinking\n")
+                            thinking_open[0] = False
+                        self._append_response("".join(current_chunks))
+                        current_chunks.clear()
+
+                for item in items:
+                    kind = item[0] if isinstance(item, tuple) else item
+                    if kind == "chunk":
+                        if current_thinking:
+                            flush_buffers()
+                        current_chunks.append(item[1])
+                    elif kind == "thinking":
+                        if current_chunks:
+                            flush_buffers()
+                        current_thinking.append(item[1])
+                    elif kind == "stream_done":
+                        flush_buffers()
+                        if thinking_open[0]:
+                            self._append_response(" /thinking\n")
+                            thinking_open[0] = False
+                        process_stream_done(item[1])
+                    elif kind == "stopped":
+                        flush_buffers()
+                        if thinking_open[0]:
+                            self._append_response(" /thinking\n")
+                        job_done[0] = True
+                        self._terminal_status = "Stopped"
+                        self._set_status("Stopped")
+                        self._append_response("\n[Stopped by user]\n")
+                        break
+                    elif kind == "error":
+                        flush_buffers()
+                        if thinking_open[0]:
+                            self._append_response(" /thinking\n")
+                        job_done[0] = True
+                        self._append_response("\n[API error: %s]\n" % str(item[1]))
+                        self._terminal_status = "Error"
+                        self._set_status("Error")
+                        break
+                
+                flush_buffers()
+
             except Exception as e:
                 job_done[0] = True
                 self._append_response("\n[Error: %s]\n" % str(e))
                 self._terminal_status = "Error"
                 self._set_status("Error")
             toolkit.processEventsToIdle()
+
 
     def _do_tool_calling_loop_impl(self, client, model, max_tokens, tools, execute_tool_fn):
         """Inner implementation of the tool-calling loop (without undo wrapper)."""

@@ -59,40 +59,76 @@ def run_stream_completion_async(
 
     # Main-thread drain loop: queue + processEventsToIdle only (no UNO Timer)
     while not job_done[0]:
+        items = []
         try:
-            item = q.get(timeout=0.05)
+            # Wait for at least one item or timeout
+            items.append(q.get(timeout=0.05))
+            # Drain all currently available items to batch updates
+            try:
+                while True:
+                    items.append(q.get_nowait())
+            except queue.Empty:
+                pass
         except queue.Empty:
             toolkit.processEventsToIdle()
             continue
+
         try:
-            kind = item[0] if isinstance(item, tuple) else item
-            if kind == "chunk":
-                if thinking_open[0]:
-                    apply_chunk_fn(" /thinking\n", is_thinking=True)
-                    thinking_open[0] = False
-                apply_chunk_fn(item[1], is_thinking=False)
-            elif kind == "thinking":
-                if not thinking_open[0]:
-                    apply_chunk_fn("[Thinking] ", is_thinking=True)
-                    thinking_open[0] = True
-                apply_chunk_fn(item[1], is_thinking=True)
-            elif kind == "stream_done":
-                if thinking_open[0]:
-                    apply_chunk_fn(" /thinking\n", is_thinking=True)
-                    thinking_open[0] = False
-                job_done[0] = True
-                on_done_fn()
-            elif kind == "stopped":
-                if thinking_open[0]:
-                    apply_chunk_fn(" /thinking\n", is_thinking=True)
-                job_done[0] = True
-                on_done_fn()
-            elif kind == "error":
-                if thinking_open[0]:
-                    apply_chunk_fn(" /thinking\n", is_thinking=True)
-                job_done[0] = True
-                on_error_fn(item[1])
+            current_content = []
+            current_thinking = []
+
+            def flush_buffers():
+                if current_thinking:
+                    if not thinking_open[0]:
+                        apply_chunk_fn("[Thinking] ", is_thinking=True)
+                        thinking_open[0] = True
+                    apply_chunk_fn("".join(current_thinking), is_thinking=True)
+                    current_thinking.clear()
+                if current_content:
+                    if thinking_open[0]:
+                        apply_chunk_fn(" /thinking\n", is_thinking=True)
+                        thinking_open[0] = False
+                    apply_chunk_fn("".join(current_content), is_thinking=False)
+                    current_content.clear()
+
+            for item in items:
+                kind = item[0] if isinstance(item, tuple) else item
+                if kind == "chunk":
+                    if current_thinking:
+                        flush_buffers()
+                    current_content.append(item[1])
+                elif kind == "thinking":
+                    if current_content:
+                        flush_buffers()
+                    current_thinking.append(item[1])
+                elif kind == "stream_done":
+                    flush_buffers()
+                    if thinking_open[0]:
+                        apply_chunk_fn(" /thinking\n", is_thinking=True)
+                        thinking_open[0] = False
+                    job_done[0] = True
+                    on_done_fn()
+                    break # Don't process further items after done
+                elif kind == "stopped":
+                    flush_buffers()
+                    if thinking_open[0]:
+                        apply_chunk_fn(" /thinking\n", is_thinking=True)
+                    job_done[0] = True
+                    on_done_fn()
+                    break
+                elif kind == "error":
+                    flush_buffers()
+                    if thinking_open[0]:
+                        apply_chunk_fn(" /thinking\n", is_thinking=True)
+                    job_done[0] = True
+                    on_error_fn(item[1])
+                    break
+            
+            flush_buffers()
+
         except Exception as e:
             job_done[0] = True
             on_error_fn(e)
+        
         toolkit.processEventsToIdle()
+

@@ -1,10 +1,11 @@
 Chat Sidebar Improvement Plan
 
-Current State (updated 2026-02-14)
+Current State (updated 2026-02-15)
 
 The chat sidebar has conversation history, tool-calling, and **2 markdown-centric Writer tools**. The AI reads and edits the document via **get_markdown** and **apply_markdown** (OpenAI-compatible tool-calling). Legacy tools (replace_text, insert_text, get_selection, replace_selection, format_text, set_paragraph_style, get_document_text) remain implemented in document_tools.py but are not exposed in WRITER_TOOLS (their TOOL_DISPATCH entries are commented out).
 
 **Recent improvements (Feb 2026):**
+- **Range-based markdown replace (2026-02-15)**: To avoid the AI sending document text twice (e.g. "make my plain text resume look nice"), the tools now support a "read once, replace by range" flow. **get_markdown** returns **document_length** in its JSON and supports **scope "range"** with **start** and **end** (character offsets) so the AI can read a slice and then replace only that slice. **apply_markdown** supports **target "full"** (replace entire document) and **target "range"** with **start** and **end** (replace the character span [start, end)). The model is instructed to call get_markdown once, then apply_markdown with **only the new markdown** — never paste the original text back. Helpers in core/document.py: **get_document_length(model)**, **get_text_cursor_at_range(model, start, end)** (uses goRight in chunks for UNO short limit). See AGENTS.md "Markdown tool-calling" and "Chat Sidebar Enhancement Roadmap".
 - **Streaming I/O: pure Python queue + main-thread drain (no UNO Timer)**: All streaming—sidebar tool-calling, sidebar simple stream, Writer Extend/Edit/menu Chat, Calc—uses the same pattern: a **worker thread** puts chunks/thinking/stream_done/error/stopped on a **`queue.Queue`**; the **main thread** runs a drain loop: `q.get(timeout=0.05)` → process item → **`toolkit.processEventsToIdle()`**. No UNO Timer or `XTimerListener` (that type is unavailable in the sidebar context). Interface is just the queue; only UNO used is toolkit by string name and `processEventsToIdle()`. Multiple chunks can be applied between redraws, so multiple inserts are shown in one repaint—fewer redraws and faster perceived speed. Implemented in `chat_panel.py` `_start_tool_calling_async()` (tool path) and in `core/async_stream.py` `run_stream_completion_async()` (simple stream + Writer/Calc flows). See AGENTS.md Section 3b "Streaming I/O".
 - **Document context for chat**: Context sent to the AI now includes (1) **start and end excerpts** of the document (split of `chat_context_length`, e.g. 4000 + 4000) so long documents show both beginning and end; (2) **selection/cursor as inline markers** inside that text: `[SELECTION_START]` and `[SELECTION_END]` at the actual character positions. No separate selection block and no duplication—the selection is the span between the two markers (or both markers at the cursor when nothing is selected, indicating insertion point). Implemented in `core/document.py`: `get_document_end()`, `get_selection_range()` (start/end character offsets), `get_document_context_for_chat()`, and marker injection. Context is refreshed every Send; the single `[DOCUMENT CONTENT]` message is replaced so conversation history grows without duplicating the document. Both sidebar and menu "Chat with Document" use this. Scope: Chat with Document only; Extend Selection / Edit Selection are legacy and unchanged. Very long selections are capped (e.g. 2000 chars) so context stays usable.
 - **Thinking display**: When the AI finishes thinking we append a newline after ` /thinking` so the following response starts on a new line.
@@ -17,11 +18,11 @@ The chat sidebar has conversation history, tool-calling, and **2 markdown-centri
 - **Send/Stop busy state (lifecycle-based)**: Send is disabled and Stop enabled at the start of each run (`actionPerformed` try block); re-enabled only in the `finally` block when `_do_send()` has returned. No reliance on internal drain-loop or job_done state. `_set_button_states()` uses per-control try/except so a UNO failure on one button cannot leave Send stuck disabled. `SendButtonListener._send_busy` is True while the run is in progress, False in finally. See AGENTS.md Section 3b.
 
 Key files:
-- core/document.py -- get_full_document_text(), get_document_end(), get_selection_range(), get_document_context_for_chat() (start/end excerpts + inline selection markers)
+- core/document.py -- get_full_document_text(), get_document_end(), get_selection_range(), get_document_length(), get_text_cursor_at_range() (for range replace), get_document_context_for_chat() (start/end excerpts + inline selection markers)
 - core/async_stream.py -- run_stream_completion_async(): worker + queue + main-thread drain loop (used by sidebar simple stream and by main.py for Writer/Calc streaming)
 - chat_panel.py -- ChatSession (conversation history), SendButtonListener (tool-calling loop with queue+drain in _start_tool_calling_async), ClearButtonListener, ChatPanelElement/ChatToolPanel/ChatPanelFactory (sidebar plumbing)
 - document_tools.py -- WRITER_TOOLS (get_markdown, apply_markdown only), execute_tool, TOOL_DISPATCH; legacy tool code present but not in WRITER_TOOLS / dispatch commented out
-- markdown_support.py -- document_to_markdown (storeToURL or structural), apply_markdown (hidden Writer doc + transferable; temp files in system temp dir)
+- markdown_support.py -- document_to_markdown (storeToURL or structural; scope full/selection/range), tool_get_markdown (returns document_length; scope range with start/end), apply_markdown (target beginning/end/selection/search/full/range), _insert_markdown_full(), _apply_markdown_at_range(), insertDocumentFromURL (temp .md file in system temp dir)
 - main.py -- uses run_stream_completion_async for Extend/Edit/menu Chat and Calc; API plumbing in core/api.py
 - LocalWriterDialogs/ChatPanelDialog.xdl -- compact fixed-size panel layout (120x180 AppFont units)
 
@@ -61,8 +62,8 @@ Phase 3: Writer Document Tools -- DONE (markdown-centric)
 
 **Exposed to the AI (WRITER_TOOLS):** Only two tools, implemented in markdown_support.py and dispatched via document_tools.execute_tool:
 
-1. **get_markdown** — Return the document (or selection) as Markdown. Params: optional max_chars, optional scope ("full" | "selection"). Uses storeToURL with FilterName "Markdown" when available, else structural fallback (paragraph styles → # , -, >, etc.).
-2. **apply_markdown** — Insert or replace content using Markdown. Params: markdown (string), target ("beginning" | "end" | "selection" | "search"); when target is "search", also search (string), optional all_matches, case_sensitive. Writes markdown to a temp file (system temp dir), loads in a hidden Writer document with Markdown filter, gets transferable, then insertTransferable at the chosen position(s) in the main document. Replaces the previous separate insert_text, replace_selection, replace_text tools.
+1. **get_markdown** — Return the document (or selection/range) as Markdown. Params: optional max_chars, optional scope ("full" | "selection" | **"range"**); when scope is **"range"**, required **start** and **end** (character offsets). Result JSON includes **document_length** so the AI can replace whole doc with apply_markdown(target="range", start=0, end=document_length) or target="full"; when scope="range", result also echoes start/end. Uses storeToURL with FilterName "Markdown" when scope is full and available, else structural fallback (paragraph styles → # , -, >, etc.).
+2. **apply_markdown** — Insert or replace content using Markdown. Params: markdown (string), target ("beginning" | "end" | "selection" | "search" | **"full"** | **"range"**); when target is "search", also search (string), optional all_matches, case_sensitive; when target is **"range"**, required **start** and **end** (character offsets). **target="full"** replaces the entire document (clear all, insert at start). **target="range"** replaces the character span [start, end) with the markdown so the AI never has to send the original text back. Writes markdown to a temp file (system temp dir), then cursor.insertDocumentFromURL(file_url, {FilterName: "Markdown"}) at the chosen position; for "full" uses _insert_markdown_full(); for "range" uses get_text_cursor_at_range() then setString("") and insertDocumentFromURL.
 
 **Legacy tools (not exposed):** replace_text, insert_text, get_selection, replace_selection, format_text, set_paragraph_style, get_document_text remain in document_tools.py with "NOT CURRENTLY USED" in docstrings; their TOOL_DISPATCH entries are commented out so they are not callable. Kept for possible future use.
 
@@ -80,7 +81,7 @@ Implemented in chat_panel.py SendButtonListener:
 Phase 5: System Prompt Engineering -- PARTIALLY DONE
 
 Implemented:
-- DEFAULT_CHAT_SYSTEM_PROMPT (core/constants.py) with: (1) translation rule — use get_markdown / apply_markdown; never refuse; (2) edit/rewrite/transform — same pattern; (3) reasoning brevity — think briefly, act, avoid long chains; (4) post-edit confirmation (one sentence).
+- DEFAULT_CHAT_SYSTEM_PROMPT (core/constants.py) with: (1) markdown flow — get_markdown to read (full or range), apply_markdown to write; for "replace whole document" use get_markdown(scope="full") once then apply_markdown(markdown=<new>, target="full"); pass only the new content, never the original text; (2) translation — use get_markdown/apply_markdown; never refuse; (3) no preamble, concise reasoning; (4) one-sentence confirmation after edits.
 - main.py sends `reasoning: { effort: 'minimal' }` on all chat requests (provider-agnostic).
 
 Still TODO:
@@ -128,7 +129,8 @@ File Organization
 
 - chat_panel.py -- ChatSession, SendButtonListener (tool-calling loop), ClearButtonListener, sidebar plumbing
 - document_tools.py -- WRITER_TOOLS (get_markdown, apply_markdown), execute_tool, TOOL_DISPATCH; legacy tool functions present but not dispatched
-- markdown_support.py -- document_to_markdown, apply_markdown (hidden doc + transferable), MARKDOWN_TOOLS schemas
+- markdown_support.py -- document_to_markdown (scope full/selection/range), tool_get_markdown (returns document_length), tool_apply_markdown (target full/range/beginning/end/selection/search), _insert_markdown_full, _apply_markdown_at_range, insertDocumentFromURL; MARKDOWN_TOOLS schemas
+- core/document.py -- get_document_length, get_text_cursor_at_range (for range replace), get_document_context_for_chat, get_selection_range, etc.
 - main.py -- make_chat_request, request_with_tools, stream_chat_response
 - LocalWriterDialogs/ChatPanelDialog.xdl -- compact fixed panel layout
 - build.sh -- includes document_tools.py and markdown_support.py in .oxt
