@@ -16,6 +16,7 @@ from core.logging import agent_log, debug_log
 TEMP_DIR = tempfile.gettempdir()
 
 
+
 def _file_url(path):
     """Return a file:// URL for the given path."""
     return urllib.parse.urljoin("file:", urllib.request.pathname2url(os.path.abspath(path)))
@@ -353,9 +354,37 @@ def _markdown_to_plain_via_document(ctx, markdown_string):
             pass
 
 
+def _literal_search_candidates(source_string):
+    """Build a deduplicated list of literal search strings to try for a given source.
+    Includes raw, normalized (all line breaks collapsed to \\n), and variants with
+    \\n\\n, \\r\\n, \\r\\n\\r\\n, \\r, \\n\\r, plus optional trailing \\n and \\n\\n.
+    Used so multi-paragraph search can match regardless of how Writer stores breaks."""
+    if source_string is None or not isinstance(source_string, str):
+        return [source_string] if source_string is not None else []
+    seen = set()
+    out = []
+    def add(s):
+        if s is not None and s not in seen:
+            seen.add(s)
+            out.append(s)
+    add(source_string)
+    # Normalize: collapse all line break forms to single \n (order matters)
+    normalized = source_string.replace("\r\n\r\n", "\n").replace("\r\n", "\n").replace("\n\n", "\n").replace("\r", "\n")
+    add(normalized)
+    add(normalized.replace("\n", "\n\n"))
+    add(normalized.replace("\n", "\r\n"))
+    add(normalized.replace("\n", "\r\n\r\n"))
+    add(normalized.replace("\n", "\r"))
+    add(normalized.replace("\n", "\n\r"))
+    add(normalized + "\n")
+    add(normalized + "\n\n")
+    return out
+
+
 def _apply_markdown_at_search(model, ctx, markdown_string, search_string, all_matches=False, case_sensitive=True):
     """Find search_string (first or all), replace each match with rendered markdown content.
-    Tries exact search_string first; if no match, converts markdown to plain via LO and retries."""
+    Builds literal search candidates from the raw string and always from LO plain (when available)
+    via _literal_search_candidates, so we handle markdown stripping and multiple line-ending variants."""
     fd, path = tempfile.mkstemp(suffix=".md", dir=TEMP_DIR)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -370,14 +399,24 @@ def _apply_markdown_at_search(model, ctx, markdown_string, search_string, all_ma
 
     file_url = _file_url(path)
     filter_props = (_create_property_value("FilterName", "Markdown"),)
-    search_candidates = [search_string]
+    search_candidates = _literal_search_candidates(search_string)
     t0 = time.time()
     plain = _markdown_to_plain_via_document(ctx, search_string)
-    if plain and plain != search_string:
-        search_candidates.append(plain)
-        debug_log(ctx, "markdown_support: _apply_markdown_at_search markdown-to-plain fallback (total) took %.3fs" % (time.time() - t0))
+    if plain:
+        # Always merge LO plain candidates so we match document text (markdown stripping: backticks, asterisks, etc.).
+        seen = set(search_candidates)
+        for c in _literal_search_candidates(plain):
+            if c not in seen:
+                seen.add(c)
+                search_candidates.append(c)
+    debug_log(ctx, "markdown_support: _apply_markdown_at_search LO plain took %.3fs, %d candidates" % (time.time() - t0, len(search_candidates)))
     try:
-        for search_candidate in search_candidates:
+        for idx, search_candidate in enumerate(search_candidates):
+            # Log exact candidate so we can see line endings and characters (repr truncate to 400)
+            r = repr(search_candidate)
+            if len(r) > 400:
+                r = r[:400] + "..."
+            debug_log(ctx, "markdown_support: _apply_markdown_at_search candidate #%d len=%d: %s" % (idx, len(search_candidate), r))
             sd = model.createSearchDescriptor()
             sd.SearchString = search_candidate
             sd.SearchRegularExpression = False
@@ -393,8 +432,10 @@ def _apply_markdown_at_search(model, ctx, markdown_string, search_string, all_ma
                 if not all_matches:
                     break
                 found = model.findNext(cursor.getEnd(), sd)
+            debug_log(ctx, "markdown_support: _apply_markdown_at_search candidate #%d -> replaced %d" % (idx, count))
             if count > 0:
                 return count
+        debug_log(ctx, "markdown_support: _apply_markdown_at_search all %d candidates gave 0 replacements" % len(search_candidates))
         return 0
     except Exception as e:
         debug_log(ctx, "markdown_support: _apply_markdown_at_search failed: %s" % e)
@@ -442,13 +483,50 @@ def _find_text_ranges(model, ctx, search_string, start=0, limit=None, case_sensi
             debug_log(ctx, "markdown_support: _find_text_ranges failed: %s" % e)
         return matches
 
+    r0 = repr(search_string)
+    if len(r0) > 400:
+        r0 = r0[:400] + "..."
+    debug_log(ctx, "markdown_support: _find_text_ranges initial search len=%d: %s" % (len(search_string), r0))
     matches = _search(search_string)
+    debug_log(ctx, "markdown_support: _find_text_ranges initial -> %d matches" % len(matches))
+    if matches:
+        # Log first match's actual document text so we see what the doc contains
+        first_text = matches[0].get("text", "")
+        debug_log(ctx, "markdown_support: _find_text_ranges first match text len=%d repr=%s" % (len(first_text), repr(first_text)[:300]))
     if not matches:
-        t0 = time.time()
+        t0_fallback = time.time()
+        candidates = _literal_search_candidates(search_string)
         plain = _markdown_to_plain_via_document(ctx, search_string)
-        if plain and plain != search_string:
-            matches = _search(plain)
-            debug_log(ctx, "markdown_support: _find_text_ranges markdown-to-plain fallback took %.3fs" % (time.time() - t0))
+        if plain:
+            seen = set(candidates)
+            for c in _literal_search_candidates(plain):
+                if c not in seen:
+                    seen.add(c)
+                    candidates.append(c)
+        for idx, needle in enumerate(candidates):
+            r = repr(needle)
+            if len(r) > 400:
+                r = r[:400] + "..."
+            debug_log(ctx, "markdown_support: _find_text_ranges candidate #%d len=%d: %s" % (idx, len(needle), r))
+            matches = _search(needle)
+            debug_log(ctx, "markdown_support: _find_text_ranges candidate #%d -> %d matches" % (idx, len(matches)))
+            if matches:
+                first_text = matches[0].get("text", "")
+                debug_log(ctx, "markdown_support: _find_text_ranges first match text len=%d repr=%s" % (len(first_text), repr(first_text)[:300]))
+                break
+        debug_log(ctx, "markdown_support: _find_text_ranges fallback took %.3fs, %d candidates" % (time.time() - t0_fallback, len(candidates)))
+        if not matches:
+            # Log document prefix so we can see actual line endings / content
+            try:
+                cursor = model.getText().createTextCursor()
+                cursor.gotoStart(False)
+                n = min(500, doc_len)
+                if n > 0:
+                    cursor.goRight(n, True)
+                    prefix = cursor.getString()
+                    debug_log(ctx, "markdown_support: _find_text_ranges document prefix (first %d chars) repr=%s" % (len(prefix), repr(prefix)))
+            except Exception as e:
+                debug_log(ctx, "markdown_support: _find_text_ranges could not get document prefix: %s" % e)
     return matches
 
 
@@ -494,7 +572,7 @@ MARKDOWN_TOOLS = [
                     },
                     "start": {"type": "integer", "description": "Start character offset (0-based). Required when target is 'range'."},
                     "end": {"type": "integer", "description": "End character offset (exclusive). Required when target is 'range'."},
-                    "search": {"type": "string", "description": "Text to find (plain or markdown, auto-matched). Required for target 'search'."},
+                    "search": {"type": "string", "description": "Text to find (markdown ok; LO strips to plain to match). For section replacement send the full section text. Required for target 'search'."},
                     "all_matches": {"type": "boolean", "description": "When target is 'search', replace all occurrences (true) or just the first (false). Default false."},
                     "case_sensitive": {"type": "boolean", "description": "When target is 'search', whether the search is case-sensitive. Default true."},
                 },
@@ -507,11 +585,11 @@ MARKDOWN_TOOLS = [
         "type": "function",
         "function": {
             "name": "find_text",
-            "description": "Find text. Returns {start, end, text} per match. Use with apply_markdown (search= or target=range).",
+            "description": "Finds text. Accepts markdown; LO strips to plain to match. Returns {start, end, text} per match. Use with apply_markdown (search= or target=range).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "search": {"type": "string", "description": "Text to search (plain or markdown, auto-matched)."},
+                    "search": {"type": "string", "description": "Text to search (markdown ok; LO strips to plain to match)."},
                     "start": {"type": "integer", "description": "Start offset to search from (default 0)."},
                     "limit": {"type": "integer", "description": "Maximum number of matches to return (optional)."},
                     "case_sensitive": {"type": "boolean", "description": "Case sensitive search. Default true."},
@@ -583,7 +661,10 @@ def tool_apply_markdown(model, ctx, args):
         case_sensitive = args.get("case_sensitive", True)
         try:
             count = _apply_markdown_at_search(model, ctx, markdown, search, all_matches=all_matches, case_sensitive=case_sensitive)
-            return json.dumps({"status": "ok", "message": "Replaced %d occurrence(s) with markdown content." % count})
+            msg = "Replaced %d occurrence(s) with markdown content." % count
+            if count == 0:
+                msg += " Tried multiple literal candidates (including different line-ending variants). For section replacement send the full section text as search, or use find_text then apply_markdown with target='range'."
+            return json.dumps({"status": "ok", "message": msg})
         except Exception as e:
             debug_log(ctx, "markdown_support: apply_markdown search failed: %s" % e)
             return _tool_error(str(e))
@@ -1001,5 +1082,28 @@ def run_markdown_tests(ctx, model=None):
     except Exception as e:
         failed += 1
         log.append("FAIL: markdown-aware apply_markdown search raised: %s" % e)
+
+    # Test N: safeguard — when search is "## Summary\n\n", LO returns "Summary" (much shorter); we skip plain and return 0 with hint
+    try:
+        result = tool_apply_markdown(doc, ctx, {
+            "markdown": "## Replacement",
+            "target": "search",
+            "search": "## Summary\n\n",
+            "all_matches": False,
+        })
+        data = json.loads(result)
+        msg = data.get("message", "")
+        if data.get("status") == "ok" and "Replaced 0 occurrence(s)" in msg and "find_text" in msg and "target='range'" in msg:
+            passed += 1
+            ok("apply_markdown safeguard: short plain skipped, 0 replacements and hint returned")
+        elif data.get("status") == "ok" and "Replaced 0 occurrence(s)" in msg:
+            passed += 1
+            ok("apply_markdown safeguard: 0 replacements (hint may vary)")
+        else:
+            failed += 1
+            fail("apply_markdown safeguard: expected 0 replacements with hint, got status=%s message=%s" % (data.get("status"), msg[:120]))
+    except Exception as e:
+        failed += 1
+        log.append("FAIL: apply_markdown safeguard test raised: %s" % e)
 
     return passed, failed, log
