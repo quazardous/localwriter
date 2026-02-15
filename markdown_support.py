@@ -34,7 +34,7 @@ def _create_property_value(name, value):
 # ---------------------------------------------------------------------------
 
 def _document_to_markdown_structural(model, max_chars=None, scope="full", selection_start=0, selection_end=0):
-    """Walk document structure and emit Markdown. scope='full' or 'selection'."""
+    """Walk document structure and emit Markdown. scope='full', 'selection', or 'range'."""
     try:
         text = model.getText()
         enum = text.createEnumeration()
@@ -53,9 +53,9 @@ def _document_to_markdown_structural(model, max_chars=None, scope="full", select
             para_end = current_offset + len(para_text)
             current_offset = para_end
 
-            if scope == "selection" and (para_end <= selection_start or para_start >= selection_end):
+            if scope in ("selection", "range") and (para_end <= selection_start or para_start >= selection_end):
                 continue
-            if scope == "selection" and (para_start < selection_start or para_end > selection_end):
+            if scope in ("selection", "range") and (para_start < selection_start or para_end > selection_end):
                 trim_start = max(0, selection_start - para_start)
                 trim_end = len(para_text) - max(0, para_end - selection_end)
                 para_text = para_text[trim_start:trim_end]
@@ -95,8 +95,8 @@ def _document_to_markdown_structural(model, max_chars=None, scope="full", select
         return ""
 
 
-def document_to_markdown(model, ctx, max_chars=None, scope="full"):
-    """Get document (or selection) as Markdown. Tries storeToURL for full scope, then structural fallback."""
+def document_to_markdown(model, ctx, max_chars=None, scope="full", range_start=None, range_end=None):
+    """Get document (or selection/range) as Markdown. Tries storeToURL for full scope, then structural fallback."""
     selection_start, selection_end = 0, 0
     if scope == "selection":
         try:
@@ -104,8 +104,19 @@ def document_to_markdown(model, ctx, max_chars=None, scope="full"):
             selection_start, selection_end = get_selection_range(model)
         except Exception:
             pass
+    elif scope == "range":
+        selection_start = int(range_start) if range_start is not None else 0
+        selection_end = int(range_end) if range_end is not None else 0
+        doc_len = 0
+        try:
+            from core.document import get_document_length
+            doc_len = get_document_length(model)
+        except Exception:
+            pass
+        selection_end = min(selection_end, doc_len)
+        selection_start = max(0, min(selection_start, doc_len))
 
-    if scope != "selection":
+    if scope not in ("selection", "range"):
         try:
             storable = model
             if hasattr(storable, "storeToURL"):
@@ -215,6 +226,73 @@ def _insert_markdown_at_position(model, ctx, markdown_string, position, use_proc
             pass
 
 
+def _insert_markdown_full(model, ctx, markdown_string):
+    """Replace entire document with the given markdown (clear all, then insert at start)."""
+    fd, path = tempfile.mkstemp(suffix=".md", dir=TEMP_DIR)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(markdown_string)
+    except Exception:
+        os.close(fd)
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+        raise
+    file_url = _file_url(path)
+    try:
+        text = model.getText()
+        cursor = text.createTextCursor()
+        cursor.gotoStart(False)
+        cursor.gotoEnd(True)
+        cursor.setString("")
+        cursor.gotoStart(False)
+        filter_props = (_create_property_value("FilterName", "Markdown"),)
+        cursor.insertDocumentFromURL(file_url, filter_props)
+        debug_log(ctx, "markdown_support: insertDocumentFromURL succeeded at position=full")
+    except Exception as e:
+        debug_log(ctx, "markdown_support: _insert_markdown_full failed: %s" % e)
+        raise
+    finally:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+
+
+def _apply_markdown_at_range(model, ctx, markdown_string, start_offset, end_offset):
+    """Replace character range [start_offset, end_offset) with rendered markdown content."""
+    from core.document import get_text_cursor_at_range
+    cursor = get_text_cursor_at_range(model, start_offset, end_offset)
+    if cursor is None:
+        raise ValueError("Invalid range or could not create cursor for range (%d, %d)" % (start_offset, end_offset))
+    fd, path = tempfile.mkstemp(suffix=".md", dir=TEMP_DIR)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(markdown_string)
+    except Exception:
+        os.close(fd)
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+        raise
+    file_url = _file_url(path)
+    try:
+        cursor.setString("")
+        filter_props = (_create_property_value("FilterName", "Markdown"),)
+        cursor.insertDocumentFromURL(file_url, filter_props)
+        debug_log(ctx, "markdown_support: apply_markdown_at_range succeeded for (%d, %d)" % (start_offset, end_offset))
+    except Exception as e:
+        debug_log(ctx, "markdown_support: _apply_markdown_at_range failed: %s" % e)
+        raise
+    finally:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+
+
 def _apply_markdown_at_search(model, ctx, markdown_string, search_string, all_matches=False, case_sensitive=True):
     """Find search_string (first or all), replace each match with rendered markdown content."""
     fd, path = tempfile.mkstemp(suffix=".md", dir=TEMP_DIR)
@@ -270,16 +348,18 @@ MARKDOWN_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_markdown",
-            "description": "Get the document (or current selection) as Markdown. Use this to read formatted content as markdown.",
+            "description": "Get the document (or a range/selection) as Markdown. Result includes document_length; use it with apply_markdown(target='range', start=0, end=document_length) to replace the whole document, or target='full'. For reformatting: call get_markdown once, then apply_markdown with only the new markdown—never paste the original text back.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "max_chars": {"type": "integer", "description": "Maximum number of characters to return. Omit for full content."},
                     "scope": {
                         "type": "string",
-                        "enum": ["full", "selection"],
-                        "description": "Return full document (default) or only the current selection/cursor region."
+                        "enum": ["full", "selection", "range"],
+                        "description": "Return full document (default), current selection/cursor region, or a character range (requires start and end)."
                     },
+                    "start": {"type": "integer", "description": "Start character offset (0-based). Required when scope is 'range'."},
+                    "end": {"type": "integer", "description": "End character offset (exclusive). Required when scope is 'range'."},
                 },
                 "additionalProperties": False
             }
@@ -289,16 +369,18 @@ MARKDOWN_TOOLS = [
         "type": "function",
         "function": {
             "name": "apply_markdown",
-            "description": "Insert or replace content using Markdown. The content is converted to formatted text. Markdown string or list of strings. Use standard JSON format with double-quoted strings; escape internal quotes.",
+            "description": "Insert or replace content using Markdown (converted to formatted text). For 'replace whole document': use target='full' and pass only the new markdown. For a character span: use target='range' with start and end (e.g. from get_markdown's document_length). Never send the original document text back—only the new content.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "markdown": {"type": "string", "description": "The content in Markdown format (string or list of strings)."},
                     "target": {
                         "type": "string",
-                        "enum": ["beginning", "end", "selection", "search"],
-                        "description": "Where to apply: 'beginning' or 'end' of document, 'selection' (replace selection or insert at cursor), or 'search' (find and replace; requires 'search' parameter)."
+                        "enum": ["beginning", "end", "selection", "search", "full", "range"],
+                        "description": "Where to apply: 'full' (replace entire document), 'range' (replace [start,end); requires start and end), 'beginning'/'end' (insert), 'selection' (replace selection or insert at cursor), 'search' (find and replace; requires 'search' parameter)."
                     },
+                    "start": {"type": "integer", "description": "Start character offset (0-based). Required when target is 'range'."},
+                    "end": {"type": "integer", "description": "End character offset (exclusive). Required when target is 'range'."},
                     "search": {"type": "string", "description": "Exact text to find and replace. Required when target is 'search'."},
                     "all_matches": {"type": "boolean", "description": "When target is 'search', replace all occurrences (true) or just the first (false). Default false."},
                     "case_sensitive": {"type": "boolean", "description": "When target is 'search', whether the search is case-sensitive. Default true."},
@@ -316,12 +398,25 @@ def _tool_error(message):
 
 
 def tool_get_markdown(model, ctx, args):
-    """Tool: get document or selection as Markdown."""
+    """Tool: get document, selection, or range as Markdown. Returns document_length and optionally start/end for scope=range."""
     try:
+        from core.document import get_document_length
         max_chars = args.get("max_chars")
         scope = args.get("scope", "full")
-        markdown = document_to_markdown(model, ctx, max_chars=max_chars, scope=scope)
-        return json.dumps({"status": "ok", "markdown": markdown, "length": len(markdown)})
+        range_start = args.get("start") if scope == "range" else None
+        range_end = args.get("end") if scope == "range" else None
+        if scope == "range" and (range_start is None or range_end is None):
+            return _tool_error("scope 'range' requires start and end parameters")
+        markdown = document_to_markdown(
+            model, ctx, max_chars=max_chars, scope=scope,
+            range_start=range_start, range_end=range_end,
+        )
+        doc_len = get_document_length(model)
+        out = {"status": "ok", "markdown": markdown, "length": len(markdown), "document_length": doc_len}
+        if scope == "range" and range_start is not None and range_end is not None:
+            out["start"] = int(range_start)
+            out["end"] = int(range_end)
+        return json.dumps(out)
     except Exception as e:
         debug_log(ctx, "markdown_support: get_markdown failed: %s" % e)
         return _tool_error(str(e))
@@ -356,6 +451,24 @@ def tool_apply_markdown(model, ctx, args):
             return json.dumps({"status": "ok", "message": "Replaced %d occurrence(s) with markdown content." % count})
         except Exception as e:
             debug_log(ctx, "markdown_support: apply_markdown search failed: %s" % e)
+            return _tool_error(str(e))
+    if target == "full":
+        try:
+            _insert_markdown_full(model, ctx, markdown)
+            return json.dumps({"status": "ok", "message": "Replaced entire document with markdown."})
+        except Exception as e:
+            debug_log(ctx, "markdown_support: apply_markdown full failed: %s" % e)
+            return _tool_error(str(e))
+    if target == "range":
+        start_val = args.get("start")
+        end_val = args.get("end")
+        if start_val is None or end_val is None:
+            return _tool_error("target 'range' requires start and end parameters")
+        try:
+            _apply_markdown_at_range(model, ctx, markdown, int(start_val), int(end_val))
+            return json.dumps({"status": "ok", "message": "Replaced range [%s, %s) with markdown." % (start_val, end_val)})
+        except Exception as e:
+            debug_log(ctx, "markdown_support: apply_markdown range failed: %s" % e)
             return _tool_error(str(e))
     if target in ("beginning", "end", "selection"):
         try:
@@ -424,6 +537,21 @@ def run_markdown_tests(ctx, model=None):
     except Exception as e:
         failed += 1
         log.append("FAIL: tool_get_markdown raised: %s" % e)
+
+    # Test: get_markdown returns document_length
+    try:
+        result = tool_get_markdown(doc, ctx, {"scope": "full"})
+        data = json.loads(result)
+        doc_len_actual = len(_read_doc_text(doc))
+        if data.get("status") == "ok" and "document_length" in data and data["document_length"] == doc_len_actual:
+            passed += 1
+            ok("tool_get_markdown returns document_length (%d)" % doc_len_actual)
+        else:
+            failed += 1
+            fail("tool_get_markdown document_length: got %s, doc len=%d" % (data.get("document_length"), doc_len_actual))
+    except Exception as e:
+        failed += 1
+        log.append("FAIL: get_markdown document_length raised: %s" % e)
 
     test_markdown = "## Markdown test\n\nThis was inserted by the test."
     insert_needle = "Markdown test"
@@ -578,5 +706,58 @@ def run_markdown_tests(ctx, model=None):
     except Exception as e:
         failed += 1
         log.append("FAIL: list input test raised: %s" % e)
+
+    # Test H: target="full" — replace entire document
+    try:
+        full_replacement = "# Full Replace Test\n\nOnly this content should remain."
+        result = tool_apply_markdown(doc, ctx, {"markdown": full_replacement, "target": "full"})
+        data = json.loads(result)
+        full_text = _read_doc_text(doc)
+        if data.get("status") == "ok" and "Full Replace Test" in full_text and "Only this content" in full_text:
+            passed += 1
+            ok("target='full': replaced entire document (len=%d)" % len(full_text))
+        else:
+            failed += 1
+            fail("target='full': status=%s, content check failed (len=%d)" % (data.get("status"), len(full_text)))
+    except Exception as e:
+        failed += 1
+        log.append("FAIL: target=full test raised: %s" % e)
+
+    # Test I: target="range" with start=0, end=document_length (whole-doc replace by range)
+    try:
+        from core.document import get_document_length
+        doc_len = get_document_length(doc)
+        range_md = "## Range Replace\n\nReplaced by range [0, %d)." % doc_len
+        result = tool_apply_markdown(doc, ctx, {"markdown": range_md, "target": "range", "start": 0, "end": doc_len})
+        data = json.loads(result)
+        full_text = _read_doc_text(doc)
+        if data.get("status") == "ok" and "Range Replace" in full_text:
+            passed += 1
+            ok("target='range' [0, doc_len): replaced with markdown (len=%d)" % len(full_text))
+        else:
+            failed += 1
+            fail("target='range': status=%s (len=%d)" % (data.get("status"), len(full_text)))
+    except Exception as e:
+        failed += 1
+        log.append("FAIL: target=range test raised: %s" % e)
+
+    # Test J: get_markdown scope="range" returns slice and start/end
+    try:
+        full_text = _read_doc_text(doc)
+        if len(full_text) >= 10:
+            result = tool_get_markdown(doc, ctx, {"scope": "range", "start": 0, "end": 10})
+            data = json.loads(result)
+            if data.get("status") == "ok" and data.get("start") == 0 and data.get("end") == 10 and "markdown" in data:
+                passed += 1
+                ok("get_markdown scope='range' (0,10): returns start, end and markdown")
+            else:
+                failed += 1
+                fail("get_markdown scope=range: %s" % result[:200])
+        else:
+            passed += 1
+            ok("get_markdown scope=range: skipped (doc too short)")
+    except Exception as e:
+        failed += 1
+        log.append("FAIL: get_markdown scope=range raised: %s" % e)
 
     return passed, failed, log

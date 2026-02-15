@@ -31,6 +31,53 @@ def get_document_end(model, max_chars=4000):
         return ""
 
 
+# goRight(nCount, bExpand) takes short; max 32767 per call
+_GO_RIGHT_CHUNK = 8192
+
+
+def get_document_length(model):
+    """Return total character length of the document. Returns 0 on error."""
+    try:
+        text = model.getText()
+        cursor = text.createTextCursor()
+        cursor.gotoStart(False)
+        cursor.gotoEnd(True)
+        return len(cursor.getString())
+    except Exception:
+        return 0
+
+
+def get_text_cursor_at_range(model, start_offset, end_offset):
+    """Return a text cursor that selects the character range [start_offset, end_offset).
+    The cursor is positioned at start and expanded to end so caller can setString('') and insert.
+    goRight is used in chunks because UNO's goRight takes short (max 32767).
+    Returns None on error or invalid range."""
+    try:
+        doc_len = get_document_length(model)
+        start_offset = max(0, min(start_offset, doc_len))
+        end_offset = max(0, min(end_offset, doc_len))
+        if start_offset > end_offset:
+            start_offset, end_offset = end_offset, start_offset
+        text = model.getText()
+        cursor = text.createTextCursor()
+        cursor.gotoStart(False)
+        # Move to start_offset in chunks
+        remaining = start_offset
+        while remaining > 0:
+            n = min(remaining, _GO_RIGHT_CHUNK)
+            cursor.goRight(n, False)
+            remaining -= n
+        # Expand selection by (end_offset - start_offset)
+        remaining = end_offset - start_offset
+        while remaining > 0:
+            n = min(remaining, _GO_RIGHT_CHUNK)
+            cursor.goRight(n, True)
+            remaining -= n
+        return cursor
+    except Exception:
+        return None
+
+
 def get_selection_range(model):
     """Return (start_offset, end_offset) character positions into the document.
     Cursor (no selection) = same start and end. Returns (0, 0) on error or no text range."""
