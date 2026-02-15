@@ -397,7 +397,7 @@ MARKDOWN_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_markdown",
-            "description": "Get the document (or a range/selection) as Markdown. Result includes document_length; use it with apply_markdown(target='range', start=0, end=document_length) to replace the whole document, or target='full'. For reformatting: call get_markdown once, then apply_markdown with only the new markdown—never paste the original text back.",
+            "description": "Get the document (or selection/range) as Markdown. Result includes document_length. Use scope 'full' for the whole document. Use scope 'range' only when you already have start/end (e.g. from find_text) or for 0..document_length; do not compute positions from document text.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -418,7 +418,7 @@ MARKDOWN_TOOLS = [
         "type": "function",
         "function": {
             "name": "apply_markdown",
-            "description": "Insert or replace content using Markdown (converted to formatted text). For 'replace whole document': use target='full' and pass only the new markdown. For a character span: use target='range' with start and end (e.g. from get_markdown's document_length). Never send the original document text back—only the new content.",
+            "description": "Insert or replace content using Markdown. PREFERRED for partial edits: target='search' with search=<exact old text> and markdown=<new content> (no positions). For whole document: target='full', pass only the new markdown. Use target='range' only for whole-doc (start=0, end=document_length) or when using start/end returned by find_text; never compute start/end yourself.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -443,7 +443,7 @@ MARKDOWN_TOOLS = [
         "type": "function",
         "function": {
             "name": "find_text",
-            "description": "Find occurrences of text in the document. Returns a list of ranges ({start, end}) that can be used with apply_markdown(target='range').",
+            "description": "Find occurrences of text. Returns a list of {start, end}. Use these with apply_markdown(target='range', start=..., end=..., markdown=...) when you need to replace a specific occurrence (e.g. the second one). For simple replace-by-text use apply_markdown(target='search', search=..., markdown=...) instead.",
             "parameters": {
                 "type": "object",
                 "properties": {
