@@ -313,9 +313,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
         self._set_status("Reading document...")
         doc_text = get_document_context_for_chat(model, max_context, include_end=True, include_selection=True)
         debug_log(self.ctx, "_do_send: document context length=%d" % len(doc_text))
-        # #region agent log
         agent_log("chat_panel.py:doc_context", "Document context for AI", data={"doc_length": len(doc_text), "doc_prefix_first_200": (doc_text or "")[:200], "max_context": max_context}, hypothesis_id="B")
-        # #endregion
         self.session.update_document_context(doc_text)
 
         # 5. Add user message to session and display
@@ -335,58 +333,9 @@ class SendButtonListener(unohelper.Base, XActionListener):
         log_to_file("=== _do_send END (async started) ===")
         debug_log(self.ctx, "=== _do_send END (async started) ===")
 
-    def _do_tool_calling_loop(self, client, model, max_tokens, tools, execute_tool_fn):
-        """Run the tool-calling conversation loop. Wraps tool execution in an
-        UndoManager context when the document supports it, so the user can undo
-        all AI edits with one Ctrl+Z."""
-        # Undo context disabled for now (leaveUndoContext was failing in some environments)
-        # undo_manager = None
-        # if hasattr(model, "getUndoManager"):
-        #     try:
-        #         undo_manager = model.getUndoManager()
-        #     except Exception as e:
-        #         debug_log(self.ctx, "getUndoManager failed: %s" % e)
-        # if undo_manager:
-        #     try:
-        #         undo_manager.enterUndoContext("AI Edit")
-        #         debug_log(self.ctx, "Undo context entered (AI Edit)")
-        #     except Exception as e:
-        #         debug_log(self.ctx, "enterUndoContext failed: %s" % e)
-        #         undo_manager = None
-        #
-        # try:
-        self._do_tool_calling_loop_impl(client, model, max_tokens, tools, execute_tool_fn)
-        # finally:
-        #     if undo_manager:
-        #         try:
-        #             undo_manager.leaveUndoContext()
-        #             debug_log(self.ctx, "Undo context left (AI Edit)")
-        #         except Exception as e:
-        #             debug_log(self.ctx, "leaveUndoContext failed: %s" % e)
-
-    def _make_stream_callbacks(self, toolkit=None, waiting_for_model=None, thinking_open=None, on_chunk=None):
-        """Create append_chunk and append_thinking callbacks for streaming."""
-        def append_chunk(content_delta):
-            if waiting_for_model and waiting_for_model[0]:
-                self._set_status("Receiving response...")
-                waiting_for_model[0] = False
-            if thinking_open and thinking_open[0]:
-                self._append_response(" /thinking\n")
-                thinking_open[0] = False
-            self._append_response(content_delta)
-            if on_chunk:
-                on_chunk(content_delta)
-
-        def append_thinking(thinking_text):
-            if waiting_for_model and waiting_for_model[0]:
-                self._set_status("Receiving response...")
-                waiting_for_model[0] = False
-            if thinking_open and not thinking_open[0]:
-                self._append_response("[Thinking] ")
-                thinking_open[0] = True
-            self._append_response(thinking_text)
-
-        return append_chunk, append_thinking
+    # Future work: Undo grouping for AI edits (user can undo all edits from one turn with Ctrl+Z).
+    # Previous attempt used enterUndoContext("AI Edit") / leaveUndoContext() but leaveUndoContext
+    # was failing in some environments. Revisit when integrating with the async tool-calling path.
 
     def _start_tool_calling_async(self, client, model, max_tokens, tools, execute_tool_fn):
         """Tool-calling loop: worker thread + queue, main thread drains queue with processEventsToIdle (pure Python threading, no UNO Timer)."""
@@ -429,13 +378,13 @@ class SendButtonListener(unohelper.Base, XActionListener):
             self._set_status("Finishing...")
             self._append_response("\nAI: ")
             thinking_open[0] = False
-            self.session._last_streamed = [""]
+            last_streamed = [""]
 
             def run_final():
                 try:
                     def append_c(c):
                         q.put(("chunk", c))
-                        self.session._last_streamed[0] += c
+                        last_streamed[0] += c
 
                     def append_t(t):
                         q.put(("thinking", t))
@@ -448,7 +397,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                     if self.stop_requested:
                         q.put(("stopped",))
                     else:
-                        q.put(("stream_done", {"content": self.session._last_streamed[0]}))
+                        q.put(("stream_done", {"content": last_streamed[0]}))
                 except Exception as e:
                     q.put(("error", e))
 
@@ -569,6 +518,11 @@ class SendButtonListener(unohelper.Base, XActionListener):
                         self._append_response("".join(current_chunks))
                         current_chunks.clear()
 
+                def close_thinking():
+                    if thinking_open[0]:
+                        self._append_response(" /thinking\n")
+                        thinking_open[0] = False
+
                 for item in items:
                     kind = item[0] if isinstance(item, tuple) else item
                     if kind == "chunk":
@@ -581,14 +535,11 @@ class SendButtonListener(unohelper.Base, XActionListener):
                         current_thinking.append(item[1])
                     elif kind == "stream_done":
                         flush_buffers()
-                        if thinking_open[0]:
-                            self._append_response(" /thinking\n")
-                            thinking_open[0] = False
+                        close_thinking()
                         process_stream_done(item[1])
                     elif kind == "stopped":
                         flush_buffers()
-                        if thinking_open[0]:
-                            self._append_response(" /thinking\n")
+                        close_thinking()
                         job_done[0] = True
                         self._terminal_status = "Stopped"
                         self._set_status("Stopped")
@@ -596,8 +547,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                         break
                     elif kind == "error":
                         flush_buffers()
-                        if thinking_open[0]:
-                            self._append_response(" /thinking\n")
+                        close_thinking()
                         job_done[0] = True
                         self._append_response("\n[API error: %s]\n" % str(item[1]))
                         self._terminal_status = "Error"
@@ -612,188 +562,6 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 self._terminal_status = "Error"
                 self._set_status("Error")
             toolkit.processEventsToIdle()
-
-
-    def _do_tool_calling_loop_impl(self, client, model, max_tokens, tools, execute_tool_fn):
-        """Inner implementation of the tool-calling loop (without undo wrapper)."""
-        from core.logging import log_to_file
-        debug_log(self.ctx, "=== Tool-calling loop START (max %d rounds) ===" % MAX_TOOL_ROUNDS)
-        toolkit = self.ctx.getServiceManager().createInstanceWithContext(
-            "com.sun.star.awt.Toolkit", self.ctx)
-        for round_num in range(MAX_TOOL_ROUNDS):
-            self._set_status("Connecting..." if round_num == 0 else "Connecting (round %d)..." % (round_num + 1))
-            update_activity_state("tool_loop", round_num=round_num)
-            debug_log(self.ctx, "Tool loop round %d: sending %d messages to API..." %
-                        (round_num, len(self.session.messages)))
-            waiting_for_model = [True]
-            thinking_open = [False]
-            append_chunk, append_thinking = self._make_stream_callbacks(
-                toolkit=toolkit, waiting_for_model=waiting_for_model,
-                thinking_open=thinking_open)
-            self._append_response("\nAI: ")
-
-            try:
-                self._set_status("Waiting for model...")
-                log_to_file("Tool loop round %d: calling stream_request_with_tools (next: blocking until API responds)..." % round_num)
-                debug_log(self.ctx, "Tool loop round %d: calling stream_request_with_tools..." % round_num)
-                response = client.stream_request_with_tools(
-                    self.session.messages, max_tokens, tools=tools,
-                    append_callback=append_chunk,
-                    append_thinking_callback=append_thinking,
-                    stop_checker=lambda: self.stop_requested
-                )
-                if self.stop_requested:
-                    debug_log(self.ctx, "Tool loop round %d: STOPPED" % round_num)
-                    self._terminal_status = "Stopped"
-                    return
-
-                update_activity_state("tool_loop", round_num=round_num)
-                debug_log(self.ctx, "Tool loop round %d: got response, content=%s, tool_calls=%s" %
-                            (round_num, bool(response.get("content")), bool(response.get("tool_calls"))))
-            except Exception as e:
-                debug_log(self.ctx, "Tool loop round %d: API ERROR: %s" % (round_num, e))
-                log_to_file("Tool loop round %d: API ERROR: %s" % (round_num, e))
-                self._append_response("\n[API error: %s]\n" % str(e))
-                self._terminal_status = "Error"
-                return
-
-            debug_log(self.ctx, "Tool loop round %d: stream_request_with_tools returned." % round_num)
-            log_to_file("Tool loop round %d: stream_request_with_tools returned." % round_num)
-
-            if thinking_open[0]:
-                self._append_response(" /thinking\n")
-                thinking_open[0] = False
-
-            tool_calls = response.get("tool_calls")
-            # Normalize: some models return empty list instead of None/absent
-            if isinstance(tool_calls, list) and len(tool_calls) == 0:
-                tool_calls = None
-            content = response.get("content")
-            finish_reason = response.get("finish_reason")
-            # #region agent log
-            agent_log("chat_panel.py:tool_round", "Tool loop round response", data={"round": round_num, "has_tool_calls": bool(tool_calls), "num_tool_calls": len(tool_calls) if tool_calls else 0, "tool_names": [tc.get("function", {}).get("name") for tc in (tool_calls or [])]}, hypothesis_id="A")
-            # #endregion
-
-            if not tool_calls:
-                # #region agent log
-                agent_log("chat_panel.py:exit_no_tools", "Exiting loop: no tool_calls (final text response)", data={"round": round_num, "finish_reason": finish_reason}, hypothesis_id="A")
-                # #endregion
-                # No tool calls -- this is the final text response (content was already streamed)
-                debug_log(self.ctx, "Tool loop: final text response (no tool calls), finish_reason=%s" % finish_reason)
-                if content:
-                    log_to_file("Tool loop: Adding assistant message to session")
-                    self.session.add_assistant_message(content=content)
-                    self._append_response("\n")
-                elif finish_reason == "length":
-                    debug_log(self.ctx, "Tool loop: truncated by max_tokens (finish_reason=length)")
-                    self._append_response(
-                        "\n[Response truncated -- the model ran out of tokens before "
-                        "producing a reply. Increase chat_max_tokens in localwriter.json "
-                        "(current value may be too low for reasoning models).]\n")
-                else:
-                    debug_log(self.ctx, "Tool loop: WARNING - no content and no tool_calls")
-                    self._append_response("\n[AI returned empty response]\n")
-                log_to_file(f"Tool loop: Finished on round {round_num}. Setting status to Ready.")
-                self._terminal_status = "Ready"
-                return
-
-            # Model wants to call tools
-            self.session.add_assistant_message(content=content, tool_calls=tool_calls)
-
-            # Content was already streamed into the response; only add newline if we got any
-            if content:
-                self._append_response("\n")
-
-            for tc in tool_calls:
-                if self.stop_requested:
-                    break
-
-                func_name = tc.get("function", {}).get("name", "unknown")
-                func_args_str = tc.get("function", {}).get("arguments", "{}")
-                call_id = tc.get("id", "")
-
-                self._set_status("Running: %s" % func_name)
-                update_activity_state("tool_execute", round_num=round_num, tool_name=func_name)
-
-                try:
-                    func_args = json.loads(func_args_str)
-                except (json.JSONDecodeError, TypeError):
-                    # Fallback: try Python literal eval for single-quoted JSON or Python dicts
-                    try:
-                        import ast
-                        func_args = ast.literal_eval(func_args_str)
-                        if not isinstance(func_args, dict):
-                            func_args = {}
-                    except Exception:
-                        func_args = {}
-
-                # #region agent log
-                snippet = {}
-                if func_name in ("replace_text", "search_and_replace_all") and isinstance(func_args, dict):
-                    snippet = {"search_snippet": (func_args.get("search") or "")[:80], "replacement_snippet": (func_args.get("replacement") or "")[:80]}
-                agent_log("chat_panel.py:tool_execute", "Executing tool", data={"tool": func_name, "round": round_num, **snippet}, hypothesis_id="C,D,E")
-                # #endregion
-
-                debug_log(self.ctx, "Tool call: %s(%s)" % (func_name, func_args_str))
-
-                # Execute the tool
-                result = execute_tool_fn(func_name, func_args, model, self.ctx)
-
-                debug_log(self.ctx, "Tool result: %s" % result)
-
-                # Show a brief note in chat
-                try:
-                    result_data = json.loads(result)
-                    note = result_data.get("message", result_data.get("status", "done"))
-                except Exception:
-                    note = "done"
-                self._append_response("[%s: %s]\n" % (func_name, note))
-                # Prototype: when 0 replacements, show tool params in response for easier debugging
-                if func_name == "apply_markdown" and (note or "").strip().startswith("Replaced 0 occurrence"):
-                    params_display = func_args_str if len(func_args_str) <= 800 else func_args_str[:800] + "..."
-                    self._append_response("[Debug: params %s]\n" % params_display)
-
-                # Add tool result to session
-                self.session.add_tool_result(call_id, result)
-                update_activity_state("tool_execute", round_num=round_num, tool_name=func_name)
-
-            # Update status before starting the next API round
-            # (prevents stale "Running: tool_name" during the blocking API call)
-            if not self.stop_requested:
-                self._set_status("Sending results to AI...")
-
-            # Continue the loop -- send tool results back to model
-
-        # #region agent log
-        agent_log("chat_panel.py:exit_exhausted", "Exiting loop: exhausted MAX_TOOL_ROUNDS", data={"rounds": MAX_TOOL_ROUNDS}, hypothesis_id="A")
-        # #endregion
-        # If we exhausted rounds, stream a final response without tools
-        update_activity_state("exhausted_rounds")
-        self._set_status("Finishing...")
-        self._append_response("\nAI: ")
-
-        thinking_open = [False]
-        self.session._last_streamed = ""
-
-        def _accumulate_chunk(c):
-            self.session._last_streamed = (self.session._last_streamed or "") + c
-
-        append_chunk, append_thinking = self._make_stream_callbacks(
-            thinking_open=thinking_open, on_chunk=_accumulate_chunk)
-        try:
-            client.stream_chat_response(
-                self.session.messages, max_tokens, append_chunk, append_thinking,
-                stop_checker=lambda: self.stop_requested
-            )
-            if self.session._last_streamed:
-                self.session.add_assistant_message(content=self.session._last_streamed)
-            self._terminal_status = "Ready"
-        except Exception as e:
-            self._append_response("[Stream error: %s]\n" % str(e))
-            self._terminal_status = "Error"
-        if thinking_open[0]:
-            self._append_response(" /thinking\n")
-        self._append_response("\n")
 
     def _start_simple_stream_async(self, client, max_tokens, api_type):
         """Start simple streaming (no tools) via async helper; returns immediately."""

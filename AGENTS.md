@@ -137,7 +137,6 @@ All streaming paths (sidebar tool-calling, sidebar simple stream, Writer Extend/
   - `agent_log(location, message, data=None, hypothesis_id=None, run_id=None)` — NDJSON agent log. Paths: `{ext_dir}/.cursor/debug.log`, `~/localwriter_agent_debug.log`, `/tmp/localwriter_agent_debug.log`.
   - `debug_log(ctx, msg)` — chat debug log. Paths: UserConfig, `~/localwriter_chat_debug.log`, `/tmp/localwriter_chat_debug.log`.
   - `debug_log_paths(ctx)` — returns writable paths for chat debug.
-- **`SendButtonListener._make_stream_callbacks(self, toolkit=None, waiting_for_model=None, thinking_open=None, on_chunk=None)`** (`chat_panel.py`): Returns `(append_chunk, append_thinking)` for streaming. Params: `toolkit` for `processEventsToIdle`; `waiting_for_model` / `thinking_open` as `[bool]` lists; `on_chunk` for accumulation (e.g. `collected.append`).
 - **`SendButtonListener._send_busy`** (`chat_panel.py`): Boolean; True from run start until the `finally` block of `actionPerformed` (single source of truth for "is the AI running?"). Used together with lifecycle-based `_set_button_states(send_enabled, stop_enabled)`.
 - **`core/api.format_error_for_display(e)`**: Returns user-friendly error string for cells/dialogs (e.g. `"Error: Connection refused..."`).
 
