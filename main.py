@@ -249,74 +249,98 @@ class MainJob(unohelper.Base, XJobExecutor):
 
         pip = ctx.getValueByName("/singletons/com.sun.star.deployment.PackageInformationProvider")
         base_url = pip.getPackageLocation("org.extension.localwriter")
+        agent_log("main.py:settings_box", "Package base URL", data={"base_url": base_url}, hypothesis_id="H3")
         dp = smgr.createInstanceWithContext("com.sun.star.awt.DialogProvider", ctx)
         agent_log("main.py:settings_box", "before createDialog", hypothesis_id="H3")
+        dialog_url = base_url + "/LocalWriterDialogs/SettingsDialog.xdl"
+        agent_log("main.py:settings_box", "Dialog URL", data={"dialog_url": dialog_url}, hypothesis_id="H3")
         try:
-            dlg = dp.createDialog(base_url + "/LocalWriterDialogs/SettingsDialog.xdl")
+            dlg = dp.createDialog(dialog_url)
+            agent_log("main.py:settings_box", "createDialog succeeded", data={"dlg_type": type(dlg).__name__}, hypothesis_id="H3")
         except BaseException as ex:
             agent_log("main.py:settings_box", "createDialog failed", data={"error": str(ex), "type": type(ex).__name__}, hypothesis_id="H3")
             raise
-        agent_log("main.py:settings_box", "createDialog succeeded", hypothesis_id="H3")
         try:
             for field in field_specs:
                 ctrl = dlg.getControl(field["name"])
+                agent_log("main.py:settings_box", "Processing field", data={"field_name": field["name"], "ctrl_found": ctrl is not None}, hypothesis_id="LRU")
                 if ctrl:
                     if field["name"] == "model":
                         try:
-                            model = ctrl.getModel()
-                            # Set dropdown properties BEFORE adding items
-                            props = [
-                                ("Dropdown", True),
-                                ("DropDown", True), # Quirk: case sensitivity vary
-                                ("LineCount", 10),
-                                ("Border", 1),
-                                ("NativeWidget", False) # Force UNO rendering if OS theme hides arrow
-                            ]
-                            for p_name, p_val in props:
-                                if hasattr(model, p_name):
-                                    setattr(model, p_name, p_val)
-                                elif hasattr(model, "setPropertyValue"):
-                                    try:
-                                        model.setPropertyValue(p_name, p_val)
-                                    except:
-                                        pass
-
+                            agent_log("main.py:settings_box", "Configuring model combobox", hypothesis_id="LRU")
+                            # Configure combobox with LRU model history
                             lru = self.get_config("model_lru", [])
                             if not isinstance(lru, list):
                                 lru = []
+                            
+                            agent_log("main.py:settings_box", "LRU models", data={"count": len(lru), "models": lru}, hypothesis_id="LRU")
+                            
                             # Ensure current value is in the dropdown list
                             curr_val = str(field["value"]).strip()
                             to_show = list(lru)
                             if curr_val and curr_val not in to_show:
                                 to_show.insert(0, curr_val)
                             
+                            agent_log("main.py:settings_box", "Items to add to combobox", data={"count": len(to_show), "items": to_show}, hypothesis_id="LRU")
+                            
+                            # Add items to combobox
                             if to_show:
-                                agent_log("main.py:settings_box", "Populating model items", data={"count": len(to_show)}, hypothesis_id="LRU")
                                 ctrl.addItems(tuple(to_show), 0)
+                                agent_log("main.py:settings_box", "Successfully added items to combobox", hypothesis_id="LRU")
+                                # Set the text value to match the current value
+                                if curr_val:
+                                    ctrl.getModel().Text = curr_val
+                                    agent_log("main.py:settings_box", "Set combobox text value", data={"value": curr_val}, hypothesis_id="LRU")
                         except Exception as e:
-                            agent_log("main.py:settings_box", "Error configuring model combobox", data={"error": str(e)}, hypothesis_id="LRU")
-                    ctrl.getModel().Text = field["value"]
+                            agent_log("main.py:settings_box", "Error configuring model combobox", data={"error": str(e), "type": type(e).__name__}, hypothesis_id="LRU")
+                            # Fallback: just set the text value
+                            if field["value"]:
+                                ctrl.getModel().Text = field["value"]
+                                agent_log("main.py:settings_box", "Fallback: set text value directly", data={"value": field["value"]}, hypothesis_id="LRU")
+                    else:
+                        ctrl.getModel().Text = field["value"]
+                        agent_log("main.py:settings_box", "Set text field value", data={"field_name": field["name"], "value": field["value"]}, hypothesis_id="LRU")
             dlg.getControl("endpoint").setFocus()
             agent_log("main.py:settings_box", "before dlg.execute", hypothesis_id="H4")
-            exec_result = dlg.execute()
-            agent_log("main.py:settings_box", "after dlg.execute", data={"exec_result": exec_result}, hypothesis_id="H4")
-            if exec_result:
+            try:
+                exec_result = dlg.execute()
+                agent_log("main.py:settings_box", "after dlg.execute", data={"exec_result": exec_result}, hypothesis_id="H4")
                 result = {}
-                for field in field_specs:
-                    ctrl = dlg.getControl(field["name"])
-                    control_text = ctrl.getModel().Text if ctrl else ""
-                    field_type = field.get("type", "text")
-                    if field_type == "int":
-                        result[field["name"]] = int(control_text) if control_text.isdigit() else control_text
-                    elif field_type == "bool":
-                        result[field["name"]] = as_bool(control_text)
-                    elif field_type == "float":
+                if exec_result:
+                    for field in field_specs:
                         try:
-                            result[field["name"]] = float(control_text)
-                        except ValueError:
-                            result[field["name"]] = control_text
-                    else:
-                        result[field["name"]] = control_text
+                            ctrl = dlg.getControl(field["name"])
+                            if ctrl:
+                                if field["name"] == "model":
+                                    # For ComboBox, get text value
+                                    control_text = ctrl.getModel().Text if ctrl else ""
+                                else:
+                                    control_text = ctrl.getModel().Text if ctrl else ""
+                                
+                                field_type = field.get("type", "text")
+                                if field_type == "int":
+                                    result[field["name"]] = int(control_text) if control_text.isdigit() else control_text
+                                elif field_type == "bool":
+                                    result[field["name"]] = as_bool(control_text)
+                                elif field_type == "float":
+                                    try:
+                                        result[field["name"]] = float(control_text)
+                                    except ValueError:
+                                        result[field["name"]] = control_text
+                                else:
+                                    result[field["name"]] = control_text
+                                agent_log("main.py:settings_box", "Read field value", data={"field": field["name"], "value": control_text}, hypothesis_id="LRU")
+                            else:
+                                result[field["name"]] = ""
+                                agent_log("main.py:settings_box", "Control not found", data={"field": field["name"]}, hypothesis_id="LRU")
+                        except Exception as read_e:
+                            agent_log("main.py:settings_box", "Error reading field value", data={"field": field["name"], "error": str(read_e)}, hypothesis_id="LRU")
+                            result[field["name"]] = ""
+                agent_log("main.py:settings_box", "Dialog executed successfully", data={"result_count": len(result)}, hypothesis_id="H4")
+            except Exception as exec_e:
+                agent_log("main.py:settings_box", "Error executing dialog", data={"error": str(exec_e), "type": type(exec_e).__name__}, hypothesis_id="H4")
+                result = {}
+                raise
             else:
                 result = {}
         finally:
