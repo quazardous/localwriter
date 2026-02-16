@@ -106,3 +106,20 @@ So the core bug is: **character offsets from find_text (cursor-based) don’t ma
 - **Cursor-based length/range:** core/document.py — `get_document_length`, `get_text_cursor_at_range`; markdown_support.py — `_find_text_ranges` (measure_cursor.gotoRange(found.getStart(), True)).
 - **Logs:** localwriter_chat_debug.log (e.g. under `~/.config/libreoffice/4/user/config/` or paths from clear_logs.sh) shows get_markdown(scope="range", start=112, end=340) returning "## ary\nA legendary...".
 - **Issue summary:** SECTION_REPLACE_ISSUE.md; plan: .cursor/plans (or plan file) for “Fix get_markdown range offset.”
+
+---
+
+## Option F: (Recommended) Use UNO Region Comparison
+
+**Idea:** Instead of trying to fix the offset math (Option A), use LibreOffice's `XText.compareRegionStarts` and `XText.compareRegionEnds` to filter paragraphs against the `find_text` range directly. This effectively delegates the "overlap" check to UNO, ensuring 100% alignment with the `find_text` coordinates regardless of hidden text or complex structures.
+
+**How:**
+1. In `markdown_support.py`, update `_document_to_markdown_structural` to accept an optional `filter_range` (XTextRange).
+2. If `scope="range"` or `"selection"`, resolve the integer `start`/`end` into a `filter_range` cursor using `get_text_cursor_at_range`.
+3. Inside the paragraph loop:
+   - Use `text.compareRegionEnds(paragraph, filter_range)` and `text.compareRegionStarts(paragraph, filter_range)` to check intersection.
+   - If they intersect, use `filter_range.getString()` logic or range intersection logic to get the exact text.
+   - Fall back to the old integer math if the UNO comparison API throws (safeguard).
+
+**Pros:** Robust coordinate alignment; preserves structure (headings/lists) for the range; strictly correct for what `find_text` returns.
+**Cons:** Requires using `compareRegion` APIs (standard in defined UNO, but good to wrap in try/except).
