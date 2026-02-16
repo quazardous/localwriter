@@ -4,6 +4,18 @@ This document summarizes the failure when the model uses **find_text + get_markd
 
 ---
 
+## Observed in logs (agent run)
+
+In a run captured in `~/localwriter_agent_debug.log`, the model **never** called get_markdown(scope="range"). Flow: find_text("## Summary") → (112, 119); get_markdown(scope="full"); then apply_markdown(target="search", search="## Summary\n\nA legendary...", markdown="## Yhteenveto\n\n...") → **0 replacements**. After retrying find_text and find_text("## Skills", start=112) → (343, 349), the run hit MAX_TOOL_ROUNDS (5) and stopped. So the **immediate** failure was the search path (0 replacements), not the range path. If the model had used get_markdown(scope="range", start=112, end=343) and then apply_markdown(target="range", ...), the coordinate mismatch below would still apply and could produce wrong range content. Steering the model to **prefer** the range path for section replace (find_text → get_markdown(scope="range") → apply_markdown(target="range")) in the system prompt would avoid depending on search and would make fixing the range coordinates worthwhile.
+
+---
+
+## Code note (current implementation)
+
+Range/selection export no longer uses `_document_to_markdown_structural`; it uses **`_range_to_markdown_via_temp_doc`** (copy paragraphs into a temp Writer doc, then storeToURL with Markdown filter). That function still uses **summed paragraph lengths** (enumeration + `current_offset += len(para_text)`) for para_start/para_end, so the same coordinate mismatch applies: Option A (cursor-based paragraph offsets) would be implemented inside `_range_to_markdown_via_temp_doc`; Option F (compareRegionStarts/Ends) would use a `filter_range` from `get_text_cursor_at_range(start, end)` and filter enumerated paragraphs by UNO region comparison against that range.
+
+---
+
 ## What’s going wrong
 
 - **User:** e.g. “Translate my Summary Section (and word Summary) to Finnish.”
@@ -15,13 +27,13 @@ So the core bug is: **character offsets from find_text (cursor-based) don’t ma
 
 ---
 
-## Option A: Cursor-based paragraph offsets in the structural walk (align coordinates)
+## Option A: Cursor-based paragraph offsets (align coordinates)
 
 **Idea:** When scope is `"selection"` or `"range"`, compute each paragraph’s start/end using the **same** cursor-based measurement as find_text and get_document_length, instead of summing paragraph lengths.
 
 **How:**
 
-- In `_document_to_markdown_structural` (markdown_support.py), for each enumerated paragraph (or element that has getStart()/getEnd()):
+- In the range/selection exporter (currently `_range_to_markdown_via_temp_doc` in markdown_support.py), for each enumerated paragraph (or element that has getStart()/getEnd()):
   - Measure “offset from document start to this paragraph’s start” with a cursor: e.g. cursor at doc start, then gotoRange(para.getStart(), True), then len(cursor.getString()) → `para_start`.
   - Similarly measure offset to para.getEnd() → `para_end`.
 - Use these `para_start` / `para_end` only for the range/selection filter and trim logic (skip when para_end <= selection_start or para_start >= selection_end; trim with selection_start/selection_end). Keep the rest of the structural export (prefixes, lines) as-is.
@@ -100,12 +112,22 @@ So the core bug is: **character offsets from find_text (cursor-based) don’t ma
 
 ---
 
+## Expert opinion: simplest and most robust
+
+**Simplest and most robust solution (when you fix it):** Implement **Option A** (cursor-based paragraph offsets) inside `_range_to_markdown_via_temp_doc`. For each enumerated paragraph, measure `para_start` and `para_end` with the same cursor technique used by find_text (cursor at doc start, `gotoRange(el.getStart(), True)`, `len(cursor.getString())`; same for `getEnd()`). Use those values only for the range filter and trim. One coordinate system everywhere; no new APIs; the change is localized to the paragraph loop and has a clear fallback (if an element has no getStart()/getEnd(), skip or use cumulative offset). You keep full native markdown for range/selection and fix the bug at the source.
+
+**Proper future fix to work on one day:** Option A as above is the right long-term fix. Option F (compareRegionStarts/Ends) is elegant and delegates overlap to UNO, but it depends on UNO behavior and may need more care with edge cases (e.g. getting the exact substring for partial paragraphs). Option A is explicit, easy to reason about, and matches how find_text and get_document_length already work. Combine it with a small prompt tweak: in the system prompt, state that for section replacement (e.g. translate the Summary section), the preferred flow is find_text(section heading) → find_text(next section heading) to get end → get_markdown(scope="range", start, end) → apply_markdown(target="range", start, end, markdown=...). That way the model uses the range path first and does not depend on the search path matching document line endings.
+
+**Until then:** Option C (prompt-only: prefer range path, or avoid get_markdown(range) until fixed) plus optionally Option D (bump MAX_TOOL_ROUNDS) reduces pain without code changes to the exporter.
+
+---
+
 ## Relevant code and logs
 
-- **Range/selection handling:** markdown_support.py — `_document_to_markdown_structural` (scope and trim), `document_to_markdown` (range_start/range_end).
+- **Range/selection handling:** markdown_support.py — `_range_to_markdown_via_temp_doc` (scope and trim; temp doc + storeToURL), `document_to_markdown` (range_start/range_end). Option A/F would be applied in `_range_to_markdown_via_temp_doc`; the old `_document_to_markdown_structural` has been removed.
 - **Cursor-based length/range:** core/document.py — `get_document_length`, `get_text_cursor_at_range`; markdown_support.py — `_find_text_ranges` (measure_cursor.gotoRange(found.getStart(), True)).
-- **Logs:** localwriter_chat_debug.log (e.g. under `~/.config/libreoffice/4/user/config/` or paths from clear_logs.sh) shows get_markdown(scope="range", start=112, end=340) returning "## ary\nA legendary...".
-- **Issue summary:** SECTION_REPLACE_ISSUE.md; plan: .cursor/plans (or plan file) for “Fix get_markdown range offset.”
+- **Logs:** localwriter_chat_debug.log (e.g. under `~/.config/libreoffice/4/user/config/` or paths from clear_logs.sh) shows get_markdown(scope="range", start=112, end=340) returning "## ary\nA legendary...". Agent NDJSON: `~/localwriter_agent_debug.log` (see clear_logs.sh for all paths).
+- **Issue summary:** SECTION_REPLACE_ISSUE.md (search path 0 replacements); this doc (range coordinate mismatch).
 
 ---
 
@@ -114,12 +136,11 @@ So the core bug is: **character offsets from find_text (cursor-based) don’t ma
 **Idea:** Instead of trying to fix the offset math (Option A), use LibreOffice's `XText.compareRegionStarts` and `XText.compareRegionEnds` to filter paragraphs against the `find_text` range directly. This effectively delegates the "overlap" check to UNO, ensuring 100% alignment with the `find_text` coordinates regardless of hidden text or complex structures.
 
 **How:**
-1. In `markdown_support.py`, update `_document_to_markdown_structural` to accept an optional `filter_range` (XTextRange).
-2. If `scope="range"` or `"selection"`, resolve the integer `start`/`end` into a `filter_range` cursor using `get_text_cursor_at_range`.
-3. Inside the paragraph loop:
+1. In `markdown_support.py`, update `_range_to_markdown_via_temp_doc`: when scope is "range" or "selection", resolve integer `start`/`end` into a `filter_range` (XTextRange) using `get_text_cursor_at_range`.
+2. Inside the paragraph loop:
    - Use `text.compareRegionEnds(paragraph, filter_range)` and `text.compareRegionStarts(paragraph, filter_range)` to check intersection.
    - If they intersect, use `filter_range.getString()` logic or range intersection logic to get the exact text.
-   - Fall back to the old integer math if the UNO comparison API throws (safeguard).
+3. Fall back to the old integer math if the UNO comparison API throws (safeguard).
 
 **Pros:** Robust coordinate alignment; preserves structure (headings/lists) for the range; strictly correct for what `find_text` returns.
 **Cons:** Requires using `compareRegion` APIs (standard in defined UNO, but good to wrap in try/except).
