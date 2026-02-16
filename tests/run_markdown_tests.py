@@ -12,6 +12,6 @@ if __name__ == "__main__":
     if _root not in sys.path:
         sys.path.insert(0, _root)
 
-from markdown_support import run_markdown_tests
+from core.markdown_support import run_markdown_tests
 
 __all__ = ["run_markdown_tests"]

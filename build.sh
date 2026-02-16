@@ -20,8 +20,6 @@ zip -r "${EXTENSION_NAME}.oxt" \
     main.py \
     prompt_function.py \
     chat_panel.py \
-    document_tools.py \
-    markdown_support.py \
     XPromptFunction.rdb \
     LocalWriterDialogs/ \
     META-INF/ \

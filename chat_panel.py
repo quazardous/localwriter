@@ -265,7 +265,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
         try:
             debug_log(self.ctx, "_do_send: importing document_tools...")
-            from document_tools import WRITER_TOOLS, execute_tool
+            from core.document_tools import WRITER_TOOLS, execute_tool
             debug_log(self.ctx, "_do_send: document_tools imported OK (%d tools)" % len(WRITER_TOOLS))
         except Exception as e:
             debug_log(self.ctx, "_do_send: document_tools import FAILED: %s" % e)

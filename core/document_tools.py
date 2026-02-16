@@ -7,7 +7,7 @@ import json
 
 from core.logging import agent_log
 
-from markdown_support import MARKDOWN_TOOLS, tool_get_markdown, tool_apply_markdown, tool_find_text
+from .markdown_support import MARKDOWN_TOOLS, tool_get_markdown, tool_apply_markdown, tool_find_text
 
 
 # ---------------------------------------------------------------------------
