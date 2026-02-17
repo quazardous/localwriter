@@ -26,7 +26,7 @@ zip -r "${EXTENSION_NAME}.oxt" \
     registration/ \
     registry/ \
     assets/ \
-    -x "*.git*" -x "*.DS_Store"
+    -x "*.git*" -x "*.DS_Store" -x "__pycache__*" -x "*.pyc"
 
 if [ $? -eq 0 ]; then
     echo "✅ Package created successfully: ${EXTENSION_NAME}.oxt"

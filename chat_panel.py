@@ -460,7 +460,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                     note = "done"
                 self._append_response("[%s: %s]\n" % (func_name, note))
                 # Prototype: when 0 replacements, show tool params in response for easier debugging
-                if func_name == "apply_markdown" and (note or "").strip().startswith("Replaced 0 occurrence"):
+                if func_name == "apply_document_content" and (note or "").strip().startswith("Replaced 0 occurrence"):
                     params_display = func_args_str if len(func_args_str) <= 800 else func_args_str[:800] + "..."
                     self._append_response("[Debug: params %s]\n" % params_display)
                 self.session.add_tool_result(call_id, result)

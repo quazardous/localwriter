@@ -7,14 +7,14 @@ import json
 
 from core.logging import agent_log
 
-from .markdown_support import MARKDOWN_TOOLS, tool_get_markdown, tool_apply_markdown, tool_find_text
+from .format_support import FORMAT_TOOLS, tool_get_document_content, tool_apply_document_content, tool_find_text
 
 
 # ---------------------------------------------------------------------------
 # Tool list exposed to the AI (markdown-centric)
 # ---------------------------------------------------------------------------
 
-WRITER_TOOLS = list(MARKDOWN_TOOLS)
+WRITER_TOOLS = list(FORMAT_TOOLS)
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +172,8 @@ def tool_get_document_text(model, ctx, args):
 # ---------------------------------------------------------------------------
 
 TOOL_DISPATCH = {
-    "get_markdown": tool_get_markdown,
-    "apply_markdown": tool_apply_markdown,
+    "get_document_content": tool_get_document_content,
+    "apply_document_content": tool_apply_document_content,
     "find_text": tool_find_text,
     # Unused (not in WRITER_TOOLS); uncomment to re-enable:
     # "get_selection": tool_get_selection,

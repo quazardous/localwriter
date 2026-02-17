@@ -258,6 +258,7 @@ class LlmClient:
             "=== Chat Request (tools=%s, stream=%s) ===" % (bool(tools), stream)
         )
         log_to_file("URL: %s" % url)
+        log_to_file("Messages: %s" % json.dumps(messages, indent=2))
         request = urllib.request.Request(
             url, data=json_data, headers=self._headers()
         )

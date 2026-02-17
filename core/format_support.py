@@ -1,16 +1,31 @@
-# markdown_support.py — Markdown read/write for Writer tool-calling.
-# Converts document to/from Markdown; uses system temp dir (cross-platform) and
-# insertDocumentFromURL for inserting formatted markdown content.
+# format_support.py — Format-agnostic read/write for Writer tool-calling.
+# Converts document to/from Markdown/HTML; uses system temp dir (cross-platform) and
+# insertDocumentFromURL for inserting formatted content.
 
 import contextlib
 import json
 import os
+import re
 import tempfile
 import time
 import urllib.parse
 import urllib.request
 
 from core.logging import debug_log
+from core.constants import DOCUMENT_FORMAT
+
+
+# Map internal format name to LibreOffice filter name and file extension
+FORMAT_CONFIG = {
+    "markdown": {"filter": "Markdown", "extension": ".md"},
+    "html": {"filter": "HTML (StarWriter)", "extension": ".html"},
+}
+
+
+def _get_format_props():
+    """Return (FilterName, file_extension) for the current DOCUMENT_FORMAT."""
+    cfg = FORMAT_CONFIG.get(DOCUMENT_FORMAT, FORMAT_CONFIG["markdown"])
+    return cfg["filter"], cfg["extension"]
 
 
 # System temp dir: /tmp on Linux, /var/folders/... on macOS, %TEMP% on Windows
@@ -33,11 +48,15 @@ def _create_property_value(name, value):
 
 
 @contextlib.contextmanager
-def _with_temp_markdown(content=None):
-    """Create a temp .md file. If content is not None, write it; else create empty file. Yields (path, file_url). Unlinks in finally."""
-    fd, path = tempfile.mkstemp(suffix=".md", dir=TEMP_DIR)
+def _with_temp_buffer(content=None):
+    """Create a temp file with the correct extension for the current format.
+    If content is not None, write it; else create empty file. Yields (path, file_url). Unlinks in finally."""
+    _, ext = _get_format_props()
+    fd, path = tempfile.mkstemp(suffix=ext, dir=TEMP_DIR)
     try:
         if content is not None:
+            if isinstance(content, list):
+                content = "\n".join(str(x) for x in content)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(content)
         else:
@@ -55,8 +74,39 @@ def _with_temp_markdown(content=None):
 # Document → Markdown
 # ---------------------------------------------------------------------------
 
+def _strip_html_boilerplate(html_string):
+    """Extract content between <body> tags if present, otherwise return as is.
+    Helps the AI see cleaner content without noisy meta/style tags."""
+    if not html_string or not isinstance(html_string, str):
+        return html_string
+    
+    # Simple regex to find body content
+    match = re.search(r'<body[^>]*>(.*?)</body>', html_string, re.DOTALL | re.IGNORECASE)
+    if match:
+        body_content = match.group(1).strip()
+        # Remove some common junk LO adds if it's there
+        return body_content
+    return html_string
+
+
 # com.sun.star.text.ControlCharacter.PARAGRAPH_BREAK
 _PARAGRAPH_BREAK = 0
+
+
+def _strip_html_boilerplate(html_string):
+    """Extract content between <body> tags if present, otherwise return as is.
+    Helps the AI see cleaner content without noisy meta/style tags."""
+    if not html_string or not isinstance(html_string, str):
+        return html_string
+    
+    # Simple regex to find body content
+    match = re.search(r'<body[^>]*>(.*?)</body>', html_string, re.DOTALL | re.IGNORECASE)
+    if match:
+        body_content = match.group(1).strip()
+        # Remove some common junk LO adds if it's there
+        # (e.g. initial/trailing empty paragraphs or lines)
+        return body_content
+    return html_string
 
 
 def _range_to_markdown_via_temp_doc(model, ctx, selection_start, selection_end, max_chars=None):
@@ -122,11 +172,14 @@ def _range_to_markdown_via_temp_doc(model, ctx, selection_start, selection_end, 
         if not added_any:
             return ""
 
-        with _with_temp_markdown(None) as (path, file_url):
-            props = (_create_property_value("FilterName", "Markdown"),)
+        filter_name, _ = _get_format_props()
+        with _with_temp_buffer(None) as (path, file_url):
+            props = (_create_property_value("FilterName", filter_name),)
             temp_doc.storeToURL(file_url, props)
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
+        if DOCUMENT_FORMAT == "html":
+            content = _strip_html_boilerplate(content)
         if max_chars and len(content) > max_chars:
             content = content[:max_chars] + "\n\n[... truncated ...]"
         return content
@@ -166,11 +219,14 @@ def document_to_markdown(model, ctx, max_chars=None, scope="full", range_start=N
         try:
             storable = model
             if hasattr(storable, "storeToURL"):
-                with _with_temp_markdown(None) as (path, file_url):
-                    props = (_create_property_value("FilterName", "Markdown"),)
+                filter_name, _ = _get_format_props()
+                with _with_temp_buffer(None) as (path, file_url):
+                    props = (_create_property_value("FilterName", filter_name),)
                     storable.storeToURL(file_url, props)
                     with open(path, "r", encoding="utf-8", errors="replace") as f:
                         content = f.read()
+                    if DOCUMENT_FORMAT == "html":
+                        content = _strip_html_boilerplate(content)
                     if max_chars and len(content) > max_chars:
                         content = content[:max_chars] + "\n\n[... truncated ...]"
                     return content
@@ -211,10 +267,12 @@ def _insert_markdown_at_position(model, ctx, markdown_string, position):
 
     position: 'beginning' | 'end' | 'selection'.
     """
-    with _with_temp_markdown(markdown_string) as (path, file_url):
+    with _with_temp_buffer(markdown_string) as (path, file_url):
         try:
             text = model.getText()
             cursor = text.createTextCursor()
+            # ... (position movement logic)
+            # (Wait, I need to make sure I don't break the cursor movement logic)
 
             if position == "beginning":
                 cursor.gotoStart(False)
@@ -236,7 +294,8 @@ def _insert_markdown_at_position(model, ctx, markdown_string, position):
             else:
                 raise ValueError("Unknown position: %s" % position)
 
-            filter_props = (_create_property_value("FilterName", "Markdown"),)
+            filter_name, _ = _get_format_props()
+            filter_props = (_create_property_value("FilterName", filter_name),)
             cursor.insertDocumentFromURL(file_url, filter_props)
             debug_log(ctx, "markdown_support: insertDocumentFromURL succeeded at position=%s" % position)
         except Exception as e:
@@ -245,8 +304,8 @@ def _insert_markdown_at_position(model, ctx, markdown_string, position):
 
 
 def _insert_markdown_full(model, ctx, markdown_string):
-    """Replace entire document with the given markdown (clear all, then insert at start)."""
-    with _with_temp_markdown(markdown_string) as (path, file_url):
+    """Replace entire document with the given content (clear all, then insert at start)."""
+    with _with_temp_buffer(markdown_string) as (path, file_url):
         try:
             text = model.getText()
             cursor = text.createTextCursor()
@@ -254,7 +313,8 @@ def _insert_markdown_full(model, ctx, markdown_string):
             cursor.gotoEnd(True)
             cursor.setString("")
             cursor.gotoStart(False)
-            filter_props = (_create_property_value("FilterName", "Markdown"),)
+            filter_name, _ = _get_format_props()
+            filter_props = (_create_property_value("FilterName", filter_name),)
             cursor.insertDocumentFromURL(file_url, filter_props)
             debug_log(ctx, "markdown_support: insertDocumentFromURL succeeded at position=full")
         except Exception as e:
@@ -263,15 +323,16 @@ def _insert_markdown_full(model, ctx, markdown_string):
 
 
 def _apply_markdown_at_range(model, ctx, markdown_string, start_offset, end_offset):
-    """Replace character range [start_offset, end_offset) with rendered markdown content."""
+    """Replace character range [start_offset, end_offset) with rendered content."""
     from core.document import get_text_cursor_at_range
     cursor = get_text_cursor_at_range(model, start_offset, end_offset)
     if cursor is None:
         raise ValueError("Invalid range or could not create cursor for range (%d, %d)" % (start_offset, end_offset))
-    with _with_temp_markdown(markdown_string) as (path, file_url):
+    with _with_temp_buffer(markdown_string) as (path, file_url):
         try:
             cursor.setString("")
-            filter_props = (_create_property_value("FilterName", "Markdown"),)
+            filter_name, _ = _get_format_props()
+            filter_props = (_create_property_value("FilterName", filter_name),)
             cursor.insertDocumentFromURL(file_url, filter_props)
             debug_log(ctx, "markdown_support: apply_markdown_at_range succeeded for (%d, %d)" % (start_offset, end_offset))
         except Exception as e:
@@ -280,17 +341,18 @@ def _apply_markdown_at_range(model, ctx, markdown_string, start_offset, end_offs
 
 
 def _markdown_to_plain_via_document(ctx, markdown_string):
-    """Load markdown into a temporary Writer document via LO's Markdown filter, return plain text.
+    """Load content into a temporary Writer document via LO's filter, return plain text.
     Returns None on any failure so callers can fall back to the original string."""
     t0 = time.time()
     if markdown_string is None:
         return None
     try:
-        with _with_temp_markdown(markdown_string) as (path, file_url):
+        with _with_temp_buffer(markdown_string) as (path, file_url):
             smgr = ctx.getServiceManager()
             desktop = smgr.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
+            filter_name, _ = _get_format_props()
             load_props = (
-                _create_property_value("FilterName", "Markdown"),
+                _create_property_value("FilterName", filter_name),
                 _create_property_value("Hidden", True),
             )
             debug_log(ctx, "markdown_support: _markdown_to_plain_via_document loading url=%s with FilterName=Markdown Hidden=True" % file_url)
@@ -368,8 +430,9 @@ def _apply_markdown_at_search(model, ctx, markdown_string, search_string, all_ma
     search_candidates = _search_candidates_with_plain(ctx, search_string)
     t0 = time.time()
     debug_log(ctx, "markdown_support: _apply_markdown_at_search LO plain took %.3fs, %d candidates" % (time.time() - t0, len(search_candidates)))
-    with _with_temp_markdown(markdown_string) as (path, file_url):
-        filter_props = (_create_property_value("FilterName", "Markdown"),)
+    with _with_temp_buffer(markdown_string) as (path, file_url):
+        filter_name, _ = _get_format_props()
+        filter_props = (_create_property_value("FilterName", filter_name),)
         try:
             for idx, search_candidate in enumerate(search_candidates):
                 # Log exact candidate so we can see line endings and characters (repr truncate to 400)
@@ -482,12 +545,12 @@ def _find_text_ranges(model, ctx, search_string, start=0, limit=None, case_sensi
 # Tool schemas and executors
 # ---------------------------------------------------------------------------
 
-MARKDOWN_TOOLS = [
+FORMAT_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_markdown",
-            "description": "Get document (or selection/range) as Markdown. Result includes document_length. scope: full, selection, or range (requires start, end).",
+            "name": "get_document_content",
+            "description": "Get document (or selection/range) content. Result includes document_length. scope: full, selection, or range (requires start, end).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -507,12 +570,12 @@ MARKDOWN_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "apply_markdown",
-            "description": "Insert or replace with Markdown. Preferred for partial edits: target='search' with search= and markdown=. For whole doc: target='full'. Use target='range' with start/end (e.g. from find_text or get_markdown document_length).",
+            "name": "apply_document_content",
+            "description": "Insert or replace content. Preferred for partial edits: target='search' with search= and content=. For whole doc: target='full'. Use target='range' with start/end (e.g. from find_text or get_document_content document_length).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "markdown": {"type": "string", "description": "Markdown string (use \\n for line breaks). Can be list of strings (joined with newlines)."},
+                    "content": {"type": "string", "description": "The new content (Markdown or HTML based on system prompt). Can be list of strings (joined with newlines)."},
                     "target": {
                         "type": "string",
                         "enum": ["beginning", "end", "selection", "search", "full", "range"],
@@ -520,11 +583,11 @@ MARKDOWN_TOOLS = [
                     },
                     "start": {"type": "integer", "description": "Start character offset (0-based). Required when target is 'range'."},
                     "end": {"type": "integer", "description": "End character offset (exclusive). Required when target is 'range'."},
-                    "search": {"type": "string", "description": "Text to find (markdown ok; LO strips to plain to match). For section replacement send the full section text. Required for target 'search'."},
+                    "search": {"type": "string", "description": "Text to find (LO strips to plain to match). For section replacement send the full section text. Required for target 'search'."},
                     "all_matches": {"type": "boolean", "description": "When target is 'search', replace all occurrences (true) or just the first (false). Default false."},
                     "case_sensitive": {"type": "boolean", "description": "When target is 'search', whether the search is case-sensitive. Default true."},
                 },
-                "required": ["markdown", "target"],
+                "required": ["content", "target"],
                 "additionalProperties": False
             }
         }
@@ -533,11 +596,11 @@ MARKDOWN_TOOLS = [
         "type": "function",
         "function": {
             "name": "find_text",
-            "description": "Finds text. Accepts markdown; LO strips to plain to match. Returns {start, end, text} per match. Use with apply_markdown (search= or target=range).",
+            "description": "Finds text. LO strips search string to plain to match document content. Returns {start, end, text} per match. Use with apply_document_content (search= or target=range).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "search": {"type": "string", "description": "Text to search (markdown ok; LO strips to plain to match)."},
+                    "search": {"type": "string", "description": "Text to search (LO strips to plain to match)."},
                     "start": {"type": "integer", "description": "Start offset to search from (default 0)."},
                     "limit": {"type": "integer", "description": "Maximum number of matches to return (optional)."},
                     "case_sensitive": {"type": "boolean", "description": "Case sensitive search. Default true."},
@@ -554,8 +617,73 @@ def _tool_error(message):
     return json.dumps({"status": "error", "message": message})
 
 
-def tool_get_markdown(model, ctx, args):
-    """Tool: get document, selection, or range as Markdown. Returns document_length and optionally start/end for scope=range."""
+def _wrap_html_fragment(html_content):
+    """Wrap HTML fragment in complete document structure for LibreOffice's HTML filter.
+    Adds <html>, <head>, <body> tags if missing.
+    
+    Also ensures proper charset declaration for special characters (é, ü, ©, etc.)."""
+    if not html_content or not isinstance(html_content, str):
+        return html_content
+
+    # Check if it already has basic document structure
+    has_html_tag = '<html' in html_content.lower() and '</html>' in html_content.lower()
+    has_body_tag = '<body' in html_content.lower() and '</body>' in html_content.lower()
+
+    if has_html_tag and has_body_tag:
+        return html_content
+
+    # Wrap fragment in complete structure with UTF-8 charset for special characters
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+</head>
+<body>
+{html_content}
+</body>
+</html>"""
+
+
+def _ensure_html_linebreaks(content):
+    """If content looks like plain text or Markdown (no basic HTML tags) but has newlines,
+    convert newlines to <br> and <p> so the 'HTML (StarWriter)' filter preserves them.
+    Standard browsers (and LO's filter) collapse newlines in HTML.
+    
+    Also handles escaped HTML by unescaping first to detect real HTML tags."""
+    if not isinstance(content, str) or not content:
+        return content
+    
+    # First unescape HTML entities to detect real HTML
+    import html
+    unescaped = html.unescape(content)
+    
+    # Check for HTML tags in unescaped version
+    html_tags = ["<p>", "<br>", "</h1>", "</h2>", "</h3>", "</ul>", "</li>", "</div>", "<html>"]
+    has_html = any(tag in unescaped.lower() for tag in html_tags)
+
+    if has_html:
+        # It's HTML, wrap if needed and return
+        return _wrap_html_fragment(unescaped)
+    
+    # It looks plain. Convert newlines.
+    # Collapse 3+ newlines to 2
+    content = re.sub(r'\n{3,}', '\n\n', content)
+    # Split by double newline for paragraphs
+    paras = content.split('\n\n')
+    out = []
+    for p in paras:
+        if not p.strip():
+            continue
+        # For each paragraph, convert single \n to <br>
+        p_html = p.replace('\n', '<br>\n')
+        out.append("<p>%s</p>" % p_html)
+    
+    wrapped = "\n".join(out)
+    return _wrap_html_fragment(wrapped)
+
+
+def tool_get_document_content(model, ctx, args):
+    """Tool: get document, selection, or range. Returns document_length and optionally start/end for scope=range."""
     try:
         from core.document import get_document_length
         max_chars = args.get("max_chars")
@@ -564,41 +692,45 @@ def tool_get_markdown(model, ctx, args):
         range_end = args.get("end") if scope == "range" else None
         if scope == "range" and (range_start is None or range_end is None):
             return _tool_error("scope 'range' requires start and end parameters")
-        markdown = document_to_markdown(
+        content = document_to_markdown(
             model, ctx, max_chars=max_chars, scope=scope,
             range_start=range_start, range_end=range_end,
         )
         doc_len = get_document_length(model)
-        out = {"status": "ok", "markdown": markdown, "length": len(markdown), "document_length": doc_len}
+        out = {"status": "ok", "content": content, "length": len(content), "document_length": doc_len}
         if scope == "range" and range_start is not None and range_end is not None:
             out["start"] = int(range_start)
             out["end"] = int(range_end)
         return json.dumps(out)
     except Exception as e:
-        debug_log(ctx, "markdown_support: get_markdown failed: %s" % e)
+        debug_log(ctx, "markdown_support: get_document_content failed: %s" % e)
         return _tool_error(str(e))
 
 
-def tool_apply_markdown(model, ctx, args):
-    """Tool: insert or replace content using Markdown (combined edit)."""
-    markdown = args.get("markdown")
+def tool_apply_document_content(model, ctx, args):
+    """Tool: insert or replace content (combined edit)."""
+    content = args.get("content")
     target = args.get("target")
     
     # Debug: log the start of content to check for wrapping issues
-    if markdown:
-        debug_log(ctx, "tool_apply_markdown: input type=%s starts with: %s" % (type(markdown), repr(markdown)[:50]))
+    if content:
+        debug_log(ctx, "tool_apply_document_content: input type=%s starts with: %s" % (type(content), repr(content)[:50]))
         
         # Accommodate list input (LLM sometimes ignores schema and sends array)
-        if isinstance(markdown, list):
-             debug_log(ctx, "tool_apply_markdown: joining list input with newlines")
-             markdown = "\n".join(str(x) for x in markdown)
-        # Normalize literal \n and \t so multi-line markdown renders correctly
-        # (handles over-escaped or stream-chunked output where we get backslash-n instead of newline)
-        if isinstance(markdown, str):
-            markdown = markdown.replace("\\n", "\n").replace("\\t", "\t")
+        if isinstance(content, list):
+             debug_log(ctx, "tool_apply_document_content: joining list input with newlines")
+             content = "\n".join(str(x) for x in content)
+        # Normalize literal \n and \t so multi-line content renders correctly
+        if isinstance(content, str):
+            content = content.replace("\\n", "\n").replace("\\t", "\t")
+            if DOCUMENT_FORMAT == "html":
+                # Unescape HTML entities first (e.g., &lt; → <, &gt; → >)
+                import html
+                content = html.unescape(content)
+                content = _ensure_html_linebreaks(content)
     
-    if not markdown and markdown != "":
-        return _tool_error("markdown is required")
+    if not content and content != "":
+        return _tool_error("content is required")
     if not target:
         return _tool_error("target is required")
     if target == "search":
@@ -608,20 +740,20 @@ def tool_apply_markdown(model, ctx, args):
         all_matches = args.get("all_matches", False)
         case_sensitive = args.get("case_sensitive", True)
         try:
-            count = _apply_markdown_at_search(model, ctx, markdown, search, all_matches=all_matches, case_sensitive=case_sensitive)
-            msg = "Replaced %d occurrence(s) with markdown content." % count
+            count = _apply_markdown_at_search(model, ctx, content, search, all_matches=all_matches, case_sensitive=case_sensitive)
+            msg = "Replaced %d occurrence(s) with new content." % count
             if count == 0:
-                msg += " Tried multiple literal candidates (including different line-ending variants). For section replacement send the full section text as search, or use find_text then apply_markdown with target='range'."
+                msg += " Tried multiple literal candidates. For section replacement send the full section text as search, or use find_text then apply_document_content with target='range'."
             return json.dumps({"status": "ok", "message": msg})
         except Exception as e:
-            debug_log(ctx, "markdown_support: apply_markdown search failed: %s" % e)
+            debug_log(ctx, "markdown_support: apply_document_content search failed: %s" % e)
             return _tool_error(str(e))
     if target == "full":
         try:
-            _insert_markdown_full(model, ctx, markdown)
-            return json.dumps({"status": "ok", "message": "Replaced entire document with markdown."})
+            _insert_markdown_full(model, ctx, content)
+            return json.dumps({"status": "ok", "message": "Replaced entire document."})
         except Exception as e:
-            debug_log(ctx, "markdown_support: apply_markdown full failed: %s" % e)
+            debug_log(ctx, "markdown_support: apply_document_content full failed: %s" % e)
             return _tool_error(str(e))
     if target == "range":
         start_val = args.get("start")
@@ -629,17 +761,17 @@ def tool_apply_markdown(model, ctx, args):
         if start_val is None or end_val is None:
             return _tool_error("target 'range' requires start and end parameters")
         try:
-            _apply_markdown_at_range(model, ctx, markdown, int(start_val), int(end_val))
-            return json.dumps({"status": "ok", "message": "Replaced range [%s, %s) with markdown." % (start_val, end_val)})
+            _apply_markdown_at_range(model, ctx, content, int(start_val), int(end_val))
+            return json.dumps({"status": "ok", "message": "Replaced range [%s, %s)." % (start_val, end_val)})
         except Exception as e:
-            debug_log(ctx, "markdown_support: apply_markdown range failed: %s" % e)
+            debug_log(ctx, "markdown_support: apply_document_content range failed: %s" % e)
             return _tool_error(str(e))
     if target in ("beginning", "end", "selection"):
         try:
-            _insert_markdown_at_position(model, ctx, markdown, target)
-            return json.dumps({"status": "ok", "message": "Inserted markdown at %s." % target})
+            _insert_markdown_at_position(model, ctx, content, target)
+            return json.dumps({"status": "ok", "message": "Inserted content at %s." % target})
         except Exception as e:
-            debug_log(ctx, "markdown_support: apply_markdown insert failed: %s" % e)
+            debug_log(ctx, "markdown_support: apply_document_content insert failed: %s" % e)
             return _tool_error(str(e))
     return _tool_error("Unknown target: %s" % target)
 
