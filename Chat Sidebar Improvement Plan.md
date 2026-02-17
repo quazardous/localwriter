@@ -85,7 +85,7 @@ Implemented:
 - main.py sends `reasoning: { effort: 'minimal' }` on all chat requests (provider-agnostic).
 
 Still TODO:
-- ~~Make chat_system_prompt editable in the Settings dialog~~ (DONE)
+- ~~Make additional_instructions editable in the Settings dialog~~ (DONE)
 - Add instructions about formatting tools (bold, italic, paragraph styles) so the AI uses them effectively
 
 
@@ -107,7 +107,7 @@ TODO:
 Phase 7: Configuration and Settings -- MOSTLY DONE
 
 New config keys to expose in SettingsDialog.xdl and settings handling in main.py:
-- chat_system_prompt -- DONE: multiline field in Settings dialog
+- additional_instructions -- DONE: multiline field in Settings dialog
 - chat_max_tokens -- DONE: in Settings dialog
 - chat_context_length -- DONE: in Settings dialog
 
@@ -141,7 +141,7 @@ What To Work On Next
 Priority order for remaining work:
 
 1. Test end-to-end: Install extension, open a Writer document, try asking the AI to edit text, replace words, format bold/italic. Verify tool calls work and document is modified.
-2. ~~Settings UI (Phase 7): Expose chat_system_prompt, chat_max_tokens, chat_context_length~~ (DONE).
+2. ~~Settings UI (Phase 7): Expose additional_instructions, chat_max_tokens, chat_context_length~~ (DONE).
 3. System prompt tuning (Phase 5): Iterate on the default prompt based on real testing.
 4. UI polish (Phase 6 remaining): Enter-to-send, auto-scroll. (Busy state: Send disabled during run, re-enabled in finally — DONE.)
 5. Dynamic resize (Phase 6 FIXME): Investigate sidebar resize lifecycle and re-implement PanelResizeListener. See FIXME comments in chat_panel.py.

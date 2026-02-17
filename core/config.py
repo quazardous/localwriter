@@ -78,6 +78,47 @@ def _safe_int(value, default):
         return default
 
 
+def populate_combobox_with_lru(ctx, ctrl, current_val, lru_key):
+    """Helper to populate a combobox with values from an LRU list in config.
+    Ensures current_val is at the top/selected."""
+    try:
+        lru = get_config(ctx, lru_key, [])
+        if not isinstance(lru, list):
+            lru = []
+        
+        curr_val_str = str(current_val).strip()
+        to_show = list(lru)
+        if curr_val_str and curr_val_str not in to_show:
+            to_show.insert(0, curr_val_str)
+        
+        if to_show:
+            ctrl.addItems(tuple(to_show), 0)
+            if curr_val_str:
+                ctrl.setText(curr_val_str)
+    except Exception:
+        if current_val:
+            try:
+                ctrl.setText(str(current_val))
+            except Exception:
+                pass
+
+
+def update_lru_history(ctx, val, lru_key, max_items=10):
+    """Helper to update an LRU list in config."""
+    val_str = str(val).strip()
+    if not val_str:
+        return
+    
+    lru = get_config(ctx, lru_key, [])
+    if not isinstance(lru, list):
+        lru = []
+    
+    if val_str in lru:
+        lru.remove(val_str)
+    lru.insert(0, val_str)
+    set_config(ctx, lru_key, lru[:max_items])
+
+
 def get_api_config(ctx):
     """Build API config dict from ctx for LlmClient. Pass to LlmClient(config, ctx)."""
     endpoint = str(get_config(ctx, "endpoint", "http://127.0.0.1:5000")).rstrip("/")

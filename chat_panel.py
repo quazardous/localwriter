@@ -130,13 +130,15 @@ class ChatSession:
 class SendButtonListener(unohelper.Base, XActionListener):
     """Listener for the Send button - runs chat with document, supports tool-calling."""
 
-    def __init__(self, ctx, frame, send_control, stop_control, query_control, response_control, status_control, session):
+    def __init__(self, ctx, frame, send_control, stop_control, query_control, response_control, prompt_selector, model_selector, status_control, session):
         self.ctx = ctx
         self.frame = frame
         self.send_control = send_control
         self.stop_control = stop_control
         self.query_control = query_control
         self.response_control = response_control
+        self.prompt_selector = prompt_selector
+        self.model_selector = model_selector
         self.status_control = status_control
         self.session = session
         self.stop_requested = False
@@ -252,7 +254,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
         try:
             debug_log(self.ctx, "_do_send: importing core modules...")
-            from core.config import get_config, get_api_config
+            from core.config import get_config, get_api_config, update_lru_history
             from core.api import LlmClient
             from core.document import get_document_context_for_chat
             from core.logging import log_to_file
@@ -284,6 +286,28 @@ class SendButtonListener(unohelper.Base, XActionListener):
         # Clear the query field
         if self.query_control and self.query_control.getModel():
             self.query_control.getModel().Text = ""
+
+        # Update system prompt from selector
+        if self.prompt_selector:
+            extra_instructions = self.prompt_selector.getText()
+            from core.config import set_config
+            from core.constants import DEFAULT_CHAT_SYSTEM_PROMPT
+            set_config(self.ctx, "additional_instructions", extra_instructions)
+            update_lru_history(self.ctx, extra_instructions, "prompt_lru")
+            
+            system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
+            if extra_instructions:
+                system_prompt += "\n\n" + str(extra_instructions)
+            self.session.messages[0]["content"] = system_prompt
+
+        # Update model from selector
+        if self.model_selector:
+            selected_model = self.model_selector.getText()
+            if selected_model:
+                from core.config import set_config
+                set_config(self.ctx, "model", selected_model)
+                update_lru_history(self.ctx, selected_model, "model_lru")
+                debug_log(self.ctx, "_do_send: model updated to %s" % selected_model)
 
         # 2. Get document model
         self._set_status("Getting document...")
@@ -780,7 +804,17 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         send_btn = root_window.getControl("send")
         query_ctrl = root_window.getControl("query")
         response_ctrl = root_window.getControl("response")
-        debug_log(self.ctx, "_wireControls: got send/query/response controls")
+        prompt_selector = None
+        model_selector = None
+        try:
+            prompt_selector = root_window.getControl("prompt_selector")
+        except Exception:
+            pass
+        try:
+            model_selector = root_window.getControl("model_selector")
+        except Exception:
+            pass
+        debug_log(self.ctx, "_wireControls: got send/query/response/prompt/model controls")
 
         # Status label (may not exist in older XDL)
         status_ctrl = None
@@ -806,9 +840,20 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         try:
             # Read system prompt from config
             debug_log(self.ctx, "_wireControls: importing core config...")
-            from core.config import get_config
+            from core.config import get_config, populate_combobox_with_lru
             from core.constants import DEFAULT_CHAT_SYSTEM_PROMPT
-            system_prompt = get_config(self.ctx, "chat_system_prompt", DEFAULT_CHAT_SYSTEM_PROMPT)
+            extra_instructions = get_config(self.ctx, "additional_instructions", "")
+            current_model = get_config(self.ctx, "model", "")
+            
+            if prompt_selector:
+                populate_combobox_with_lru(self.ctx, prompt_selector, extra_instructions, "prompt_lru")
+            
+            if model_selector:
+                populate_combobox_with_lru(self.ctx, model_selector, current_model, "model_lru")
+
+            system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
+            if extra_instructions:
+                system_prompt += "\n\n" + str(extra_instructions)
             debug_log(self.ctx, "_wireControls: config loaded")
         except Exception as e:
             import traceback
@@ -824,7 +869,7 @@ class ChatPanelElement(unohelper.Base, XUIElement):
             stop_btn = root_window.getControl("stop")
             send_listener = SendButtonListener(
                 self.ctx, self.xFrame, send_btn, stop_btn, query_ctrl, response_ctrl,
-                status_ctrl, self.session)
+                prompt_selector, model_selector, status_ctrl, self.session)
             send_btn.addActionListener(send_listener)
             debug_log(self.ctx, "Send button wired")
             start_watchdog_thread(self.ctx, status_ctrl)

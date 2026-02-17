@@ -9,7 +9,7 @@ if _ext_dir not in sys.path:
 import unohelper
 import officehelper
 
-from core.config import get_config, set_config, as_bool, get_api_config
+from core.config import get_config, set_config, as_bool, get_api_config, populate_combobox_with_lru, update_lru_history
 from core.api import LlmClient
 from core.document import get_full_document_text, get_document_context_for_chat
 from core.async_stream import run_stream_completion_async
@@ -56,14 +56,20 @@ class MainJob(unohelper.Base, XJobExecutor):
         """Delegate to core.config."""
         set_config(self.ctx, key, value)
 
+    def _populate_combobox_with_lru(self, ctrl, current_val, lru_key):
+        """Delegate to core.config."""
+        populate_combobox_with_lru(self.ctx, ctrl, current_val, lru_key)
+
+    def _update_lru_history(self, val, lru_key, max_items=10):
+        """Delegate to core.config."""
+        update_lru_history(self.ctx, val, lru_key, max_items)
+
     def _apply_settings_result(self, result):
         """Apply settings dialog result to config. Shared by Writer and Calc."""
         # Define config keys that can be set directly
         direct_keys = [
             "extend_selection_max_tokens",
-            "extend_selection_system_prompt", 
             "edit_selection_max_new_tokens",
-            "edit_selection_system_prompt",
             "api_key",
             "is_openwebui",
             "openai_compatibility",
@@ -72,7 +78,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             "seed",
             "chat_max_tokens",
             "chat_context_length",
-            "chat_system_prompt",
+            "additional_instructions",
             "request_timeout"
         ]
         
@@ -82,17 +88,11 @@ class MainJob(unohelper.Base, XJobExecutor):
                 val = result[key]
                 self.set_config(key, val)
                 
-                # Update model LRU history
+                # Update LRU history
                 if key == "model" and val:
-                    lru = self.get_config("model_lru", [])
-                    if not isinstance(lru, list):
-                        lru = []
-                    val_str = str(val).strip()
-                    if val_str:
-                        if val_str in lru:
-                            lru.remove(val_str)
-                        lru.insert(0, val_str)
-                        self.set_config("model_lru", lru[:10])
+                    self._update_lru_history(val, "model_lru")
+                elif key == "additional_instructions" and val:
+                    self._update_lru_history(val, "prompt_lru")
 
         
         # Handle special cases
@@ -200,7 +200,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         return get_full_document_text(model, max_chars)
 
     def input_box(self, message, title="", default="", x=None, y=None):
-        """ Shows input dialog (EditInputDialog.xdl). Returns edit text if OK, else "". """
+        """ Shows input dialog (EditInputDialog.xdl). Returns (result_text, extra_prompt) if OK, else ("", ""). """
         import uno
         ctx = self.ctx
         smgr = ctx.getServiceManager()
@@ -213,12 +213,22 @@ class MainJob(unohelper.Base, XJobExecutor):
             dlg.getControl("edit").getModel().Text = str(default)
             if title:
                 dlg.getModel().Title = title
+            
+            # Populate prompt selector history
+            prompt_ctrl = dlg.getControl("prompt_selector")
+            current_prompt = self.get_config("additional_instructions", "")
+            self._populate_combobox_with_lru(prompt_ctrl, current_prompt, "prompt_lru")
+
             dlg.getControl("edit").setFocus()
             dlg.getControl("edit").setSelection(uno.createUnoStruct("com.sun.star.awt.Selection", 0, len(str(default))))
-            ret = dlg.getControl("edit").getModel().Text if dlg.execute() else ""
+            
+            if dlg.execute():
+                ret_text = dlg.getControl("edit").getModel().Text
+                ret_prompt = prompt_ctrl.getText()
+                return ret_text, ret_prompt
+            return "", ""
         finally:
             dlg.dispose()
-        return ret
 
     def settings_box(self, title="", x=None, y=None):
         """ Settings dialog loaded from XDL (LocalWriterDialogs/SettingsDialog.xdl).
@@ -242,12 +252,10 @@ class MainJob(unohelper.Base, XJobExecutor):
             {"name": "temperature", "value": str(self.get_config("temperature", "0.5")), "type": "float"},
             {"name": "seed", "value": str(self.get_config("seed", ""))},
             {"name": "extend_selection_max_tokens", "value": str(self.get_config("extend_selection_max_tokens", "70")), "type": "int"},
-            {"name": "extend_selection_system_prompt", "value": str(self.get_config("extend_selection_system_prompt", ""))},
             {"name": "edit_selection_max_new_tokens", "value": str(self.get_config("edit_selection_max_new_tokens", "0")), "type": "int"},
-            {"name": "edit_selection_system_prompt", "value": str(self.get_config("edit_selection_system_prompt", ""))},
             {"name": "chat_max_tokens", "value": str(self.get_config("chat_max_tokens", "16384")), "type": "int"},
             {"name": "chat_context_length", "value": str(self.get_config("chat_context_length", "8000")), "type": "int"},
-            {"name": "chat_system_prompt", "value": str(self.get_config("chat_system_prompt", "") or DEFAULT_CHAT_SYSTEM_PROMPT)},
+            {"name": "additional_instructions", "value": str(self.get_config("additional_instructions", ""))},
             {"name": "request_timeout", "value": str(self.get_config("request_timeout", "120")), "type": "int"},
         ]
 
@@ -268,29 +276,9 @@ class MainJob(unohelper.Base, XJobExecutor):
 
 
                     if field["name"] == "model":
-                        try:
-                            # Configure combobox with LRU model history
-                            lru = self.get_config("model_lru", [])
-                            if not isinstance(lru, list):
-                                lru = []
-
-                            # Ensure current value is in the dropdown list
-
-                            curr_val = str(field["value"]).strip()
-                            to_show = list(lru)
-                            if curr_val and curr_val not in to_show:
-                                to_show.insert(0, curr_val)
-                            
-                            # Add items to combobox
-                            if to_show:
-                                ctrl.addItems(tuple(to_show), 0)
-                                # Set the text value to match the current value
-                                if curr_val:
-                                    ctrl.setText(curr_val)
-                        except Exception:
-                            # Fallback: just set the text value
-                            if field["value"]:
-                                ctrl.setText(field["value"])
+                        self._populate_combobox_with_lru(ctrl, field["value"], "model_lru")
+                    elif field["name"] == "additional_instructions":
+                        self._populate_combobox_with_lru(ctrl, field["value"], "prompt_lru")
                     else:
                         ctrl.getModel().Text = field["value"]
             dlg.getControl("endpoint").setFocus()
@@ -304,7 +292,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                         try:
                             ctrl = dlg.getControl(field["name"])
                             if ctrl:
-                                if field["name"] == "model":
+                                if field["name"] in ("model", "additional_instructions"):
                                     # For ComboBox, use getText() to get the actual edit text (user input)
                                     control_text = ctrl.getText()
                                 else:
@@ -368,9 +356,13 @@ class MainJob(unohelper.Base, XJobExecutor):
                 # Access the current selection
                 if len(text_range.getString()) > 0:
                     try:
-                        system_prompt = self.get_config("extend_selection_system_prompt", "")
+                        extra_instructions = self.get_config("additional_instructions", "")
+                        system_prompt = extra_instructions # Extend usually benefits from just the custom prompt or none
+                        self._update_lru_history(system_prompt, "prompt_lru")
                         prompt = text_range.getString()
                         max_tokens = self.get_config("extend_selection_max_tokens", 70)
+                        model_val = self.get_config("model", "")
+                        self._update_lru_history(model_val, "model_lru")
                         api_type = str(self.get_config("api_type", "completions")).lower()
                         client = self._get_client()
 
@@ -390,14 +382,19 @@ class MainJob(unohelper.Base, XJobExecutor):
                 # Access the current selection
                 original_text = text_range.getString()
                 try:
-                    user_input = self.input_box("Please enter edit instructions!", "Input", "")
+                    user_input, extra_instructions = self.input_box("Please enter edit instructions!", "Input", "")
                     if not user_input:
                         return
+                    
+                    if extra_instructions:
+                        self.set_config("additional_instructions", extra_instructions)
+                        self._update_lru_history(extra_instructions, "prompt_lru")
+
                 except Exception as e:
                     self.show_error(str(e), "LocalWriter: Edit Selection")
                     return
                 prompt = "ORIGINAL VERSION:\n" + original_text + "\n Below is an edited version according to the following instructions. There are no comments in the edited version. The edited version is followed by the end of the document. The original version will be edited as follows to create the edited version:\n" + user_input + "\nEDITED VERSION:\n"
-                system_prompt = self.get_config("edit_selection_system_prompt", "")
+                system_prompt = extra_instructions or ""
                 max_tokens = len(original_text) + self.get_config("edit_selection_max_new_tokens", 0)
                 api_type = str(self.get_config("api_type", "completions")).lower()
                 text_range.setString("")
@@ -427,11 +424,18 @@ class MainJob(unohelper.Base, XJobExecutor):
                     if not doc_text.strip():
                         self.show_error("Document is empty.", "Chat with Document")
                         return
-                    user_query = self.input_box("Ask a question about your document:", "Chat with Document", "")
+                    user_query, extra_instructions = self.input_box("Ask a question about your document:", "Chat with Document", "")
                     if not user_query:
                         return
+                    
+                    if extra_instructions:
+                        self.set_config("additional_instructions", extra_instructions)
+                        self._update_lru_history(extra_instructions, "prompt_lru")
+
                     prompt = f"Document content:\n\n{doc_text}\n\nUser question: {user_query}"
-                    system_prompt = self.get_config("chat_system_prompt", "") or DEFAULT_CHAT_SYSTEM_PROMPT
+                    system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
+                    if extra_instructions:
+                        system_prompt += "\n\n" + str(extra_instructions)
                     max_tokens = int(self.get_config("chat_max_tokens", 512))
                     api_type = str(self.get_config("api_type", "completions")).lower()
                     text = model.Text

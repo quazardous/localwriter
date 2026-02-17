@@ -93,7 +93,8 @@ localwriter/
 - **Implementation**: `chat_panel.py` (ChatPanelFactory, ChatPanelElement, ChatToolPanel); `ContainerWindowProvider` + `ChatPanelDialog.xdl`; `setVisible(True)` required after `createContainerWindow()`.
 - **Tool-calling**: The AI sees only two tools (markdown-centric). `document_tools.py` exposes **WRITER_TOOLS** = `get_markdown`, `apply_markdown`. Implementations live in `markdown_support.py`; `document_tools.py` imports them and defines `TOOL_DISPATCH` for `execute_tool`. Legacy tools (`replace_text`, `insert_text`, `get_selection`, `replace_selection`, `format_text`, `set_paragraph_style`, `get_document_text`) remain in `document_tools.py` but are **not** in WRITER_TOOLS and their TOOL_DISPATCH entries are commented out (kept for possible future use).
 - **Menu fallback**: Menu item "Chat with Document" opens input dialog, appends streaming response to document end (no tool-calling). Both sidebar and menu use the same document context (see below).
-- **Config keys** (used by chat): `chat_context_length`, `chat_max_tokens`, `chat_system_prompt` (in Settings).
+- **Config keys** (used by chat): `chat_context_length`, `chat_max_tokens`, `additional_instructions` (in Settings).
+- **Unified Prompt System**: See Section 3c.
 
 ### Document context for chat (current implementation)
 
@@ -130,7 +131,24 @@ All streaming paths (sidebar tool-calling, sidebar simple stream, Writer Extend/
 
 ---
 
-## 3c. Shared Helpers
+## 3c. Unified Prompt System with History
+
+The "Additional Instructions" (previously system prompts) are now unified across **Chat, Edit Selection, and Extend Selection** into a single configuration key with a history dropdown (ComboBox).
+
+- **Implementation**:
+    - **Shared LRU Logic**: `core/config.py` contains `populate_combobox_with_lru()` and `update_lru_history()` used by all dialogs and features.
+    - **Unified Key**: All features use the `additional_instructions` config key. LEGACY: The key was renamed from `chat_system_prompt` to avoid legacy data from "full system prompt" iterations.
+    - **History Persistence**: Up to 10 entries are stored in `prompt_lru` (JSON list).
+- **Behavior**:
+    - **Dropdown (ComboBox)**: All dialogs (Settings, Edit Selection input, Chat sidebar) show a dropdown of recent instructions.
+    - **Multiline Support**: LibreOffice ComboBoxes are single-line. We display a preview in the list and restore full multiline content upon selection.
+    - **Prompt Construction**:
+        - **Chat**: `DEFAULT_CHAT_SYSTEM_PROMPT` (constants.py) + `additional_instructions`.
+        - **Edit/Extend**: `additional_instructions` is used as the primary guiding prompt (representing the special system role for that edit).
+
+---
+
+## 4. Shared Helpers
 
 - **`MainJob._apply_settings_result(self, result)`** (`main.py`): Applies settings dialog result to config. Used by both Writer and Calc settings branches.
 - **`core/logging.py`**:
@@ -179,8 +197,8 @@ All streaming paths (sidebar tool-calling, sidebar simple stream, Writer Extend/
   - Windows: `%APPDATA%\LibreOffice\4\user\localwriter.json`
 - **Single file**: No presets or multiple configs. To use a different setup (e.g. `localwriter.openrouter.json`), copy it to the path above as `localwriter.json`.
 - **Settings dialog** reads/writes this file via `get_config()` / `set_config()` in `core/config.py`.
-- **Chat-related keys** (used by `chat_panel.py` and menu Chat): `chat_context_length` (default 8000), `chat_max_tokens` (default 512 menu / 16384 sidebar), `chat_system_prompt`. Also `api_key`, `api_type` (in Settings) for OpenRouter/OpenAI-compatible endpoints.
-- **Note**: `chat_context_length`, `chat_max_tokens`, `chat_system_prompt` are now in the Settings dialog.
+- **Chat-related keys** (used by `chat_panel.py` and menu Chat): `chat_context_length` (default 8000), `chat_max_tokens` (default 512 menu / 16384 sidebar), `additional_instructions`. Also `api_key`, `api_type` (in Settings) for OpenRouter/OpenAI-compatible endpoints.
+- **Note**: `chat_context_length`, `chat_max_tokens`, `additional_instructions` are now in the Settings dialog.
 
 ---
 
@@ -223,7 +241,7 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 - Impress support; Calc range-aware behavior.
 
 ### Chat settings in UI — DONE
-- ~~Expose `chat_context_length`, `chat_max_tokens`, `chat_system_prompt` in the Settings dialog~~ (implemented in SettingsDialog.xdl).
+- ~~Expose `chat_context_length`, `chat_max_tokens`, `additional_instructions` in the Settings dialog~~ (implemented in SettingsDialog.xdl).
 
 ### Chat Sidebar Enhancement Roadmap
 
