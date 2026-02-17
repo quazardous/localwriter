@@ -19,9 +19,9 @@ def accumulate_delta(
 ) -> dict[object, object]:
     """Merge a streaming chunk delta into an accumulated message/snapshot.
 
-    Used to build a full chat completion message from SSE chunks: content and
-    tool_calls (with partial function.arguments) are merged by index; strings
-    are concatenated.
+    Required for tool-calling: used in stream_request_with_tools to build the full
+    assistant message from SSE chunks. Content and tool_calls (with partial
+    function.arguments) are merged by index; strings are concatenated.
     """
     for key, delta_value in delta.items():
         if key not in acc:

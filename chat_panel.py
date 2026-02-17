@@ -16,7 +16,7 @@ if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
 
 from core.logging import agent_log, debug_log, update_activity_state, start_watchdog_thread
-from core.async_stream import run_stream_completion_async
+from core.async_stream import run_stream_completion_async, run_stream_drain_loop
 
 from com.sun.star.ui import XUIElementFactory, XUIElement, XToolPanel, XSidebarPanel
 from com.sun.star.ui.UIElementType import TOOLPANEL
@@ -26,8 +26,8 @@ from com.sun.star.awt import XActionListener
 EXTENSION_ID = "org.extension.localwriter"
 XDL_PATH = "LocalWriterDialogs/ChatPanelDialog.xdl"
 
-# Maximum tool-calling round-trips before giving up
-MAX_TOOL_ROUNDS = 5
+# Default max tool rounds when not in config (get_api_config supplies chat_max_tool_rounds)
+DEFAULT_MAX_TOOL_ROUNDS = 5
 
 # Default system prompt for the chat sidebar (imported from main inside methods to avoid unopkg errors)
 DEFAULT_SYSTEM_PROMPT_FALLBACK = "You are a helpful assistant."
@@ -347,7 +347,8 @@ class SendButtonListener(unohelper.Base, XActionListener):
                     (use_tools, len(self.session.messages)))
 
         if use_tools:
-            self._start_tool_calling_async(client, model, max_tokens, WRITER_TOOLS, execute_tool)
+            max_tool_rounds = api_config.get("chat_max_tool_rounds", DEFAULT_MAX_TOOL_ROUNDS)
+            self._start_tool_calling_async(client, model, max_tokens, WRITER_TOOLS, execute_tool, max_tool_rounds)
         else:
             self._start_simple_stream_async(client, max_tokens, api_type)
 
@@ -358,14 +359,15 @@ class SendButtonListener(unohelper.Base, XActionListener):
     # Previous attempt used enterUndoContext("AI Edit") / leaveUndoContext() but leaveUndoContext
     # was failing in some environments. Revisit when integrating with the async tool-calling path.
 
-    def _start_tool_calling_async(self, client, model, max_tokens, tools, execute_tool_fn):
+    def _start_tool_calling_async(self, client, model, max_tokens, tools, execute_tool_fn, max_tool_rounds=None):
         """Tool-calling loop: worker thread + queue, main thread drains queue with processEventsToIdle (pure Python threading, no UNO Timer)."""
         from core.logging import log_to_file
-        debug_log(self.ctx, "=== Tool-calling loop START (max %d rounds) ===" % MAX_TOOL_ROUNDS)
+        if max_tool_rounds is None:
+            max_tool_rounds = DEFAULT_MAX_TOOL_ROUNDS
+        debug_log(self.ctx, "=== Tool-calling loop START (max %d rounds) ===" % max_tool_rounds)
         self._append_response("\nAI: ")
         q = queue.Queue()
         round_num = [0]
-        thinking_open = [False]
         job_done = [False]
 
         def start_worker():
@@ -398,7 +400,6 @@ class SendButtonListener(unohelper.Base, XActionListener):
             update_activity_state("exhausted_rounds")
             self._set_status("Finishing...")
             self._append_response("\nAI: ")
-            thinking_open[0] = False
             last_streamed = [""]
 
             def run_final():
@@ -447,7 +448,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 job_done[0] = True
                 self._terminal_status = "Ready"
                 self._set_status("Ready")
-                return
+                return True
             self.session.add_assistant_message(content=content, tool_calls=tool_calls)
             if content:
                 self._append_response("\n")
@@ -488,11 +489,12 @@ class SendButtonListener(unohelper.Base, XActionListener):
             if not self.stop_requested:
                 self._set_status("Sending results to AI...")
             round_num[0] += 1
-            if round_num[0] >= MAX_TOOL_ROUNDS:
-                agent_log("chat_panel.py:exit_exhausted", "Exiting loop: exhausted MAX_TOOL_ROUNDS", data={"rounds": MAX_TOOL_ROUNDS}, hypothesis_id="A")
+            if round_num[0] >= max_tool_rounds:
+                agent_log("chat_panel.py:exit_exhausted", "Exiting loop: exhausted max_tool_rounds", data={"rounds": max_tool_rounds}, hypothesis_id="A")
                 start_final_stream()
             else:
                 start_worker()
+            return False
 
         try:
             toolkit = self.ctx.getServiceManager().createInstanceWithContext(
@@ -505,84 +507,28 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
         start_worker()
 
-        # Main-thread drain loop: queue + processEventsToIdle only (no UNO Timer)
-        while not job_done[0]:
-            items = []
-            try:
-                # Wait for at least one item or timeout
-                items.append(q.get(timeout=0.1))
-                # Drain all currently available items to batch updates
-                try:
-                    while True:
-                        items.append(q.get_nowait())
-                except queue.Empty:
-                    pass
-            except queue.Empty:
-                toolkit.processEventsToIdle()
-                continue
+        def apply_chunk(chunk_text, is_thinking=False):
+            self._append_response(chunk_text)
 
-            try:
-                current_chunks = []
-                current_thinking = []
+        def on_stream_done(response):
+            return process_stream_done(response)
 
-                def flush_buffers():
-                    if current_thinking:
-                        if not thinking_open[0]:
-                            self._append_response("[Thinking] ")
-                            thinking_open[0] = True
-                        self._append_response("".join(current_thinking))
-                        current_thinking.clear()
-                    if current_chunks:
-                        if thinking_open[0]:
-                            self._append_response(" /thinking\n")
-                            thinking_open[0] = False
-                        self._append_response("".join(current_chunks))
-                        current_chunks.clear()
+        def on_stopped():
+            self._terminal_status = "Stopped"
+            self._set_status("Stopped")
+            self._append_response("\n[Stopped by user]\n")
 
-                def close_thinking():
-                    if thinking_open[0]:
-                        self._append_response(" /thinking\n")
-                        thinking_open[0] = False
+        def on_error(e):
+            self._append_response("\n[API error: %s]\n" % str(e))
+            self._terminal_status = "Error"
+            self._set_status("Error")
 
-                for item in items:
-                    kind = item[0] if isinstance(item, tuple) else item
-                    if kind == "chunk":
-                        if current_thinking:
-                            flush_buffers()
-                        current_chunks.append(item[1])
-                    elif kind == "thinking":
-                        if current_chunks:
-                            flush_buffers()
-                        current_thinking.append(item[1])
-                    elif kind == "stream_done":
-                        flush_buffers()
-                        close_thinking()
-                        process_stream_done(item[1])
-                    elif kind == "stopped":
-                        flush_buffers()
-                        close_thinking()
-                        job_done[0] = True
-                        self._terminal_status = "Stopped"
-                        self._set_status("Stopped")
-                        self._append_response("\n[Stopped by user]\n")
-                        break
-                    elif kind == "error":
-                        flush_buffers()
-                        close_thinking()
-                        job_done[0] = True
-                        self._append_response("\n[API error: %s]\n" % str(item[1]))
-                        self._terminal_status = "Error"
-                        self._set_status("Error")
-                        break
-                
-                flush_buffers()
-
-            except Exception as e:
-                job_done[0] = True
-                self._append_response("\n[Error: %s]\n" % str(e))
-                self._terminal_status = "Error"
-                self._set_status("Error")
-            toolkit.processEventsToIdle()
+        run_stream_drain_loop(
+            q, toolkit, job_done, apply_chunk,
+            on_stream_done=on_stream_done,
+            on_stopped=on_stopped,
+            on_error=on_error,
+        )
 
     def _start_simple_stream_async(self, client, max_tokens, api_type):
         """Start simple streaming (no tools) via async helper; returns immediately."""

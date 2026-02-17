@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE dlg:window PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "dialog.dtd">
 <dlg:window xmlns:dlg="http://openoffice.org/2000/dialog" xmlns:script="http://openoffice.org/2000/script"
-  dlg:id="SettingsDialog" dlg:left="100" dlg:top="50" dlg:width="420" dlg:height="260"
+  dlg:id="SettingsDialog" dlg:left="100" dlg:top="50" dlg:width="440" dlg:height="282"
   dlg:closeable="true" dlg:moveable="true" dlg:resizeable="true" dlg:title="Settings">
  <dlg:bulletinboard>
   <dlg:text dlg:id="label_endpoint" dlg:left="8" dlg:top="12" dlg:width="180" dlg:height="10" dlg:value="Endpoint URL/Port:" dlg:align="left"/>
@@ -32,6 +32,8 @@
   <dlg:combobox dlg:id="additional_instructions" dlg:left="195" dlg:top="178" dlg:width="215" dlg:height="14" dlg:tabstop="true" dlg:spin="true" dlg:dropdown="true" dlg:value="" dlg:border="1"/>
   <dlg:text dlg:id="label_request_timeout" dlg:left="8" dlg:top="194" dlg:width="180" dlg:height="10" dlg:value="Request Timeout (seconds):" dlg:align="left"/>
   <dlg:textfield dlg:id="request_timeout" dlg:left="195" dlg:top="192" dlg:width="215" dlg:height="14" dlg:tabstop="true" dlg:value="120"/>
-  <dlg:button dlg:id="btn_ok" dlg:left="160" dlg:top="220" dlg:width="100" dlg:height="18" dlg:value="OK" dlg:button-type="ok" dlg:default="true"/>
+  <dlg:text dlg:id="label_chat_max_tool_rounds" dlg:left="8" dlg:top="208" dlg:width="180" dlg:height="10" dlg:value="Chat Max Tool Rounds:" dlg:align="left"/>
+  <dlg:textfield dlg:id="chat_max_tool_rounds" dlg:left="195" dlg:top="206" dlg:width="215" dlg:height="14" dlg:tabstop="true" dlg:value="5"/>
+  <dlg:button dlg:id="btn_ok" dlg:left="170" dlg:top="238" dlg:width="100" dlg:height="18" dlg:value="OK" dlg:button-type="ok" dlg:default="true"/>
  </dlg:bulletinboard>
 </dlg:window>

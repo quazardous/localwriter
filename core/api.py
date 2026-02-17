@@ -6,6 +6,7 @@ import json
 import ssl
 import urllib.request
 
+# accumulate_delta is required for tool-calling: it merges streaming deltas into message_snapshot so full tool_calls (with function.arguments) are available.
 from .streaming_deltas import accumulate_delta
 
 from core.logging import log_to_file, debug_log, update_activity_state

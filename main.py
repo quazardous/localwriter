@@ -79,7 +79,8 @@ class MainJob(unohelper.Base, XJobExecutor):
             "chat_max_tokens",
             "chat_context_length",
             "additional_instructions",
-            "request_timeout"
+            "request_timeout",
+            "chat_max_tool_rounds"
         ]
         
         # Set direct keys
@@ -254,6 +255,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             {"name": "chat_context_length", "value": str(self.get_config("chat_context_length", "8000")), "type": "int"},
             {"name": "additional_instructions", "value": str(self.get_config("additional_instructions", ""))},
             {"name": "request_timeout", "value": str(self.get_config("request_timeout", "120")), "type": "int"},
+            {"name": "chat_max_tool_rounds", "value": str(self.get_config("chat_max_tool_rounds", "5")), "type": "int"},
         ]
 
         pip = ctx.getValueByName("/singletons/com.sun.star.deployment.PackageInformationProvider")

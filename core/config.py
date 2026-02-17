@@ -130,4 +130,5 @@ def get_api_config(ctx):
         "temperature": _safe_float(get_config(ctx, "temperature", 0.5), 0.5),
         "seed": get_config(ctx, "seed", ""),
         "request_timeout": _safe_int(get_config(ctx, "request_timeout", 120), 120),
+        "chat_max_tool_rounds": _safe_int(get_config(ctx, "chat_max_tool_rounds", 5), 5),
     }

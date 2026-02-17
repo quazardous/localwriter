@@ -1,69 +1,32 @@
 """
 Async stream completion: run blocking stream_completion on a worker thread,
 drain chunks via a queue and a main-thread loop with processEventsToIdle (pure Python, no UNO Timer).
+Shared drain loop used by both simple streaming and tool-calling (chat_panel).
 """
 import queue
 import threading
 
 
-def run_stream_completion_async(
-    ctx,
-    client,
-    prompt,
-    system_prompt,
-    max_tokens,
-    api_type,
+def run_stream_drain_loop(
+    q,
+    toolkit,
+    job_done,
     apply_chunk_fn,
-    on_done_fn,
-    on_error_fn,
-    stop_checker=None,
+    on_stream_done,
+    on_stopped,
+    on_error,
 ):
     """
-    Run client.stream_completion on a worker thread; drain (chunk, thinking) via a
-    queue and a main-thread loop with processEventsToIdle. apply_chunk_fn(chunk_text, is_thinking)
-    and on_done_fn() / on_error_fn(exception) are called on the main thread.
-    Blocks until stream finishes (pure Python queue, no UNO Timer).
+    Main-thread drain loop: batch items from queue, maintain thinking/chunk buffers,
+    call apply_chunk_fn for content. on_stream_done(response) returns True if job is
+    finished, False if more items will be pushed (e.g. next tool round). on_stopped()
+    and on_error(exception) are called when stopped or error; job_done is set and loop exits.
     """
-    q = queue.Queue()
-    job_done = [False]
     thinking_open = [False]
-
-    def worker():
-        try:
-            client.stream_completion(
-                prompt,
-                system_prompt,
-                max_tokens,
-                api_type,
-                append_callback=lambda t: q.put(("chunk", t)),
-                append_thinking_callback=lambda t: q.put(("thinking", t)),
-                stop_checker=stop_checker,
-                dispatch_events=False,
-            )
-            if stop_checker and stop_checker():
-                q.put(("stopped",))
-            else:
-                q.put(("stream_done",))
-        except Exception as e:
-            q.put(("error", e))
-
-    try:
-        toolkit = ctx.getServiceManager().createInstanceWithContext(
-            "com.sun.star.awt.Toolkit", ctx)
-    except Exception as e:
-        on_error_fn(e)
-        return
-
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-
-    # Main-thread drain loop: queue + processEventsToIdle only (no UNO Timer)
     while not job_done[0]:
         items = []
         try:
-            # Wait for at least one item or timeout
             items.append(q.get(timeout=0.1))
-            # Drain all currently available items to batch updates
             try:
                 while True:
                     items.append(q.get_nowait())
@@ -91,8 +54,14 @@ def run_stream_completion_async(
                     apply_chunk_fn("".join(current_content), is_thinking=False)
                     current_content.clear()
 
+            def close_thinking():
+                if thinking_open[0]:
+                    apply_chunk_fn(" /thinking\n", is_thinking=True)
+                    thinking_open[0] = False
+
             for item in items:
                 kind = item[0] if isinstance(item, tuple) else item
+                response = item[1] if len(item) > 1 else None
                 if kind == "chunk":
                     if current_thinking:
                         flush_buffers()
@@ -103,32 +72,90 @@ def run_stream_completion_async(
                     current_thinking.append(item[1])
                 elif kind == "stream_done":
                     flush_buffers()
-                    if thinking_open[0]:
-                        apply_chunk_fn(" /thinking\n", is_thinking=True)
-                        thinking_open[0] = False
-                    job_done[0] = True
-                    on_done_fn()
-                    break # Don't process further items after done
+                    close_thinking()
+                    if on_stream_done(response):
+                        job_done[0] = True
+                    break
                 elif kind == "stopped":
                     flush_buffers()
-                    if thinking_open[0]:
-                        apply_chunk_fn(" /thinking\n", is_thinking=True)
+                    close_thinking()
+                    on_stopped()
                     job_done[0] = True
-                    on_done_fn()
                     break
                 elif kind == "error":
                     flush_buffers()
-                    if thinking_open[0]:
-                        apply_chunk_fn(" /thinking\n", is_thinking=True)
+                    close_thinking()
+                    on_error(response)
                     job_done[0] = True
-                    on_error_fn(item[1])
                     break
-            
+
             flush_buffers()
 
         except Exception as e:
             job_done[0] = True
-            on_error_fn(e)
-        
+            on_error(e)
+
         toolkit.processEventsToIdle()
+
+
+def run_stream_completion_async(
+    ctx,
+    client,
+    prompt,
+    system_prompt,
+    max_tokens,
+    api_type,
+    apply_chunk_fn,
+    on_done_fn,
+    on_error_fn,
+    stop_checker=None,
+):
+    """
+    Run client.stream_completion on a worker thread; drain (chunk, thinking) via a
+    queue and a main-thread loop with processEventsToIdle. apply_chunk_fn(chunk_text, is_thinking)
+    and on_done_fn() / on_error_fn(exception) are called on the main thread.
+    Blocks until stream finishes (pure Python queue, no UNO Timer).
+    """
+    q = queue.Queue()
+    job_done = [False]
+
+    def worker():
+        try:
+            client.stream_completion(
+                prompt,
+                system_prompt,
+                max_tokens,
+                api_type,
+                append_callback=lambda t: q.put(("chunk", t)),
+                append_thinking_callback=lambda t: q.put(("thinking", t)),
+                stop_checker=stop_checker,
+                dispatch_events=False,
+            )
+            if stop_checker and stop_checker():
+                q.put(("stopped",))
+            else:
+                q.put(("stream_done", None))
+        except Exception as e:
+            q.put(("error", e))
+
+    try:
+        toolkit = ctx.getServiceManager().createInstanceWithContext(
+            "com.sun.star.awt.Toolkit", ctx)
+    except Exception as e:
+        on_error_fn(e)
+        return
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    def on_stream_done(_response):
+        on_done_fn()
+        return True
+
+    run_stream_drain_loop(
+        q, toolkit, job_done, apply_chunk_fn,
+        on_stream_done=on_stream_done,
+        on_stopped=on_done_fn,
+        on_error=on_error_fn,
+    )
 
