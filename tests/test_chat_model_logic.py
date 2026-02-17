@@ -4,11 +4,27 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 # Mock uno and unohelper before importing chat_panel
+class MockUnoBase: pass
+class XActionListener: pass
+class XUIElement: pass
+class XToolPanel: pass
+class XSidebarPanel: pass
+class XUIElementFactory: pass
+class XTextComponent: pass
+
 sys.modules['uno'] = MagicMock()
-sys.modules['unohelper'] = MagicMock()
+mock_unohelper = MagicMock()
+mock_unohelper.Base = MockUnoBase
+sys.modules['unohelper'] = mock_unohelper
 
 # Mock com structure
 com = MagicMock()
+com.sun.star.awt.XActionListener = XActionListener
+com.sun.star.ui.XUIElement = XUIElement
+com.sun.star.ui.XToolPanel = XToolPanel
+com.sun.star.ui.XSidebarPanel = XSidebarPanel
+com.sun.star.ui.XUIElementFactory = XUIElementFactory
+com.sun.star.awt.XTextComponent = XTextComponent
 sys.modules['com'] = com
 sys.modules['com.sun.star'] = com.sun.star
 sys.modules['com.sun.star.ui'] = com.sun.star.ui
