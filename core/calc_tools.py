@@ -16,13 +16,13 @@ CALC_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_cell_range",
-            "description": "Reads values from the specified cell range.",
+            "description": "Reads values from the specified cell range. Prefer ranges for efficiency; single cells supported but not recommended.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "range_name": {
                         "type": "string",
-                        "description": "Cell range (e.g. A1:D10, B2, Sheet1.A1:C5)",
+                        "description": "Cell range (e.g. A1:D10, Sheet1.A1:C5). Use ranges for multiple cells.",
                     }
                 },
                 "required": ["range_name"],
@@ -32,35 +32,14 @@ CALC_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "write_formula",
-            "description": "Writes text, number, or formula to the specified cell. Use plain text for headers (e.g. 'Total'), numbers for numeric data (e.g. '42'), and start with '=' for formulas (e.g. '=SUM(A1:A10)'). When creating a table, write all headers and data one by one if possible.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "cell": {
-                        "type": "string",
-                        "description": "Target cell address (e.g. A1, B5)",
-                    },
-                    "formula": {
-                        "type": "string",
-                        "description": "Content to write: text (e.g. 'Header'), number (e.g. '100'), or formula (e.g. '=A1+B1')",
-                    },
-                },
-                "required": ["cell", "formula"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "set_cell_style",
-            "description": "Applies style and formatting to the specified cell or range. Typically used for visualization after writing data or merging cells.",
+            "description": "Applies style and formatting to the specified cell or range. Prefer ranges for efficiency; use after bulk writes.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "range_name": {
                         "type": "string",
-                        "description": "Target cell or range (e.g. A1, A1:D10)",
+                        "description": "Target cell or range (e.g. A1:D10). Use ranges for multiple cells.",
                     },
                     "bold": {"type": "boolean", "description": "Bold font"},
                     "italic": {"type": "boolean", "description": "Italic font"},
@@ -117,7 +96,7 @@ CALC_TOOLS = [
         "type": "function",
         "function": {
             "name": "merge_cells",
-            "description": "Merges the specified cell range. Typically used for main headers. Don't forget to write text with write_formula and style with set_cell_style after merging.",
+            "description": "Merges the specified cell range. Typically used for main headers. Write text with write_formula_range and style with set_cell_style after merging.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -219,6 +198,78 @@ CALC_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_formula_range",
+            "description": "Writes formulas or values to a cell range efficiently. Use a single value to fill the entire range, or an array of values for each cell.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "range_name": {
+                        "type": "string",
+                        "description": "Target range (e.g. A1:A10, B2:D2)"
+                    },
+                    "formula_or_values": {
+                        "type": ["string", "number", "array"],
+                        "description": "Single formula/value for all cells, or array of formulas/values for each cell. Formulas start with '='."
+                    }
+                },
+                "required": ["range_name", "formula_or_values"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "import_csv_from_string",
+            "description": "Inserts CSV data into the sheet starting at a cell. Handles large datasets efficiently.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "csv_data": {
+                        "type": "string",
+                        "description": "CSV content as string (rows separated by \\n)."
+                    },
+                    "delimiter": {
+                        "type": "string",
+                        "description": "Field delimiter (default ',')."
+                    },
+                    "target_cell": {
+                        "type": "string",
+                        "description": "Starting cell (default 'A1')."
+                    }
+                },
+                "required": ["csv_data"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_structure",
+            "description": "Deletes rows or columns. Use for structural changes; prefer ranges for data operations.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "structure_type": {
+                        "type": "string",
+                        "enum": ["rows", "columns"],
+                        "description": "Type of structure to delete."
+                    },
+                    "start": {
+                        "type": ["integer", "string"],
+                        "description": "For rows: row number (1-based); for columns: column letter."
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "Number to delete (default 1)."
+                    }
+                },
+                "required": ["structure_type", "start"],
+            },
+        },
+    },
 ]
 
 # Shared instances for the session
@@ -271,10 +322,6 @@ def execute_calc_tool(tool_name, arguments, model, ctx):
             result = tools["inspector"].read_range(arguments["range_name"])
             return json.dumps({"status": "ok", "result": result})
             
-        elif tool_name == "write_formula":
-            result = tools["manipulator"].write_formula(arguments["cell"], arguments["formula"])
-            return json.dumps({"status": "ok", "message": result})
-            
         elif tool_name == "set_cell_style":
             rn = arguments["range_name"]
             tools["manipulator"].set_cell_style(
@@ -287,16 +334,9 @@ def execute_calc_tool(tool_name, arguments, model, ctx):
                 h_align=arguments.get("h_align"),
                 v_align=arguments.get("v_align"),
                 wrap_text=arguments.get("wrap_text"),
-                border_color=_parse_color(arguments.get("border_color"))
+                border_color=_parse_color(arguments.get("border_color")),
+                number_format=arguments.get("number_format")
             )
-            if arguments.get("number_format"):
-                # number_format is set per cell in set_number_format, if it's a range, we'd need to loop
-                # for now assume single cell or implement range loop if needed
-                if ":" in rn:
-                    # just apply to first for now or implement properly
-                    pass
-                else:
-                    tools["manipulator"].set_number_format(rn, arguments["number_format"])
             return json.dumps({"status": "ok", "message": f"Style applied to {rn}"})
             
         elif tool_name == "get_sheet_summary":
@@ -345,7 +385,30 @@ def execute_calc_tool(tool_name, arguments, model, ctx):
         elif tool_name == "clear_range":
             tools["manipulator"].clear_range(arguments["range_name"])
             return json.dumps({"status": "ok", "message": f"Cleared range {arguments['range_name']}"})
-            
+
+        elif tool_name == "write_formula_range":
+            result = tools["manipulator"].write_formula_range(
+                arguments["range_name"],
+                arguments["formula_or_values"]
+            )
+            return json.dumps({"status": "ok", "message": result})
+
+        elif tool_name == "import_csv_from_string":
+            result = tools["manipulator"].import_csv_from_string(
+                arguments["csv_data"],
+                delimiter=arguments.get("delimiter", ","),
+                target_cell=arguments.get("target_cell", "A1")
+            )
+            return json.dumps({"status": "ok", "message": result})
+
+        elif tool_name == "delete_structure":
+            result = tools["manipulator"].delete_structure(
+                arguments["structure_type"],
+                arguments["start"],
+                count=arguments.get("count", 1)
+            )
+            return json.dumps({"status": "ok", "message": result})
+
         else:
             return json.dumps({"status": "error", "message": f"Unknown tool: {tool_name}"})
             

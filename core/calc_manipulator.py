@@ -96,7 +96,7 @@ class CellManipulator:
 
     def set_cell_style(
         self,
-        address: str,
+        address_or_range: str,
         bold: bool = None,
         italic: bool = None,
         bg_color: int = None,
@@ -106,12 +106,13 @@ class CellManipulator:
         v_align: str = None,
         wrap_text: bool = None,
         border_color: int = None,
+        number_format: str = None,
     ):
         """
-        Applies style to the cell.
+        Applies style to a cell or range. Handles number format for both.
 
         Args:
-            address: Cell address (e.g. "A1").
+            address_or_range: Cell address or range (e.g. "A1" or "A1:D10").
             bold: Bold (True/False/None).
             italic: Italic (True/False/None).
             bg_color: Background color (RGB int).
@@ -121,17 +122,38 @@ class CellManipulator:
             v_align: Vertical alignment ("top", "center", "bottom").
             wrap_text: Wrap text (True/False).
             border_color: Border color (RGB int).
+            number_format: Number format string (e.g. "#,##0.00").
         """
         try:
-            cell = self._get_cell(address)
-            self._apply_style_properties(
-                cell, bold, italic, bg_color, font_color, font_size,
-                h_align, v_align, wrap_text, border_color
-            )
-            logger.info("Cell %s style updated.", address.upper())
-
+            if ":" in address_or_range:
+                # Range handling
+                self.set_range_style(
+                    address_or_range,
+                    bold=bold,
+                    italic=italic,
+                    bg_color=bg_color,
+                    font_color=font_color,
+                    font_size=font_size,
+                    h_align=h_align,
+                    v_align=v_align,
+                    wrap_text=wrap_text,
+                    border_color=border_color,
+                )
+                if number_format:
+                    self.set_range_number_format(address_or_range, number_format)
+                logger.info("Range %s style updated.", address_or_range.upper())
+            else:
+                # Single cell handling
+                cell = self._get_cell(address_or_range)
+                self._apply_style_properties(
+                    cell, bold, italic, bg_color, font_color, font_size,
+                    h_align, v_align, wrap_text, border_color
+                )
+                if number_format:
+                    self.set_number_format(address_or_range, number_format)
+                logger.info("Cell %s style updated.", address_or_range.upper())
         except Exception as e:
-            logger.error("Style application error (%s): %s", address, str(e))
+            logger.error("Style application error (%s): %s", address_or_range, str(e))
             raise
 
     def set_range_style(
@@ -170,12 +192,37 @@ class CellManipulator:
                 h_align, v_align, wrap_text, border_color
             )
             logger.info("Range %s style updated.", range_str.upper())
-
         except Exception as e:
-            logger.error(
-                "Range style application error (%s): %s", range_str, str(e)
-            )
+            logger.error("Range style application error (%s): %s", range_str, str(e))
             raise
+
+    def set_range_number_format(self, range_str: str, format_str: str):
+        """
+        Sets number format for a cell range.
+
+        Args:
+            range_str: Cell range (e.g. "A1:D10").
+            format_str: Number format string (e.g. "#,##0.00", "0%", "dd.MM.yyyy").
+        """
+        try:
+            sheet = self.bridge.get_active_sheet()
+            start, end = self.bridge.parse_range_string(range_str)
+            doc = self.bridge.get_active_document()
+            formats = doc.getNumberFormats()
+            locale = doc.getPropertyValue("CharLocale")
+            format_id = formats.queryKey(format_str, locale, False)
+            if format_id == -1:
+                format_id = formats.addNew(format_str, locale)
+            # Apply to each cell in range
+            for row in range(start[1], end[1] + 1):
+                for col in range(start[0], end[0] + 1):
+                    cell = sheet.getCellByPosition(col, row)
+                    cell.setPropertyValue("NumberFormat", format_id)
+            logger.info("Range %s number format set to '%s'.", range_str.upper(), format_str)
+        except Exception as e:
+            logger.error("Range number format error (%s): %s", range_str, str(e))
+            raise
+
 
     def set_number_format(self, address: str, format_str: str):
         """
@@ -474,6 +521,22 @@ class CellManipulator:
             logger.error("Column deletion error: %s", str(e))
             raise
 
+    def delete_structure(self, structure_type: str, start, count: int = 1):
+        """
+        Deletes rows or columns.
+
+        Args:
+            structure_type: "rows" or "columns".
+            start: For rows, row number (1-based); for columns, column letter.
+            count: Number to delete.
+        """
+        if structure_type == "rows":
+            return self.delete_rows(start, count)
+        elif structure_type == "columns":
+            return self.delete_columns(start, count)
+        else:
+            raise ValueError(f"Invalid structure_type: {structure_type}. Must be 'rows' or 'columns'.")
+
     def auto_fit_column(self, col_letter: str):
         """
         Automatically adjusts column width to fit content.
@@ -687,6 +750,104 @@ class CellManipulator:
 
         except Exception as e:
             logger.error("AutoFilter error (%s): %s", range_str, str(e))
+            raise
+
+    def write_formula_range(self, range_str: str, formula_or_values):
+        """
+        Writes formula(s) or value(s) to a cell range efficiently.
+
+        Args:
+            range_str: Cell range (e.g. "A1:A10", "B2:D2").
+            formula_or_values: Either a single formula/value for all cells, or a list/array of formulas/values for each cell.
+
+        Returns:
+            Summary of the operation.
+        """
+        try:
+            sheet = self.bridge.get_active_sheet()
+            start, end = self.bridge.parse_range_string(range_str)
+
+            # Calculate range dimensions
+            num_rows = end[1] - start[1] + 1
+            num_cols = end[0] - start[0] + 1
+            total_cells = num_rows * num_cols
+
+            # Handle single value vs array of values
+            if isinstance(formula_or_values, (list, tuple)):
+                if len(formula_or_values) != total_cells:
+                    raise ValueError(f"Array length {len(formula_or_values)} doesn't match range size {total_cells}")
+                values = formula_or_values
+            else:
+                # Single value repeated for all cells
+                values = [formula_or_values] * total_cells
+
+            # Write to each cell in the range
+            cell_idx = 0
+            for row in range(start[1], end[1] + 1):
+                for col in range(start[0], end[0] + 1):
+                    cell = sheet.getCellByPosition(col, row)
+                    value = values[cell_idx]
+
+                    if isinstance(value, str) and value.startswith("="):
+                        # Write as formula
+                        cell.setFormula(value)
+                    elif isinstance(value, (int, float)):
+                        # Write as number
+                        cell.setValue(value)
+                    else:
+                        # Write as text
+                        cell.setString(str(value))
+
+                    cell_idx += 1
+
+            logger.info("Range %s filled with %d values.", range_str.upper(), len(values))
+            return f"Range {range_str} filled with {len(values)} values."
+        except Exception as e:
+            logger.error("Range formula write error (%s): %s", range_str, str(e))
+            raise
+
+    def import_csv_from_string(self, csv_data: str, delimiter: str = ",", target_cell: str = "A1"):
+        """
+        Imports CSV data into the sheet starting at target_cell.
+
+        Args:
+            csv_data: CSV content as a string.
+            delimiter: Field delimiter (default ',').
+            target_cell: Starting cell (e.g. "A1").
+
+        Returns:
+            Summary string of the import result.
+        """
+        try:
+            col_start, row_start = parse_address(target_cell)
+            import csv
+            import io
+            reader = csv.reader(io.StringIO(csv_data), delimiter=delimiter)
+            rows = list(reader)
+            if not rows:
+                return "No data to import."
+
+            sheet = self.bridge.get_active_sheet()
+            total_rows = len(rows)
+            total_cols = max(len(r) for r in rows) if rows else 0
+
+            for r_idx, row in enumerate(rows):
+                for c_idx, cell_value in enumerate(row):
+                    col = col_start + c_idx
+                    row = row_start + r_idx
+                    cell = sheet.getCellByPosition(col, row)
+                    # Try to convert to number, otherwise treat as string
+                    try:
+                        num = float(cell_value)
+                        cell.setValue(num)
+                    except ValueError:
+                        cell.setString(cell_value)
+
+            range_imported = f"{target_cell}:{self.bridge._index_to_column(col_start + total_cols - 1)}{row_start + total_rows}"
+            logger.info("CSV imported to range %s.", range_imported)
+            return f"Imported {total_rows} rows, {total_cols} cols to {range_imported}."
+        except Exception as e:
+            logger.error("CSV import error: %s", str(e))
             raise
 
     def create_chart(

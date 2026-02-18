@@ -71,12 +71,12 @@ def run_calc_tests(ctx, model=None):
             failed += 1
             log.append(f"FAIL: list_sheets raised: {e}")
 
-        # Test: write_formula and read_cell_range
+        # Test: write_formula_range and read_cell_range
         try:
             test_cell = "A1"
             test_value = "TestValue123"
-            execute_calc_tool("write_formula", {"cell": test_cell, "formula": test_value}, doc, ctx)
-            
+            execute_calc_tool("write_formula_range", {"range_name": test_cell, "formula_or_values": test_value}, doc, ctx)
+
             result = execute_calc_tool("read_cell_range", {"range_name": test_cell}, doc, ctx)
             data = json.loads(result)
             if data.get("status") == "ok":
@@ -97,10 +97,10 @@ def run_calc_tests(ctx, model=None):
 
         # Test: write formula
         try:
-            execute_calc_tool("write_formula", {"cell": "B1", "formula": "10"}, doc, ctx)
-            execute_calc_tool("write_formula", {"cell": "B2", "formula": "20"}, doc, ctx)
-            execute_calc_tool("write_formula", {"cell": "B3", "formula": "=SUM(B1:B2)"}, doc, ctx)
-            
+            execute_calc_tool("write_formula_range", {"range_name": "B1", "formula_or_values": "10"}, doc, ctx)
+            execute_calc_tool("write_formula_range", {"range_name": "B2", "formula_or_values": "20"}, doc, ctx)
+            execute_calc_tool("write_formula_range", {"range_name": "B3", "formula_or_values": "=SUM(B1:B2)"}, doc, ctx)
+
             result = execute_calc_tool("read_cell_range", {"range_name": "B3"}, doc, ctx)
             data = json.loads(result)
             if data.get("status") == "ok":
@@ -149,7 +149,7 @@ def run_calc_tests(ctx, model=None):
 
         # Test: clear_range
         try:
-            execute_calc_tool("write_formula", {"cell": "E1", "formula": "clearMe"}, doc, ctx)
+            execute_calc_tool("write_formula_range", {"range_name": "E1", "formula_or_values": "clearMe"}, doc, ctx)
             execute_calc_tool("clear_range", {"range_name": "E1"}, doc, ctx)
             result = execute_calc_tool("read_cell_range", {"range_name": "E1"}, doc, ctx)
             data = json.loads(result)
@@ -175,7 +175,7 @@ def run_calc_tests(ctx, model=None):
 
         # Test: set_cell_style with number_format and alignment
         try:
-            execute_calc_tool("write_formula", {"cell": "F1", "formula": "0.5"}, doc, ctx)
+            execute_calc_tool("write_formula_range", {"range_name": "F1", "formula_or_values": "0.5"}, doc, ctx)
             execute_calc_tool("set_cell_style", {"range_name": "F1", "number_format": "0%", "h_align": "center"}, doc, ctx)
             passed += 1
             ok("set_cell_style number_format and h_align")
@@ -185,8 +185,7 @@ def run_calc_tests(ctx, model=None):
 
         # Test: sort_range
         try:
-            for i, val in enumerate(["30", "10", "20"], start=1):
-                execute_calc_tool("write_formula", {"cell": "G%d" % i, "formula": val}, doc, ctx)
+            execute_calc_tool("write_formula_range", {"range_name": "G1:G3", "formula_or_values": ["30", "10", "20"]}, doc, ctx)
             execute_calc_tool("sort_range", {"range_name": "G1:G3", "sort_column": 0, "ascending": True, "has_header": False}, doc, ctx)
             result = execute_calc_tool("read_cell_range", {"range_name": "G1:G3"}, doc, ctx)
             data = json.loads(result)
@@ -248,7 +247,7 @@ def run_calc_tests(ctx, model=None):
 
         # Test: detect_and_explain_errors
         try:
-            execute_calc_tool("write_formula", {"cell": "H1", "formula": "=1/0"}, doc, ctx)
+            execute_calc_tool("write_formula_range", {"range_name": "H1", "formula_or_values": "=1/0"}, doc, ctx)
             result = execute_calc_tool("detect_and_explain_errors", {"range_name": "H1:H1"}, doc, ctx)
             data = json.loads(result)
             if data.get("status") == "ok":
@@ -268,10 +267,7 @@ def run_calc_tests(ctx, model=None):
 
         # Test: create_chart
         try:
-            execute_calc_tool("write_formula", {"cell": "I1", "formula": "X"}, doc, ctx)
-            execute_calc_tool("write_formula", {"cell": "I2", "formula": "1"}, doc, ctx)
-            execute_calc_tool("write_formula", {"cell": "J1", "formula": "Y"}, doc, ctx)
-            execute_calc_tool("write_formula", {"cell": "J2", "formula": "2"}, doc, ctx)
+            execute_calc_tool("write_formula_range", {"range_name": "I1:J2", "formula_or_values": [["X", "Y"], ["1", "2"]]}, doc, ctx)
             result = execute_calc_tool("create_chart", {"data_range": "I1:J2", "chart_type": "bar", "has_header": True}, doc, ctx)
             data = json.loads(result)
             if data.get("status") == "ok":
@@ -283,6 +279,43 @@ def run_calc_tests(ctx, model=None):
         except Exception as e:
             failed += 1
             log.append(f"FAIL: create_chart raised: {e}")
+
+        # Test: import_csv_from_string
+        try:
+            csv_data = "Name,Age\nAlice,30\nBob,25"
+            execute_calc_tool("import_csv_from_string", {"csv_data": csv_data, "target_cell": "K1"}, doc, ctx)
+            result = execute_calc_tool("read_cell_range", {"range_name": "K1:L3"}, doc, ctx)
+            data = json.loads(result)
+            if data.get("status") == "ok":
+                vals = data.get("result")
+                expected = [["Name", "Age"], ["Alice", 30], ["Bob", 25]]
+                if isinstance(vals, list) and len(vals) == 3:
+                    match = True
+                    for i, row in enumerate(vals):
+                        if isinstance(row, list) and len(row) == 2:
+                            for j, cell in enumerate(row):
+                                cell_val = cell.get("value") if isinstance(cell, dict) else cell
+                                if cell_val != expected[i][j]:
+                                    match = False
+                                    break
+                        else:
+                            match = False
+                            break
+                    if match:
+                        passed += 1
+                        ok("import_csv_from_string K1:L3 matches expected data")
+                    else:
+                        failed += 1
+                        fail("import_csv_from_string data mismatch: %s" % vals)
+                else:
+                    failed += 1
+                    fail("import_csv_from_string read failed or wrong shape: %s" % vals)
+            else:
+                failed += 1
+                fail("import_csv_from_string/read failed: %s" % result)
+        except Exception as e:
+            failed += 1
+            log.append(f"FAIL: import_csv_from_string raised: {e}")
 
         # Test: get_calc_context_for_chat
         try:
