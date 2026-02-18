@@ -5,6 +5,9 @@ Takes a config dict (from core.config.get_api_config) and UNO ctx.
 import json
 import ssl
 import urllib.request
+import urllib.parse
+import http.client
+import socket
 
 # accumulate_delta is required for tool-calling: it merges streaming deltas into message_snapshot so full tool_calls (with function.arguments) are available.
 from .streaming_deltas import accumulate_delta
@@ -18,19 +21,21 @@ def format_error_message(e):
     import urllib.error
 
     msg = str(e)
-    if isinstance(e, urllib.error.HTTPError):
-        if e.code == 401:
+    if isinstance(e, (urllib.error.HTTPError, http.client.HTTPResponse)):
+        code = e.code if hasattr(e, "code") else e.status
+        reason = e.reason if hasattr(e, "reason") else ""
+        if code == 401:
             return "Invalid API Key. Please check your settings."
-        if e.code == 403:
+        if code == 403:
             return "API access Forbidden. Your key may lack permissions for this model."
-        if e.code == 404:
+        if code == 404:
             return "Endpoint not found (404). Check your URL and Model name."
-        if e.code >= 500:
-            return "Server error (%d). The AI provider is having issues." % e.code
-        return "HTTP Error %d: %s" % (e.code, e.reason)
+        if code >= 500:
+            return "Server error (%d). The AI provider is having issues." % code
+        return "HTTP Error %d: %s" % (code, reason)
 
-    if isinstance(e, urllib.error.URLError):
-        reason = str(e.reason)
+    if isinstance(e, (urllib.error.URLError, socket.error)):
+        reason = str(e.reason) if hasattr(e, "reason") else str(e)
         if "Connection refused" in reason or "111" in reason:
             return "Connection Refused. Is your local AI server (Ollama/LM Studio) running?"
         if "getaddrinfo failed" in reason:
@@ -119,6 +124,51 @@ class LlmClient:
     def __init__(self, config, ctx):
         self.config = config
         self.ctx = ctx
+        self._persistent_conn = None
+        self._conn_key = None  # (scheme, host, port)
+
+    def _get_connection(self):
+        """Get or create a persistent http.client connection."""
+        endpoint = self._endpoint()
+        parsed = urllib.parse.urlparse(endpoint)
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname
+        port = parsed.port
+        
+        # Default ports if not specified
+        if not port:
+            port = 443 if scheme == "https" else 80
+            
+        new_key = (scheme, host, port)
+        
+        if self._persistent_conn:
+            if self._conn_key != new_key:
+                debug_log("Closing old connection to %s, opening new to %s" % (self._conn_key, new_key), context="API")
+                self._persistent_conn.close()
+                self._persistent_conn = None
+            else:
+                return self._persistent_conn
+
+        debug_log("Opening new connection to %s://%s:%s" % (scheme, host, port), context="API")
+        self._conn_key = new_key
+        timeout = self._timeout()
+        
+        if scheme == "https":
+            ssl_context = _get_ssl_context()
+            self._persistent_conn = http.client.HTTPSConnection(host, port, context=ssl_context, timeout=timeout)
+        else:
+            self._persistent_conn = http.client.HTTPConnection(host, port, timeout=timeout)
+            
+        return self._persistent_conn
+
+    def _close_connection(self):
+        if self._persistent_conn:
+            try:
+                self._persistent_conn.close()
+            except:
+                pass
+            self._persistent_conn = None
+            self._conn_key = None
 
     def _endpoint(self):
         return self.config.get("endpoint", "http://127.0.0.1:5000")
@@ -197,12 +247,13 @@ class LlmClient:
             data["model"] = model
 
         json_data = json.dumps(data).encode("utf-8")
+        parsed = urllib.parse.urlparse(url)
+        path = parsed.path
+        if parsed.query:
+            path += "?" + parsed.query
+            
         debug_log("Request data: %s" % json.dumps(data, indent=2), context="API")
-        request = urllib.request.Request(
-            url, data=json_data, headers=self._headers()
-        )
-        request.get_method = lambda: "POST"
-        return request
+        return "POST", path, json_data, self._headers()
 
     def extract_content_from_response(self, chunk, api_type="completions"):
         """Extract text content and optional thinking from API response chunk."""
@@ -264,11 +315,13 @@ class LlmClient:
         )
         debug_log("URL: %s" % url, context="API")
         debug_log("Messages: %s" % json.dumps(messages, indent=2), context="API")
-        request = urllib.request.Request(
-            url, data=json_data, headers=self._headers()
-        )
-        request.get_method = lambda: "POST"
-        return request
+        
+        parsed = urllib.parse.urlparse(url)
+        path = parsed.path
+        if parsed.query:
+            path += "?" + parsed.query
+            
+        return "POST", path, json_data, self._headers()
 
     def stream_completion(
         self,
@@ -282,11 +335,11 @@ class LlmClient:
         dispatch_events=True,
     ):
         """Stream a completion/chat response via callbacks."""
-        request = self.make_api_request(
+        method, path, body, headers = self.make_api_request(
             prompt, system_prompt, max_tokens, api_type=api_type
         )
         self.stream_request(
-            request,
+            method, path, body, headers,
             api_type,
             append_callback,
             append_thinking_callback,
@@ -296,7 +349,10 @@ class LlmClient:
 
     def _run_streaming_loop(
         self,
-        request,
+        method,
+        path,
+        body,
+        headers,
         api_type,
         on_content,
         on_thinking=None,
@@ -304,26 +360,37 @@ class LlmClient:
         stop_checker=None,
     ):
         """Common low-level streaming engine."""
-        ssl_context = _get_ssl_context()
-        timeout = self._timeout()
-
         init_logging(self.ctx)
-        debug_log("=== Starting streaming loop ===", context="API")
-        debug_log("Request URL: %s" % request.full_url, context="API")
+        debug_log("=== Starting streaming loop (persistent) ===", context="API")
+        debug_log("Request Path: %s" % path, context="API")
 
         last_finish_reason = None
+        conn = self._get_connection()
+        
         try:
-            with urllib.request.urlopen(
-                request, context=ssl_context, timeout=timeout
-            ) as response:
-                for line in response:
-                    if stop_checker and stop_checker():
-                        debug_log("streaming_loop: Stop requested.", context="API")
-                        last_finish_reason = "stop"
-                        break
+            conn.request(method, path, body=body, headers=headers)
+            response = conn.getresponse()
+            
+            if response.status != 200:
+                err_body = response.read().decode("utf-8", errors="replace")
+                debug_log("API Error %d: %s" % (response.status, err_body), context="API")
+                # Close on error to be safe
+                self._close_connection()
+                raise Exception("HTTP Error %d: %s" % (response.status, response.reason))
 
+            try:
+                # Use a flag to stop logical processing but keep reading to exhaust the stream
+                content_finished = False
+                for line in response:
                     line_str = line.strip()
-                    if not line_str or not line_str.startswith(b"data:"):
+                    if not line_str:
+                        continue
+
+                    # SSE comments (like : OPENROUTER PROCESSING) or heartbeats
+                    if line_str.startswith(b":"):
+                        continue
+
+                    if not line_str.startswith(b"data:"):
                         continue
                     
                     # Payload is everything after "data:" (with or without space)
@@ -332,18 +399,35 @@ class LlmClient:
                     
                     if payload == "[DONE]":
                         debug_log("streaming_loop: [DONE] received", context="API")
-                        break
+                        content_finished = True
+                        continue
                     
                     try:
                         chunk = json.loads(payload)
                     except json.JSONDecodeError:
+                        debug_log("streaming_loop: JSON decode error in payload: %s" % payload, context="API")
+                        continue
+
+                    # Log all chunks for debugging, even after content_finished
+                    # (this might contain 'usage' data)
+                    if "usage" in chunk:
+                        debug_log("streaming_loop: received usage: %s" % chunk["usage"], context="API")
+
+                    if content_finished:
+                        continue
+
+                    if stop_checker and stop_checker():
+                        debug_log("streaming_loop: Stop requested.", context="API")
+                        last_finish_reason = "stop"
+                        content_finished = True
+                        # On user stop, we usually want to kill the connection 
+                        # because the model might keep streaming for a long time.
+                        self._close_connection()
                         continue
 
                     # Grok/xAI sends a final chunk with empty choices + usage
                     choices = chunk.get("choices", [])
                     if not choices:
-                        # If we have usage/stats here, we could handle them
-                        # but usually this marks the end if we already got content
                         continue
 
                     content, finish_reason, thinking, delta = (
@@ -357,11 +441,29 @@ class LlmClient:
                     if delta and on_delta:
                         on_delta(delta)
 
-                    last_finish_reason = finish_reason
-                    if last_finish_reason:
-                        break
+                    if finish_reason:
+                        debug_log("streaming_loop: logical finish_reason=%s" % finish_reason, context="API")
+                        last_finish_reason = finish_reason
+            finally:
+                # Ensure the entire response body is read so the connection is reusable.
+                try:
+                    remaining = response.read()
+                    if remaining:
+                        debug_log("Consumed extra %d bytes after loop" % len(remaining), context="API")
+                except:
+                    pass
+                # Honor Connection: close so we don't try to reuse when the server closed.
+                conn_hdr = (response.getheader("Connection") or "").strip().lower()
+                if conn_hdr == "close":
+                    self._close_connection()
 
+        except (http.client.HTTPException, socket.error) as e:
+            debug_log("Connection error, closing: %s" % e, context="API")
+            self._close_connection()
+            err_msg = format_error_message(e)
+            raise Exception(err_msg)
         except Exception as e:
+            self._close_connection() # Reset on any other error too
             err_msg = format_error_message(e)
             debug_log("ERROR in _run_streaming_loop: %s -> %s" % (e, err_msg), context="API")
             raise Exception(err_msg)
@@ -370,7 +472,10 @@ class LlmClient:
 
     def stream_request(
         self,
-        request,
+        method,
+        path,
+        body,
+        headers,
         api_type,
         append_callback,
         append_thinking_callback=None,
@@ -379,7 +484,10 @@ class LlmClient:
     ):
         """Stream a completion/chat response and append chunks via callbacks."""
         self._run_streaming_loop(
-            request,
+            method,
+            path,
+            body,
+            headers,
             api_type,
             on_content=append_callback,
             on_thinking=append_thinking_callback,
@@ -396,11 +504,11 @@ class LlmClient:
         dispatch_events=True,
     ):
         """Stream a final chat response (no tools) using the messages array."""
-        request = self.make_chat_request(
+        method, path, body, headers = self.make_chat_request(
             messages, max_tokens, tools=None, stream=True
         )
         self.stream_request(
-            request,
+            method, path, body, headers,
             "chat",
             append_callback,
             append_thinking_callback,
@@ -410,18 +518,24 @@ class LlmClient:
 
     def request_with_tools(self, messages, max_tokens=512, tools=None):
         """Non-streaming chat request. Returns parsed response dict."""
-        request = self.make_chat_request(
+        method, path, body, headers = self.make_chat_request(
             messages, max_tokens, tools=tools, stream=False
         )
-        ssl_context = _get_ssl_context()
-        timeout = self._timeout()
+        conn = self._get_connection()
 
         try:
-            with urllib.request.urlopen(
-                request, context=ssl_context, timeout=timeout
-            ) as response:
-                body = response.read().decode("utf-8")
-                result = json.loads(body)
+            conn.request(method, path, body=body, headers=headers)
+            response = conn.getresponse()
+            if response.status != 200:
+                err_body = response.read().decode("utf-8", errors="replace")
+                debug_log("API Error %d: %s" % (response.status, err_body), context="API")
+                raise Exception("HTTP Error %d: %s" % (response.status, response.reason))
+            
+            result = json.loads(response.read().decode("utf-8"))
+        except (http.client.HTTPException, socket.error) as e:
+            debug_log("Connection error, closing: %s" % e, context="API")
+            self._close_connection()
+            raise Exception(format_error_message(e))
         except Exception as e:
             err_msg = format_error_message(e)
             debug_log("request_with_tools ERROR: %s -> %s" % (e, err_msg), context="API")
@@ -456,22 +570,38 @@ class LlmClient:
         """Streaming chat request with tools. Returns same shape as request_with_tools."""
         init_logging(self.ctx)
         debug_log("stream_request_with_tools: building request (%d messages)..." % len(messages), context="API")
-        request = self.make_chat_request(
+        method, path, body, headers = self.make_chat_request(
             messages, max_tokens, tools=tools, stream=True
         )
-        ssl_context = _get_ssl_context()
-        timeout = self._timeout()
 
         message_snapshot = {}
         last_finish_reason = None
-        last_chunk = None
 
         append_callback = append_callback or (lambda t: None)
         append_thinking_callback = append_thinking_callback or (lambda t: None)
 
         try:
             last_finish_reason = self._run_streaming_loop(
-                request,
+                method,
+                path,
+                body,
+                headers,
+                "chat",
+                on_content=append_callback,
+                on_thinking=append_thinking_callback,
+                on_delta=lambda d: accumulate_delta(message_snapshot, d),
+                stop_checker=stop_checker,
+            )
+        except (http.client.HTTPException, socket.error) as e:
+            # Connection reuse failed; retry once on a fresh connection.
+            debug_log("stream_request_with_tools: connection error, retrying once: %s" % e, context="API")
+            self._close_connection()
+            message_snapshot.clear()
+            last_finish_reason = self._run_streaming_loop(
+                method,
+                path,
+                body,
+                headers,
                 "chat",
                 on_content=append_callback,
                 on_thinking=append_thinking_callback,

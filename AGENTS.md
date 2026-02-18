@@ -10,7 +10,7 @@
 
 - **Extend Selection** (Ctrl+Q): Model continues the selected text
 - **Edit Selection** (Ctrl+E): User enters instructions; model rewrites the selection
-- **Chat with Document**: (a) **Sidebar panel** (Writer): LocalWriter deck in the right sidebar, multi-turn chat with tool-calling that edits the document; (b) **Menu item** (fallback): Opens input dialog, appends response to end of document
+- **Chat with Document** (Writer and Calc): (a) **Sidebar panel**: LocalWriter deck in the right sidebar, multi-turn chat with tool-calling that edits the document; (b) **Menu item** (fallback): Opens input dialog, appends response to end of document (Writer) or to "AI Response" sheet (Calc)
 - **Settings**: Configure endpoint, model, API key, temperature, request timeout, etc.
 - **Calc** `=PROMPT()`: Cell formula that calls the model
 
@@ -26,10 +26,17 @@ localwriter/
 ├── core/                # Shared core logic
 │   ├── config.py        # get_config, set_config, get_api_config (localwriter.json)
 │   ├── api.py           # LlmClient: streaming, chat, tool-calling
-│   ├── document.py      # get_full_document_text, get_document_end, get_selection_range, get_document_length, get_text_cursor_at_range, get_document_context_for_chat (Writer)
+│   ├── document.py      # get_full_document_text, get_document_end, get_selection_range, get_document_length, get_text_cursor_at_range, get_document_context_for_chat (Writer/Calc), get_calc_context_for_chat (Calc)
 │   ├── logging.py       # init_logging, debug_log(msg, context), agent_log; single debug file + optional agent log
-│   ├── constants.py     # DEFAULT_CHAT_SYSTEM_PROMPT
-│   └── async_stream.py  # run_stream_completion_async: worker + queue + main-thread drain (no UNO Timer)
+│   ├── constants.py     # DEFAULT_CHAT_SYSTEM_PROMPT, DEFAULT_CALC_CHAT_SYSTEM_PROMPT, get_chat_system_prompt_for_document
+│   ├── async_stream.py  # run_stream_completion_async: worker + queue + main-thread drain (no UNO Timer)
+│   ├── calc_bridge.py   # in-process get_active_document, get_active_sheet, etc.
+│   ├── calc_address_utils.py
+│   ├── calc_inspector.py
+│   ├── calc_sheet_analyzer.py
+│   ├── calc_error_detector.py
+│   ├── calc_manipulator.py
+│   └── calc_tools.py    # CALC_TOOLS (schemas), execute_calc_tool
 ├── prompt_function.py   # Calc =PROMPT() formula
 ├── chat_panel.py        # Chat sidebar: ChatPanelFactory, ChatPanelElement, ChatToolPanel
 ├── document_tools.py    # WRITER_TOOLS (get_markdown, apply_markdown only), execute_tool; legacy tools present but not exposed
@@ -85,26 +92,25 @@ localwriter/
 
 ## 3b. Chat with Document (Sidebar + Menu)
 
-- **Sidebar panel**: LocalWriter deck in Writer's right sidebar; panel has Response area, Ask field, Send button, Stop button, and Clear button.
+The sidebar and menu Chat work for **Writer and Calc** (same deck/UI; ContextList includes `com.sun.star.sheet.SpreadsheetDocument`).
+
+- **Sidebar panel**: LocalWriter deck in Writer's or Calc's right sidebar; panel has Response area, Ask field, Send button, Stop button, and Clear button.
   - **Auto-scroll**: The response area automatically scrolls to the bottom as text is streamed or tools are called, ensuring the latest AI output is always visible.
   - **Stop button**: A dedicated "Stop" button allows users to halt AI generation mid-stream. It is enabled only while the AI is active and disabled when idle.
   - **Undo grouping**: AI edits performed during tool-calling rounds are grouped into a single undo context ("AI Edit"). Users can revert all changes from an AI turn with a single Ctrl+Z.
   - **Send/Stop button state (lifecycle-based)**: "AI is busy" is defined by the single run of `actionPerformed`: Send is disabled (Stop enabled) at the **start** of the run, and re-enabled (Stop disabled) **only** in the `finally` block when `_do_send()` has returned. No dependence on internal job_done or drain-loop state. `_set_button_states(send_enabled, stop_enabled)` uses per-control try/except (prefer `control.setEnable()`, fallback to model `Enabled`) so a UNO failure on one control cannot leave Send stuck disabled. `SendButtonListener._send_busy` is set True at run start and False in finally for external checks. This prevents multiple concurrent requests.
 - **Implementation**: `chat_panel.py` (ChatPanelFactory, ChatPanelElement, ChatToolPanel); `ContainerWindowProvider` + `ChatPanelDialog.xdl`; `setVisible(True)` required after `createContainerWindow()`.
-- **Tool-calling**: The AI sees only two tools (markdown-centric). `document_tools.py` exposes **WRITER_TOOLS** = `get_markdown`, `apply_markdown`. Implementations live in `markdown_support.py`; `document_tools.py` imports them and defines `TOOL_DISPATCH` for `execute_tool`. Legacy tools (`replace_text`, `insert_text`, `get_selection`, `replace_selection`, `format_text`, `set_paragraph_style`, `get_document_text`) remain in `document_tools.py` but are **not** in WRITER_TOOLS and their TOOL_DISPATCH entries are commented out (kept for possible future use).
-- **Menu fallback**: Menu item "Chat with Document" opens input dialog, appends streaming response to document end (no tool-calling). Both sidebar and menu use the same document context (see below).
+- **Tool-calling**: `chat_panel.py` (and the menu path in `main.py`) detect document type (spreadsheet vs text). **Writer**: `document_tools.py` exposes **WRITER_TOOLS** = `get_markdown`, `apply_markdown`; implementations in `markdown_support.py`; `execute_tool` dispatcher. Legacy tools remain in `document_tools.py` but are not in WRITER_TOOLS (commented out). **Calc**: `core/calc_tools.py` exposes **CALC_TOOLS** and `execute_calc_tool` (read ranges, write formulas, format, merge, sheet management, chart, detect_and_explain_errors); core logic in `core/calc_*.py`.
+- **Menu fallback**: Menu item "Chat with Document" opens input dialog, streams response with no tool-calling. **Writer**: appends to document end. **Calc**: streams to "AI Response" sheet. Both sidebar and menu use the same document context (see below).
 - **Config keys** (used by chat): `chat_context_length`, `chat_max_tokens`, `additional_instructions` (in Settings).
 - **Unified Prompt System**: See Section 3c.
 
 ### Document context for chat (current implementation)
 
 - **Refreshed every Send**: On each user message we re-read the document and rebuild the context; the single `[DOCUMENT CONTENT]` system message is **replaced** (not appended), so the conversation history grows but the context block does not duplicate.
-- **Rich context**: `core/document.py` provides `get_document_context_for_chat(model, max_context, include_end=True, include_selection=True)` which builds one string with:
-  - Document length (metadata).
-  - **Start and end excerpts**: For long documents, first half and last half of `chat_context_length` (e.g. 4000 + 4000), with `[DOCUMENT START]` / `[DOCUMENT END]` / `[END DOCUMENT]` labels and a middle-omitted note. For short documents, one full block.
-  - **Selection/cursor inside the document**: No separate selection block and no duplicated text. We get `(start_offset, end_offset)` from `get_selection_range(model)` (cursor = same start and end; no selection uses view cursor). We inject **`[SELECTION_START]`** and **`[SELECTION_END]`** at those character positions in the excerpt text so the model sees exactly where the selection/cursor is. When there is no selection, both markers are placed at the cursor so the model knows where text would be inserted. Very long selections are capped (e.g. 2000 chars) so context stays usable.
+- **Writer**: `core/document.py` provides `get_document_context_for_chat(model, max_context, include_end=True, include_selection=True, ctx=None)` which builds one string with: document length (metadata); **start and end excerpts** (for long docs, first/last half of `chat_context_length` with `[DOCUMENT START]` / `[DOCUMENT END]` / `[END DOCUMENT]` labels); **selection/cursor**: `(start_offset, end_offset)` from `get_selection_range(model)` with **`[SELECTION_START]`** / **`[SELECTION_END]`** injected at those positions (capped for very long selections). Helpers: `get_document_end`, `get_selection_range`, `get_document_length`, `get_text_cursor_at_range`, `_inject_markers_into_excerpt()`.
+- **Calc**: For Calc documents, `get_document_context_for_chat(..., ctx=...)` delegates to `get_calc_context_for_chat(model, max_context, ctx)` in `core/document.py`. **`ctx` is required for Calc** (component context from panel or MainJob); do not use `uno.getComponentContext()` in this path. Calc context includes: document URL, active sheet name, used range, column headers, current selection range, and (for small selections) selection content. See [Calc support from LibreCalc.md](Calc%20support%20from%20LibreCalc.md).
 - **Scope**: Chat with Document only. Extend Selection and Edit Selection are legacy and unchanged.
-- **Helpers**: `get_document_end(model, max_chars)`, `get_selection_range(model)` → `(start_offset, end_offset)`; `get_document_length(model)` → character count; `get_text_cursor_at_range(model, start, end)` → cursor selecting `[start, end)` (used for range replace); `_inject_markers_into_excerpt()` for placing markers in start/end excerpts.
 
 ### Markdown tool-calling (current)
 
@@ -113,21 +119,17 @@ localwriter/
 
 ### System prompt and reasoning (latest)
 
-- **DEFAULT_CHAT_SYSTEM_PROMPT** in `core/constants.py` (imported by `main.py`, `chat_panel.py`) instructs the model to: (1) use **get_markdown** to read (full or range) and **apply_markdown** to write — for "replace whole document" (e.g. make my resume look nice) call `get_markdown(scope="full")` once, then `apply_markdown(markdown=<new markdown>, target="full")` and pass **only the new content**, never the original document text; (2) **presume document editing** — for requests like "write me a resume" or "create a joke", it should use document tools rather than just replying in chat; (3) use internal linguistic knowledge for translate/proofread/edit — NEVER refuse translation; (4) no preamble, concise reasoning, one-sentence confirmation after edits.
+- **Chat** uses `get_chat_system_prompt_for_document(model, additional_instructions)` in `core/constants.py` so the correct prompt is chosen by document type: **Writer** → `DEFAULT_CHAT_SYSTEM_PROMPT` + additional_instructions (get_markdown/apply_markdown, presume document editing, translate/proofread, no preamble); **Calc** → `DEFAULT_CALC_CHAT_SYSTEM_PROMPT` + additional_instructions (semicolon formula syntax, 4-step workflow: understand → get state → use tools → short confirmation; tools grouped READ / WRITE & FORMAT / SHEET MANAGEMENT / CHART / ERRORS). Used by both sidebar and menu Chat.
 - **Reasoning tokens**: `main.py` sends `reasoning: { effort: 'minimal' }` on all chat requests (OpenRouter and other providers).
 - **Thinking display**: Reasoning tokens are shown in the response area as `[Thinking] ... /thinking`. When thinking ends we append a newline after ` /thinking` so the following response text starts on a new line.
 
 See [CHAT_SIDEBAR_IMPLEMENTATION.md](CHAT_SIDEBAR_IMPLEMENTATION.md) for implementation details.
 
-### Streaming I/O: pure Python queue + main-thread drain
-
-All streaming paths (sidebar tool-calling, sidebar simple stream, Writer Extend/Edit/menu Chat, Calc) use the same pattern so the UI stays responsive without relying on UNO Timer/listeners:
-
-- **Worker thread**: Runs blocking API/streaming (e.g. `stream_completion`, `stream_request_with_tools`), puts items on a **`queue.Queue`** (`("chunk", text)`, `("thinking", text)`, `("stream_done", ...)`, `("error", e)`, `("stopped",)`).
-- **Main thread**: After starting the worker, runs a **drain loop**: `q.get(timeout=0.1)` → process item (append text, update status, call on_done/on_error) → **`toolkit.processEventsToIdle()`**. Repeats until job_done. `processEventsToIdle()` is called only after processing a full batch of queue items or on drain-loop timeout; there are no per-chunk calls in the API (per-chunk dispatch is disabled).
-- **UNO usage**: Only `ctx.getServiceManager().createInstanceWithContext("com.sun.star.awt.Toolkit", ctx)` (string-based, no `com` import) and `toolkit.processEventsToIdle()`. No Timer, no `XTimerListener`—avoids "XTimerListener unknown" in the sidebar context and keeps the design consistent everywhere.
-- **Why it’s better**: Standard Python (`queue`, `threading`); interface is just the queue; multiple chunks can be applied between `processEventsToIdle()` calls so multiple inserts are shown in one redraw (fewer repaints, faster perceived speed).
-- **Where**: **Sidebar** — `chat_panel.py` `_start_tool_calling_async()` (tool path) and simple stream via `run_stream_completion_async()`. **Writer/Calc** — `main.py` calls `core/async_stream.run_stream_completion_async()` for Extend Selection, Edit Selection, menu Chat with Document, and Calc Extend/Edit.
+- **Streaming I/O**: pure Python queue + main-thread drain
+  All streaming paths (sidebar tool-calling, sidebar simple stream, Writer Extend/Edit/menu Chat, Calc) use the same pattern so the UI stays responsive without relying on UNO Timer/listeners:
+  - **Worker thread**: Runs blocking API/streaming (e.g. `stream_completion`, `stream_request_with_tools`), puts items on a **`queue.Queue`** (`("chunk", text)`, `("thinking", text)`, `("stream_done", ...)`, `("error", e)`, `("stopped",)`).
+  - **Main thread**: After starting the worker, runs a **drain loop**: `q.get(timeout=0.1)` → process item (append text, update status, call on_done/on_error) → **`toolkit.processEventsToIdle()`**. Repeats until job_done.
+  - **Connection Keep-Alive**: `LlmClient` uses `http.client.HTTPConnection` (or `HTTPSConnection`) for persistent connections. The client instance is cached in `chat_panel.py` (sidebar), `main.py` (MainJob), and `prompt_function.py` (Calc =PROMPT()) to reuse connections across multiple requests, significantly improving performance for multi-turn chat and cell recalculations.
 
 ---
 
@@ -143,7 +145,7 @@ The "Additional Instructions" (previously system prompts) are now unified across
     - **Dropdown (ComboBox)**: All dialogs (Settings, Edit Selection input, Chat sidebar) show a dropdown of recent instructions.
     - **Multiline Support**: LibreOffice ComboBoxes are single-line. We display a preview in the list and restore full multiline content upon selection.
     - **Prompt Construction**:
-        - **Chat**: `DEFAULT_CHAT_SYSTEM_PROMPT` (constants.py) + `additional_instructions`.
+        - **Chat**: `get_chat_system_prompt_for_document(model, additional_instructions)` so Writer and Calc get the correct base prompt; in both cases `additional_instructions` is appended.
         - **Edit/Extend**: `additional_instructions` is used as the primary guiding prompt (representing the special system role for that edit).
 
 ---
@@ -244,6 +246,7 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 
 - **Document context (DONE)**: Start + end excerpts and inline selection/cursor markers via `get_document_context_for_chat()`; see "Document context for chat" above and [Chat Sidebar Improvement Plan.md](Chat%20Sidebar%20Improvement%20Plan.md) for design decisions and current implementation.
 - **Range-based markdown replace (DONE)**: `get_markdown` returns `document_length` and supports scope `"range"` with `start`/`end`; `apply_markdown` supports target `"full"` (replace entire document) and target `"range"` with `start`/`end` (replace by character span). Enables "read once, replace with new markdown only" so the AI does not send document text twice (e.g. "make my plain text resume look nice"). Helpers in `core/document.py`: `get_document_length()`, `get_text_cursor_at_range()`. System prompt updated to direct the model to use this flow.
+- **Calc chat/tools (DONE)**: Sidebar and menu Chat for Calc with CALC_TOOLS, get_calc_context_for_chat, and get_chat_system_prompt_for_document. See [Calc support from LibreCalc.md](Calc%20support%20from%20LibreCalc.md).
 
 ---
 
@@ -258,6 +261,7 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 - **Chat panel imports**: `chat_panel.py` uses `_ensure_extension_on_path()` to add the extension dir to `sys.path` so `from main import MainJob` and `from document_tools import ...` work.
 - **Logging**: Call `init_logging(ctx)` once from an entry point that has ctx. Then use `debug_log(msg, context="API"|"Chat"|"Markdown")` and `agent_log(...)`; both use global paths. Do not add new ad-hoc log paths.
 - **Streaming in sidebar**: Do not use UNO Timer or `XTimerListener` for draining the stream queue—the type is not available in the sidebar context. Use the pure Python pattern: worker + `queue.Queue` + main-thread loop with `toolkit.processEventsToIdle()` (see "Streaming I/O" in Section 3b).
+- **Calc context requires `ctx`**: For Calc documents, `get_document_context_for_chat(..., ctx=...)` and `get_calc_context_for_chat(..., ctx)` require the component context (`ctx` from the panel or MainJob). Do not use `uno.getComponentContext()` in this path.
 
 ---
 

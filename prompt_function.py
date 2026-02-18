@@ -36,6 +36,7 @@ class PromptFunction(unohelper.Base, XPromptFunction):
     def __init__(self, ctx):
         debug_log("=== PromptFunction.__init__ called ===")
         self.ctx = ctx
+        self.client = None
 
     def getProgrammaticFunctionName(self, aDisplayName):
         debug_log(f"=== getProgrammaticFunctionName called with: '{aDisplayName}' ===")
@@ -130,8 +131,12 @@ class PromptFunction(unohelper.Base, XPromptFunction):
                 config = get_api_config(self.ctx)
                 if model is not None:
                     config = dict(config, model=str(model_name))
-                client = LlmClient(config, self.ctx)
-                return client.chat_completion_sync(messages, max_tokens=max_tokens)
+                
+                if not self.client:
+                    self.client = LlmClient(config, self.ctx)
+                else:
+                    self.client.config = config
+                return self.client.chat_completion_sync(messages, max_tokens=max_tokens)
             except Exception as e:
                 from core.api import format_error_for_display
                 debug_log("PROMPT error: %s" % str(e))

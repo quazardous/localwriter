@@ -22,3 +22,6 @@ log.txt
 
 # Temporary files
 *.tmp
+
+# Vendor or external components
+libre_calc_ai*/

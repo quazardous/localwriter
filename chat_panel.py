@@ -147,6 +147,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
         self.stop_requested = False
         self._terminal_status = "Ready"
         self._send_busy = False
+        self.client = None
 
     def _set_status(self, text):
         """Update the status field in the sidebar (read-only TextField).
@@ -196,7 +197,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
             desktop = self.ctx.getServiceManager().createInstanceWithContext(
                 "com.sun.star.frame.Desktop", self.ctx)
             model = desktop.getCurrentComponent()
-        if model and hasattr(model, "getText"):
+        if model and (hasattr(model, "getText") or hasattr(model, "getSheets")):
             return model
         return None
 
@@ -263,17 +264,39 @@ class SendButtonListener(unohelper.Base, XActionListener):
             self._terminal_status = "Error"
             return
 
+        # 1. Get document model
+        self._set_status("Getting document...")
+        debug_log("_do_send: getting document model...", context="Chat")
+        model = self._get_document_model()
+        if not model:
+            debug_log("_do_send: no document found", context="Chat")
+            self._append_response("\n[No document open.]\n")
+            self._terminal_status = "Error"
+            return
+        debug_log("_do_send: got document model OK", context="Chat")
+
+        is_calc = hasattr(model, "getSheets")
+
         try:
-            debug_log("_do_send: importing document_tools...", context="Chat")
-            from core.document_tools import WRITER_TOOLS, execute_tool
-            debug_log("_do_send: document_tools imported OK (%d tools)" % len(WRITER_TOOLS), context="Chat")
+            if is_calc:
+                debug_log("_do_send: importing calc_tools...", context="Chat")
+                from core.calc_tools import CALC_TOOLS, execute_calc_tool
+                active_tools = CALC_TOOLS
+                execute_fn = execute_calc_tool
+                debug_log("_do_send: calc_tools imported OK (%d tools)" % len(CALC_TOOLS), context="Chat")
+            else:
+                debug_log("_do_send: importing document_tools...", context="Chat")
+                from core.document_tools import WRITER_TOOLS, execute_tool
+                active_tools = WRITER_TOOLS
+                execute_fn = execute_tool
+                debug_log("_do_send: document_tools imported OK (%d tools)" % len(WRITER_TOOLS), context="Chat")
         except Exception as e:
-            debug_log("_do_send: document_tools import FAILED: %s" % e, context="Chat")
-            self._append_response("\n[Import error - document_tools: %s]\n" % e)
+            debug_log("_do_send: tool import FAILED: %s" % e, context="Chat")
+            self._append_response("\n[Import error - tools: %s]\n" % e)
             self._terminal_status = "Error"
             return
 
-        # 1. Get user query
+        # 2. Get user query
         query_text = ""
         if self.query_control and self.query_control.getModel():
             query_text = (self.query_control.getModel().Text or "").strip()
@@ -285,38 +308,23 @@ class SendButtonListener(unohelper.Base, XActionListener):
         if self.query_control and self.query_control.getModel():
             self.query_control.getModel().Text = ""
 
-        # Update system prompt from selector
+        # System prompt: single helper so Writer/Calc prompt cannot be mixed
+        extra_instructions = (self.prompt_selector.getText() if self.prompt_selector else "") or ""
         if self.prompt_selector:
-            extra_instructions = self.prompt_selector.getText()
-            from core.config import set_config
-            from core.constants import DEFAULT_CHAT_SYSTEM_PROMPT
+            from core.config import set_config, update_lru_history
             set_config(self.ctx, "additional_instructions", extra_instructions)
             update_lru_history(self.ctx, extra_instructions, "prompt_lru")
-            
-            system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
-            if extra_instructions:
-                system_prompt += "\n\n" + str(extra_instructions)
-            self.session.messages[0]["content"] = system_prompt
+        from core.constants import get_chat_system_prompt_for_document
+        self.session.messages[0]["content"] = get_chat_system_prompt_for_document(model, extra_instructions)
 
         # Update model from selector
         if self.model_selector:
             selected_model = self.model_selector.getText()
             if selected_model:
-                from core.config import set_config
+                from core.config import set_config, update_lru_history
                 set_config(self.ctx, "model", selected_model)
                 update_lru_history(self.ctx, selected_model, "model_lru")
                 debug_log("_do_send: model updated to %s" % selected_model, context="Chat")
-
-        # 2. Get document model
-        self._set_status("Getting document...")
-        debug_log("_do_send: getting document model...", context="Chat")
-        model = self._get_document_model()
-        if not model:
-            debug_log("_do_send: no Writer document found", context="Chat")
-            self._append_response("\n[No Writer document open.]\n")
-            self._terminal_status = "Error"
-            return
-        debug_log("_do_send: got document model OK", context="Chat")
 
         # 3. Set up config and LlmClient
         max_context = int(get_config(self.ctx, "chat_context_length", 8000))
@@ -336,12 +344,16 @@ class SendButtonListener(unohelper.Base, XActionListener):
             self._set_status("Error")
             return
 
-        client = LlmClient(api_config, self.ctx)
+        if not self.client:
+            self.client = LlmClient(api_config, self.ctx)
+        else:
+            self.client.config = api_config
+        client = self.client
 
         # 4. Refresh document context in session (start + end excerpts, inline selection/cursor markers)
         self._set_status("Reading document...")
         try:
-            doc_text = get_document_context_for_chat(model, max_context, include_end=True, include_selection=True)
+            doc_text = get_document_context_for_chat(model, max_context, include_end=True, include_selection=True, ctx=self.ctx)
             debug_log("_do_send: document context length=%d" % len(doc_text), context="Chat")
             agent_log("chat_panel.py:doc_context", "Document context for AI", data={"doc_length": len(doc_text), "doc_prefix_first_200": (doc_text or "")[:200], "max_context": max_context}, hypothesis_id="B")
             self.session.update_document_context(doc_text)
@@ -362,7 +374,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                     (use_tools, len(self.session.messages)), context="Chat")
         if use_tools:
             max_tool_rounds = api_config.get("chat_max_tool_rounds", DEFAULT_MAX_TOOL_ROUNDS)
-            self._start_tool_calling_async(client, model, max_tokens, WRITER_TOOLS, execute_tool, max_tool_rounds)
+            self._start_tool_calling_async(client, model, max_tokens, active_tools, execute_fn, max_tool_rounds)
         else:
             self._start_simple_stream_async(client, max_tokens, api_type)
 
@@ -456,7 +468,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                     self._append_response(
                         "\n[Response truncated -- the model ran out of tokens...]\n")
                 else:
-                    self._append_response("\n[AI returned empty response]\n")
+                    self._append_response("\n[No text from model; any tool changes were still applied.]\n")
                 job_done[0] = True
                 self._terminal_status = "Ready"
                 self._set_status("Ready")
@@ -498,6 +510,12 @@ class SendButtonListener(unohelper.Base, XActionListener):
                     params_display = func_args_str if len(func_args_str) <= 800 else func_args_str[:800] + "..."
                     self._append_response("[Debug: params %s]\n" % params_display)
                 self.session.add_tool_result(call_id, result)
+                
+                # Yield to UI between tools
+                try:
+                    toolkit.processEvents()
+                except Exception:
+                    pass
             if not self.stop_requested:
                 self._set_status("Sending results to AI...")
             round_num[0] += 1
@@ -781,10 +799,10 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         _ensure_extension_on_path(self.ctx)
 
         try:
-            # Read system prompt from config
+            # Read system prompt from config; use helper so Writer/Calc prompt matches document
             debug_log("_wireControls: importing core config...", context="Chat")
             from core.config import get_config, populate_combobox_with_lru
-            from core.constants import DEFAULT_CHAT_SYSTEM_PROMPT
+            from core.constants import get_chat_system_prompt_for_document, DEFAULT_CHAT_SYSTEM_PROMPT
             extra_instructions = get_config(self.ctx, "additional_instructions", "")
             current_model = get_config(self.ctx, "model", "")
             
@@ -794,9 +812,23 @@ class ChatPanelElement(unohelper.Base, XUIElement):
             if model_selector:
                 populate_combobox_with_lru(self.ctx, model_selector, current_model, "model_lru")
 
-            system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
-            if extra_instructions:
-                system_prompt += "\n\n" + str(extra_instructions)
+            model = None
+            if self.xFrame:
+                try:
+                    model = self.xFrame.getController().getModel()
+                except Exception:
+                    pass
+            if model is None:
+                try:
+                    smgr = self.ctx.getServiceManager()
+                    desktop = smgr.createInstanceWithContext("com.sun.star.frame.Desktop", self.ctx)
+                    model = desktop.getCurrentComponent()
+                except Exception:
+                    pass
+            if model and (hasattr(model, "getText") or hasattr(model, "getSheets")):
+                system_prompt = get_chat_system_prompt_for_document(model, extra_instructions or "")
+            else:
+                system_prompt = (DEFAULT_CHAT_SYSTEM_PROMPT + "\n\n" + str(extra_instructions)) if extra_instructions else DEFAULT_CHAT_SYSTEM_PROMPT
             debug_log("_wireControls: config loaded", context="Chat")
         except Exception as e:
             import traceback

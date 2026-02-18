@@ -14,7 +14,7 @@ from core.api import LlmClient
 from core.document import get_full_document_text, get_document_context_for_chat
 from core.async_stream import run_stream_completion_async
 from core.logging import agent_log, init_logging
-from core.constants import DEFAULT_CHAT_SYSTEM_PROMPT
+from core.constants import get_chat_system_prompt_for_document
 from com.sun.star.task import XJobExecutor
 from com.sun.star.awt import MessageBoxButtons as MSG_BUTTONS
 from com.sun.star.awt.MessageBoxType import ERRORBOX
@@ -46,6 +46,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             self.sm = ctx.ServiceManager
             self.desktop = self.ctx.getServiceManager().createInstanceWithContext(
                 "com.sun.star.frame.Desktop", self.ctx)
+        self.client = None
     
 
     def get_config(self, key, default):
@@ -108,9 +109,13 @@ class MainJob(unohelper.Base, XJobExecutor):
 
 
     def _get_client(self):
-        """Create LlmClient with current config."""
+        """Get or create LlmClient with current config."""
         config = get_api_config(self.ctx)
-        return LlmClient(config, self.ctx)
+        if not self.client:
+            self.client = LlmClient(config, self.ctx)
+        else:
+            self.client.config = config
+        return self.client
 
     def show_error(self, message, title="LocalWriter Error"):
         """Show an error message in a dialog instead of writing to the document."""
@@ -345,6 +350,28 @@ class MainJob(unohelper.Base, XJobExecutor):
                 self.show_error("Tests failed to run: %s" % e, "Format tests")
             return
 
+        if args == "RunCalcTests":
+            try:
+                from core.calc_tests import run_calc_tests
+                calc_model = model if (model and hasattr(model, "getSheets")) else None
+                p, f, log = run_calc_tests(self.ctx, calc_model)
+                msg = "Calc tests: %d passed, %d failed.\n\n%s" % (p, f, "\n".join(log))
+                self.show_error(msg, "Calc tests")
+            except Exception as e:
+                self.show_error("Tests failed to run: %s" % e, "Calc tests")
+            return
+
+        if args == "RunCalcIntegrationTests":
+            try:
+                from core.calc_tests import run_calc_integration_tests
+                calc_model = model if (model and hasattr(model, "getSheets")) else None
+                p, f, log = run_calc_integration_tests(self.ctx, calc_model)
+                msg = "Calc API integration: %d passed, %d failed.\n\n%s" % (p, f, "\n".join(log))
+                self.show_error(msg, "Calc API integration tests")
+            except Exception as e:
+                self.show_error("Integration tests failed: %s" % e, "Calc API integration tests")
+            return
+
         if hasattr(model, "Text"):
             text = model.Text
             selection = model.CurrentController.getSelection()
@@ -429,7 +456,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             elif args == "ChatWithDocument":
                 try:
                     max_context = int(self.get_config("chat_context_length", 8000))
-                    doc_text = get_document_context_for_chat(model, max_context, include_end=True, include_selection=True)
+                    doc_text = get_document_context_for_chat(model, max_context, include_end=True, include_selection=True, ctx=self.ctx)
                     if not doc_text.strip():
                         self.show_error("Document is empty.", "Chat with Document")
                         return
@@ -442,9 +469,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                         self._update_lru_history(extra_instructions, "prompt_lru")
 
                     prompt = f"Document content:\n\n{doc_text}\n\nUser question: {user_query}"
-                    system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
-                    if extra_instructions:
-                        system_prompt += "\n\n" + str(extra_instructions)
+                    system_prompt = get_chat_system_prompt_for_document(model, extra_instructions or "")
                     max_tokens = int(self.get_config("chat_max_tokens", 512))
                     api_type = str(self.get_config("api_type", "completions")).lower()
                     api_config = get_api_config(self.ctx)
@@ -481,8 +506,56 @@ class MainJob(unohelper.Base, XJobExecutor):
         elif hasattr(model, "Sheets"):
             try:
                 if args == "ChatWithDocument":
-                    self.show_error("Chat with Document is only available in Writer.", "LocalWriter")
-                    return
+                    try:
+                        max_context = int(self.get_config("chat_context_length", 8000))
+                        doc_text = get_document_context_for_chat(model, max_context, ctx=self.ctx)
+                        
+                        user_query, extra_instructions = self.input_box("Ask a question about your spreadsheet:", "Chat with Document", "")
+                        if not user_query:
+                            return
+                        
+                        if extra_instructions:
+                            self.set_config("additional_instructions", extra_instructions)
+                            self._update_lru_history(extra_instructions, "prompt_lru")
+
+                        prompt = f"Spreadsheet content summary:\n\n{doc_text}\n\nUser question: {user_query}"
+                        system_prompt = get_chat_system_prompt_for_document(model, extra_instructions or "")
+                        max_tokens = int(self.get_config("chat_max_tokens", 512))
+                        api_type = str(self.get_config("api_type", "completions")).lower()
+                        api_config = get_api_config(self.ctx)
+                        ok, err_msg = validate_api_config(api_config)
+                        if not ok:
+                            self.show_error(err_msg, "LocalWriter: Chat with Document")
+                            return
+                        
+                        # For Calc, create a new sheet for the response or insert into a cell
+                        sheets = model.getSheets()
+                        sheet_name = "AI Response"
+                        if not sheets.hasByName(sheet_name):
+                            sheets.insertNewByName(sheet_name, sheets.getCount())
+                        resp_sheet = sheets.getByName(sheet_name)
+                        model.getCurrentController().setActiveSheet(resp_sheet)
+                        
+                        cell = resp_sheet.getCellByPosition(0, 0)
+                        cell.setString(f"Query: {user_query}\n\nResponse:\n")
+                        
+                        client = self._get_client()
+                        response_content = [""]
+
+                        def apply_chunk(chunk_text, is_thinking=False):
+                            if chunk_text and not is_thinking:
+                                response_content[0] += chunk_text
+                                cell.setString(f"Query: {user_query}\n\nResponse:\n" + response_content[0])
+
+                        run_stream_completion_async(
+                            self.ctx, client, prompt, system_prompt, max_tokens, api_type,
+                            apply_chunk, lambda: None,
+                            lambda e: self.show_error(str(e), "LocalWriter: Chat with Document"),
+                        )
+                        return
+                    except Exception as e:
+                        self.show_error(str(e), "LocalWriter: Chat with Document")
+                        return
                 sheet = model.CurrentController.ActiveSheet
                 selection = model.CurrentController.Selection
 
