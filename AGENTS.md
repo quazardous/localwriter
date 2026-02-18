@@ -135,6 +135,23 @@ See [CHAT_SIDEBAR_IMPLEMENTATION.md](CHAT_SIDEBAR_IMPLEMENTATION.md) for impleme
 
 ---
 
+## 3d. Multi-Document Scoping Fix
+
+**Issue**: When multiple Calc (or Writer) documents were open, the AI agent in one sidebar would edit the wrong document because tool executions and context building used global `desktop.getCurrentComponent()` instead of the document associated with the sidebar's frame.
+
+**Root Cause**: Sidebar panels were not properly scoped to their respective documents. The `CalcBridge` and document context functions relied on the global active document, which changes with user focus.
+
+**Fix**:
+- Modified `CalcBridge.__init__()` to take a specific document (`doc`) instead of global context (`ctx`).
+- Updated `execute_calc_tool()` and `execute_tool()` to take `doc` directly.
+- Changed `get_document_context_for_chat()` and `get_calc_context_for_chat()` to take `doc` instead of `ctx`.
+- In `chat_panel.py`, each panel uses `self.doc = self.xFrame.getController().getModel()` and passes it to all operations.
+- Menu chat continues to use the active document as expected.
+
+**Result**: Each sidebar panel now operates independently on its associated document, preventing cross-contamination when multiple documents are open.
+
+---
+
 ## 3c. Unified Prompt System with History
 
 The "Additional Instructions" (previously system prompts) are now unified across **Chat, Edit Selection, and Extend Selection** into a single configuration key with a history dropdown (ComboBox).
@@ -264,7 +281,6 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 - **Logging**: Call `init_logging(ctx)` once from an entry point that has ctx. Then use `debug_log(msg, context="API"|"Chat"|"Markdown")` and `agent_log(...)`; both use global paths. Do not add new ad-hoc log paths.
 - **Streaming in sidebar**: Do not use UNO Timer or `XTimerListener` for draining the stream queue—the type is not available in the sidebar context. Use the pure Python pattern: worker + `queue.Queue` + main-thread loop with `toolkit.processEventsToIdle()` (see "Streaming I/O" in Section 3b).
 - **Document scoping in sidebar**: Each sidebar panel instance must operate on its associated document only. Use `self.xFrame.getController().getModel()` to get the document for the panel's frame. Do not rely on global `desktop.getCurrentComponent()` as it changes with user focus and causes the AI to edit the wrong document when multiple documents are open. Tool executions and context building must pass the specific document to avoid cross-document contamination.
-- **Calc context requires `ctx`**: For Calc documents, `get_document_context_for_chat(..., ctx=...)` and `get_calc_context_for_chat(..., ctx)` require the component context (`ctx` from the panel or MainJob). Do not use `uno.getComponentContext()` in this path.
 
 ---
 
