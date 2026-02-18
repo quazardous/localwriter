@@ -114,8 +114,8 @@ def get_document_structure(document_id):
 
 **Optimization Strategies**:
 
-**A. Connection Pooling (Implemented)**:
-Persistent connections are implemented in `LlmClient` using `http.client`.
+**A. Connection Management (Implemented)**:
+Persistent connections are already implemented in `LlmClient` using `http.client`.
 
 **B. Request Batching (Calc Priority)**:
 For Calc documents, updating multiple cells in a single tool call (or batching tool requests) is critical for performance.
@@ -1175,30 +1175,20 @@ The primary source of truth for the codebase architecture and roadmap will be `A
 **File**: `core/api.py`
 
 **Changes**:
-1. Add connection pooling
-2. Implement request batching
-3. Enhance error handling
-4. Add retry logic
-5. Improve timeout handling
+1. Implement request batching (Calc)
+2. Enhance error handling
+3. Add retry logic
+4. Improve timeout handling
 
 ```python
 # Enhanced LlmClient class
 class LlmClient:
     def __init__(self, config):
         self.config = config
-        self.connection_pool = ConnectionPool(max_size=5)
-        self.retry_strategy = RetryStrategy(max_retries=3)
-        
-    def stream_completion(self, prompt, **kwargs):
-        """Stream completion with enhanced features"""
-        try:
-            # Get connection from pool
-            conn = self.connection_pool.get_connection(self.config.endpoint)
-            
-            # Execute with retry
-            return self.retry_strategy.execute_with_retry(
-                lambda: self._stream_completion_internal(conn, prompt, **kwargs)
-            )
+        # Execute with retry
+        return self.retry_strategy.execute_with_retry(
+            lambda: self._stream_completion_internal(prompt, **kwargs)
+        )
         except Exception as e:
             raise APIError(f"Completion failed: {str(e)}") from e
     
@@ -1456,7 +1446,7 @@ class ErrorHandler:
 ### Phase 1: Foundation (Weeks 1-4)
 1. **Error Handling System** - Implement comprehensive error handling
 2. **Configuration Management** - Enhance config with validation and presets
-3. **Core API Improvements** - Add connection pooling and retry logic
+3. **Core API Improvements** - Add retry logic and error handling
 4. **Basic Testing Framework** - Set up test infrastructure
 5. **Documentation Structure** - Organize documentation
 
