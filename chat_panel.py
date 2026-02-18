@@ -198,7 +198,9 @@ class SendButtonListener(unohelper.Base, XActionListener):
             desktop = self.ctx.getServiceManager().createInstanceWithContext(
                 "com.sun.star.frame.Desktop", self.ctx)
             model = desktop.getCurrentComponent()
-        if model and (hasattr(model, "getText") or hasattr(model, "getSheets") or hasattr(model, "getDrawPages")):
+
+        from core.document import is_writer, is_calc, is_draw
+        if model and (is_writer(model) or is_calc(model) or is_draw(model)):
             return model
         return None
 

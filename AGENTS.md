@@ -3,7 +3,7 @@
 **Assume the reader knows nothing about this project.** This file summarizes what was learned and what to do next.
 
 > [!IMPORTANT]
-> **AI Assistants: You MUST update this file after making (nontrivial) changes to the project.** This ensures the next assistant has up-to-date context without needing manual user intervention.
+> **AI Assistants: You MUST update this file after making (nontrivial) changes to the project.** This ensures the next assistant has all the up-to-date context without needing manual user intervention.
 
 ---
 
@@ -107,10 +107,10 @@ The sidebar and menu Chat work for **Writer and Calc** (same deck/UI; ContextLis
   - **Undo grouping**: AI edits performed during tool-calling rounds are grouped into a single undo context ("AI Edit"). Users can revert all changes from an AI turn with a single Ctrl+Z.
   - **Send/Stop button state (lifecycle-based)**: "AI is busy" is defined by the single run of `actionPerformed`: Send is disabled (Stop enabled) at the **start** of the run, and re-enabled (Stop disabled) **only** in the `finally` block when `_do_send()` has returned. No dependence on internal job_done or drain-loop state. `_set_button_states(send_enabled, stop_enabled)` uses per-control try/except (prefer `control.setEnable()`, fallback to model `Enabled`) so a UNO failure on one control cannot leave Send stuck disabled. `SendButtonListener._send_busy` is set True at run start and False in finally for external checks. This prevents multiple concurrent requests.
 - **Implementation**: `chat_panel.py` (ChatPanelFactory, ChatPanelElement, ChatToolPanel); `ContainerWindowProvider` + `ChatPanelDialog.xdl`; `setVisible(True)` required after `createContainerWindow()`.
-- **Tool-calling**: `chat_panel.py` (and the menu path in `main.py`) detect document type using robust service-based identification (`supportsService`) in `core/document.py`. This ensures Writer, Calc, and Draw/Impress documents are never misidentified (e.g. Writer document with shapes is correctly identified as Writer, not Draw).
-    - **Writer**: `document_tools.py` exposes **WRITER_TOOLS** = `get_markdown`, `apply_markdown`; implementations in `core/format_support.py`.
-    - **Calc**: `core/calc_tools.py` exposes **CALC_TOOLS** and `execute_calc_tool`; core logic in `core/calc_*.py`.
-    - **Draw/Impress**: `core/draw_tools.py` exposes **DRAW_TOOLS** and `execute_draw_tool`; core logic in `core/draw_bridge.py`.
+- **Tool-calling**: `chat_panel.py` (and the menu path in `main.py`) detect document type using robust service-based identification (`supportsService`) in `core/document.py`. This ensures Writer, Calc, and Draw/Impress documents are never misidentified. **Gotcha**: `hasattr(model, "getDrawPages")` is `True` for Writer (drawing layer for shapes), so strict service checks are required.
+    - **Writer**: `com.sun.star.text.TextDocument`. `document_tools.py` exposes **WRITER_TOOLS** = `get_markdown`, `apply_markdown`; implementations in `core/format_support.py`.
+    - **Calc**: `com.sun.star.sheet.SpreadsheetDocument`. `core/calc_tools.py` exposes **CALC_TOOLS** and `execute_calc_tool`; core logic in `core/calc_*.py`.
+    - **Draw/Impress**: `com.sun.star.drawing.DrawingDocument` or `com.sun.star.presentation.PresentationDocument`. `core/draw_tools.py` exposes **DRAW_TOOLS** and `execute_draw_tool`.
 - **Menu fallback**: Menu item "Chat with Document" opens input dialog, streams response with no tool-calling. **Writer**: appends to document end. **Calc**: streams to "AI Response" sheet. Both sidebar and menu use the same robust document detection.
 - **Config keys** (used by chat): `chat_context_length`, `chat_max_tokens`, `additional_instructions` (in Settings).
 - **Unified Prompt System**: See Section 3c.
@@ -302,6 +302,9 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 - **Logging**: Call `init_logging(ctx)` once from an entry point that has ctx. Then use `debug_log(msg, context="API"|"Chat"|"Markdown")` and `agent_log(...)`; both use global paths. Do not add new ad-hoc log paths.
 - **Streaming in sidebar**: Do not use UNO Timer or `XTimerListener` for draining the stream queue—the type is not available in the sidebar context. Use the pure Python pattern: worker + `queue.Queue` + main-thread loop with `toolkit.processEventsToIdle()` (see "Streaming I/O" in Section 3b).
 - **Document scoping in sidebar**: Each sidebar panel instance must operate on its associated document only. Use `self.xFrame.getController().getModel()` to get the document for the panel's frame. Do not rely on global `desktop.getCurrentComponent()` as it changes with user focus and causes the AI to edit the wrong document when multiple documents are open. Tool executions and context building must pass the specific document to avoid cross-document contamination.
+- **Strict Verification**: `SendButtonListener` tracks `initial_doc_type` during `_wireControls`. In `_do_send`, it re-verifies the document type. If it differs from the initial type, it logs an error and refuses to send. This prevents document-type "leakage" and ensures the AI never uses the wrong tools.
+- **Writer has a Drawing Layer**: `hasattr(model, "getDrawPages")` returns `True` for Writer documents because they have a drawing layer for shapes. Always use `is_writer(model)` (via `supportsService`) to avoid misidentifying Writer as Draw.
+- **Context function signatures**: All document context functions should follow the signature `(model, max_context, ctx=None)`. Missing the `ctx` default can lead to `TypeError` during document type transitions in the sidebar.
 
 ---
 

@@ -211,8 +211,10 @@ def get_document_context_for_chat(model, max_context=8000, include_end=True, inc
         return "Document length: %d characters.\n\n%s" % (doc_len, excerpt)
 
 
-def get_calc_context_for_chat(model, max_context=8000):
+def get_calc_context_for_chat(model, max_context=8000, ctx=None):
     """Get context summary for a Calc spreadsheet."""
+    if ctx is None:
+        raise ValueError("ctx is required for get_calc_context_for_chat")
     try:
         bridge = CalcBridge(model)
         analyzer = SheetAnalyzer(bridge)
