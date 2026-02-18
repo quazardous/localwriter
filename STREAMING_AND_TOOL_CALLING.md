@@ -1,8 +1,21 @@
-# Streaming and Tool Calling: How the APIs Work
+# Streaming, Tool Calling, and Request Batching: How the APIs Work
 
-This document explains how OpenAI-compatible chat APIs handle **streaming** and **tool calling**, and how **reasoning/thinking** appears in streams. It is aimed at developers who need to implement or debug clients (e.g. LocalWriter’s chat sidebar).
+This document explains how OpenAI-compatible chat APIs handle **streaming**, **tool calling**, and **request batching**, and how **reasoning/thinking** appears in streams. It is aimed at developers who need to implement or debug clients (e.g. LocalWriter’s chat sidebar).
 
 References: OpenAI [Streaming](https://platform.openai.com/docs/api-reference/streaming), [Tool calling](https://platform.openai.com/docs/guides/function-calling); OpenRouter [Streaming](https://openrouter.ai/docs/api-reference/streaming), [Reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens).
+
+---
+
+## Table of Contents
+
+1. [Chat completions: streaming (no tools)](#1-chat-completions-streaming-no-tools)
+2. [Streaming when tools are in the request](#2-streaming-when-tools-are-in-the-request)
+3. [Reasoning / thinking in the stream](#3-reasoning--thinking-in-the-stream)
+4. [Summary table](#4-summary-table)
+5. [Testing with OpenRouter](#5-testing-with-openrouter)
+6. [Implementation: `streaming_deltas.py`](#6-implementation-streaming_deltaspy)
+7. [Request Batching: Optimizing Multiple API Calls](#7-request-batching-optimizing-multiple-api-calls)
+8. [Error Handling in Streaming](#8-error-handling-in-streaming)
 
 ---
 
@@ -202,7 +215,298 @@ This avoids adding the heavy `openai` dependency to the LibreOffice extension wh
 
 ---
 
-## 7. Error Handling in Streaming
+## 7. Request Batching: Optimizing Multiple API Calls
+
+### What is Request Batching?
+
+Request batching is an optimization technique that combines multiple individual API requests into a single batch request. Instead of:
+
+```
+Request 1 → Response 1
+Request 2 → Response 2  
+Request 3 → Response 3
+```
+
+You get:
+```
+[Request 1, Request 2, Request 3] → [Response 1, Response 2, Response 3]
+```
+
+### Why Use Batching?
+
+#### Performance Benefits
+
+1. **Reduced Network Overhead**:
+   - Fewer TCP connections
+   - Less TLS handshake overhead
+   - Reduced HTTP header processing
+
+2. **Lower Latency**:
+   - Single round-trip instead of multiple
+   - Parallel processing on server side
+
+3. **Better Rate Limit Utilization**:
+   - One batch request vs. multiple individual requests
+   - More efficient use of API quotas
+
+4. **Improved Throughput**:
+   - Higher requests-per-second capacity
+   - Better utilization of network bandwidth
+
+#### When Batching Helps Most
+
+- **Multiple simultaneous operations** (e.g., several tool calls at once)
+- **High-frequency requests** (e.g., rapid chat messages)
+- **Network-constrained environments** (e.g., mobile devices)
+- **Rate-limited APIs** (e.g., free-tier services)
+
+### Batching in LocalWriter Context
+
+#### Potential Use Cases
+
+1. **Multiple Tool Calls**:
+   ```python
+   # Instead of sequential tool calls:
+   result1 = execute_tool("get_markdown", {"scope": "full"})
+   result2 = execute_tool("read_range", {"range": "A1:B10"})
+   
+   # Batch them together:
+   batch = RequestBatch()
+   batch.add_tool_call("get_markdown", {"scope": "full"})
+   batch.add_tool_call("read_range", {"range": "A1:B10"})
+   results = batch.flush()
+   ```
+
+2. **Chat Message Processing**:
+   ```python
+   # Batch multiple user messages:
+   batch = RequestBatch()
+   for message in pending_messages:
+       batch.add_chat_request(message)
+   responses = batch.flush()
+   ```
+
+### Basic Batching Implementation
+
+```python
+class RequestBatch:
+    """Simple request batching system"""
+    
+    def __init__(self, max_size=10, flush_timeout=0.5):
+        self.requests = []  # Queue of pending requests
+        self.max_size = max_size  # Maximum batch size
+        self.flush_timeout = flush_timeout  # Auto-flush timeout
+        self._timer = None
+        self._lock = threading.Lock()
+        self._next_id = 1
+    
+    def add_request(self, request_type, payload):
+        """Add a request to the batch"""
+        with self._lock:
+            request_id = self._next_id
+            self._next_id += 1
+            
+            request = {
+                "id": request_id,
+                "type": request_type,
+                "payload": payload,
+                "timestamp": time.time()
+            }
+            
+            self.requests.append(request)
+            
+            # Auto-flush if batch is full
+            if len(self.requests) >= self.max_size:
+                self.flush()
+            
+            # Start flush timer if not running
+            if self._timer is None:
+                self._timer = threading.Timer(self.flush_timeout, self.flush)
+                self._timer.start()
+        
+        return request_id
+    
+    def flush(self):
+        """Send all batched requests and return responses"""
+        with self._lock:
+            if not self.requests:
+                return []
+            
+            # Cancel pending timer
+            if self._timer:
+                self._timer.cancel()
+                self._timer = None
+            
+            batch_payload = {
+                "batch_id": str(uuid.uuid4()),
+                "requests": self.requests.copy()
+            }
+            
+            # Clear current batch
+            current_requests = self.requests
+            self.requests = []
+        
+        # Send to API
+        try:
+            return self._send_batch(batch_payload, current_requests)
+        except Exception as e:
+            self._handle_batch_error(e, current_requests)
+            return []
+```
+
+### API Requirements for Batching
+
+For batching to work, the API must support:
+
+1. **Batch Endpoint**: Typically `/v1/batch` or similar
+2. **Request Format**:
+   ```json
+   {
+     "batch_id": "unique-identifier",
+     "requests": [
+       {
+         "id": 1,
+         "type": "chat_completion",
+         "payload": {"prompt": "Hello", "model": "llama3"}
+       },
+       {
+         "id": 2,
+         "type": "tool_call",
+         "payload": {"tool": "get_markdown", "params": {"scope": "full"}}
+       }
+     ]
+   }
+   ```
+3. **Response Format**:
+   ```json
+   {
+     "batch_id": "unique-identifier",
+     "responses": [
+       {
+         "request_id": 1,
+         "result": "Hello! How can I help?",
+         "error": null
+       },
+       {
+         "request_id": 2,
+         "result": {"markdown": "# Document\n\nContent..."},
+         "error": null
+       }
+     ]
+   }
+   ```
+
+### Batching Strategies
+
+#### 1. Size-Based Batching
+
+```python
+class SizeBasedBatcher:
+    def __init__(self, max_size=10):
+        self.max_size = max_size
+        self.batch = []
+    
+    def add(self, request):
+        self.batch.append(request)
+        if len(self.batch) >= self.max_size:
+            self._send_batch()
+```
+
+**Best for**: High-volume, uniform requests
+
+#### 2. Time-Based Batching
+
+```python
+class TimeBasedBatcher:
+    def __init__(self, flush_interval=0.1):
+        self.flush_interval = flush_interval
+        self.batch = []
+        self.timer = None
+    
+    def add(self, request):
+        self.batch.append(request)
+        if self.timer is None:
+            self.timer = threading.Timer(self.flush_interval, self._send_batch)
+            self.timer.start()
+```
+
+**Best for**: Real-time applications where low latency matters
+
+#### 3. Hybrid Batching
+
+```python
+class HybridBatcher:
+    def __init__(self, max_size=10, flush_interval=0.1):
+        self.max_size = max_size
+        self.flush_interval = flush_interval
+        self.batch = []
+        self.timer = None
+```
+
+**Best for**: Balanced approach for most applications
+
+### Batching with Streaming and Tool Calling
+
+When combining batching with streaming and tool calling:
+
+```python
+def stream_with_batching(api_client, messages):
+    """Stream responses with batching support"""
+    batcher = HybridBatcher(max_size=5, flush_interval=0.2)
+    
+    # Add all messages to batcher
+    for message in messages:
+        batcher.add({
+            "type": "chat_completion",
+            "payload": {"prompt": message, "stream": False}
+        })
+    
+    # Get batched responses
+    batch_responses = batcher.flush()
+    
+    # Stream responses sequentially
+    for response in batch_responses:
+        if response["error"]:
+            yield ("error", response["error"])
+        else:
+            # Simulate streaming of each response
+            for chunk in _chunk_response(response["result"]):
+                yield ("chunk", chunk)
+    
+    yield ("stream_done", None)
+```
+
+### Error Handling in Batching
+
+#### Partial Failure Handling
+
+```python
+def handle_batch_response(batch_response):
+    """Handle batch response with potential partial failures"""
+    results = []
+    errors = []
+    
+    for response in batch_response["responses"]:
+        if response.get("error"):
+            errors.append({
+                "request_id": response["request_id"],
+                "error": response["error"]
+            })
+        else:
+            results.append({
+                "request_id": response["request_id"],
+                "result": response["result"]
+            })
+    
+    # Retry failed requests individually
+    if errors:
+        retry_results = retry_failed_requests(errors)
+        results.extend(retry_results)
+    
+    return results
+```
+
+## 8. Error Handling in Streaming
 
 Since networking runs on a background thread to keep the LibreOffice UI responsive, errors must be carefully propagated to the main thread.
 
