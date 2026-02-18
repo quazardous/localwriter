@@ -263,6 +263,7 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 - **Chat panel imports**: `chat_panel.py` uses `_ensure_extension_on_path()` to add the extension dir to `sys.path` so `from main import MainJob` and `from document_tools import ...` work.
 - **Logging**: Call `init_logging(ctx)` once from an entry point that has ctx. Then use `debug_log(msg, context="API"|"Chat"|"Markdown")` and `agent_log(...)`; both use global paths. Do not add new ad-hoc log paths.
 - **Streaming in sidebar**: Do not use UNO Timer or `XTimerListener` for draining the stream queue—the type is not available in the sidebar context. Use the pure Python pattern: worker + `queue.Queue` + main-thread loop with `toolkit.processEventsToIdle()` (see "Streaming I/O" in Section 3b).
+- **Document scoping in sidebar**: Each sidebar panel instance must operate on its associated document only. Use `self.xFrame.getController().getModel()` to get the document for the panel's frame. Do not rely on global `desktop.getCurrentComponent()` as it changes with user focus and causes the AI to edit the wrong document when multiple documents are open. Tool executions and context building must pass the specific document to avoid cross-document contamination.
 - **Calc context requires `ctx`**: For Calc documents, `get_document_context_for_chat(..., ctx=...)` and `get_calc_context_for_chat(..., ctx)` require the component context (`ctx` from the panel or MainJob). Do not use `uno.getComponentContext()` in this path.
 
 ---

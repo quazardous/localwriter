@@ -456,7 +456,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             elif args == "ChatWithDocument":
                 try:
                     max_context = int(self.get_config("chat_context_length", 8000))
-                    doc_text = get_document_context_for_chat(model, max_context, include_end=True, include_selection=True, ctx=self.ctx)
+                    doc_text = get_document_context_for_chat(model, max_context, include_end=True, include_selection=True)
                     if not doc_text.strip():
                         self.show_error("Document is empty.", "Chat with Document")
                         return
@@ -508,7 +508,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                 if args == "ChatWithDocument":
                     try:
                         max_context = int(self.get_config("chat_context_length", 8000))
-                        doc_text = get_document_context_for_chat(model, max_context, ctx=self.ctx)
+                        doc_text = get_document_context_for_chat(model, max_context)
                         
                         user_query, extra_instructions = self.input_box("Ask a question about your spreadsheet:", "Chat with Document", "")
                         if not user_query:

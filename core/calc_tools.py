@@ -298,10 +298,10 @@ _manipulator = None
 _analyzer = None
 _error_detector = None
 
-def _get_tools(ctx):
+def _get_tools(doc):
     global _bridge, _inspector, _manipulator, _analyzer, _error_detector
-    if _bridge is None:
-        _bridge = CalcBridge(ctx)
+    if _bridge is None or _bridge.doc != doc:
+        _bridge = CalcBridge(doc)
         _inspector = CellInspector(_bridge)
         _manipulator = CellManipulator(_bridge)
         _analyzer = SheetAnalyzer(_bridge)
@@ -331,9 +331,9 @@ def _parse_color(color_str):
             return None
     return None
 
-def execute_calc_tool(tool_name, arguments, model, ctx):
+def execute_calc_tool(tool_name, arguments, doc):
     """Execute a Calc tool by name. Returns JSON result string."""
-    tools = _get_tools(ctx)
+    tools = _get_tools(doc)
     agent_log("calc_tools.py:execute_calc_tool", "Tool call", data={"tool": tool_name, "arguments": arguments})
     
     try:

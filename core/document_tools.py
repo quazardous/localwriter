@@ -197,14 +197,14 @@ def _truncate_for_log(obj, max_len=200):
     return obj
 
 
-def execute_tool(tool_name, arguments, model, ctx):
+def execute_tool(tool_name, arguments, doc, ctx):
     """Execute a tool by name. Returns JSON result string."""
     func = TOOL_DISPATCH.get(tool_name)
     if not func:
         return json.dumps({"status": "error", "message": "Unknown tool: %s" % tool_name})
     try:
         agent_log("document_tools.py:execute_tool", "Tool call", data={"tool": tool_name, "arguments": _truncate_for_log(arguments or {})}, hypothesis_id="C,E")
-        result = func(model, ctx, arguments)
+        result = func(doc, ctx, arguments)
         agent_log("document_tools.py:execute_tool", "Tool result", data={"tool": tool_name, "result_snippet": (result or "")[:120]}, hypothesis_id="C,E")
         return result
     except Exception as e:

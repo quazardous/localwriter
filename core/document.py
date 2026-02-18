@@ -118,13 +118,10 @@ def get_selection_range(model):
         return (0, 0)
 
 
-def get_document_context_for_chat(model, max_context=8000, include_end=True, include_selection=True, ctx=None):
-    """Build a single context string for chat. Handles Writer and Calc.
-    ctx: component context (required for Calc documents; use the panel/MainJob component ctx)."""
+def get_document_context_for_chat(model, max_context=8000, include_end=True, include_selection=True):
+    """Build a single context string for chat. Handles Writer and Calc."""
     if hasattr(model, "getSheets"):
-        if ctx is None:
-            raise ValueError("ctx is required for Calc documents when calling get_document_context_for_chat")
-        return get_calc_context_for_chat(model, max_context, ctx)
+        return get_calc_context_for_chat(model, max_context)
     
     # Original Writer logic
     try:
@@ -184,20 +181,18 @@ def get_document_context_for_chat(model, max_context=8000, include_end=True, inc
         return "Document length: %d characters.\n\n%s" % (doc_len, excerpt)
 
 
-def get_calc_context_for_chat(model, max_context=8000, ctx=None):
-    """Get context summary for a Calc spreadsheet. ctx: component context (required; pass from panel or MainJob)."""
-    if ctx is None:
-        raise ValueError("ctx is required for get_calc_context_for_chat")
+def get_calc_context_for_chat(model, max_context=8000):
+    """Get context summary for a Calc spreadsheet."""
     try:
-        bridge = CalcBridge(ctx)
+        bridge = CalcBridge(model)
         analyzer = SheetAnalyzer(bridge)
         summary = analyzer.get_sheet_summary()
-        
+
         ctx_str = f"Spreadsheet Document: {model.getURL() or 'Untitled'}\n"
         ctx_str += f"Active Sheet: {summary['sheet_name']}\n"
         ctx_str += f"Used Range: {summary['used_range']} ({summary['row_count']} rows x {summary['col_count']} columns)\n"
         ctx_str += f"Columns: {', '.join([str(h) for h in summary['headers'] if h])}\n"
-        
+
         # Add selection context if available
         controller = model.getCurrentController()
         selection = controller.getSelection()
@@ -207,7 +202,7 @@ def get_calc_context_for_chat(model, max_context=8000, ctx=None):
                 from core.calc_address_utils import index_to_column
                 sel_range = f"{index_to_column(addr.StartColumn)}{addr.StartRow + 1}:{index_to_column(addr.EndColumn)}{addr.EndRow + 1}"
                 ctx_str += f"Current Selection: {sel_range}\n"
-                
+
                 # Check for selected values if small
                 if (addr.EndRow - addr.StartRow + 1) * (addr.EndColumn - addr.StartColumn + 1) < 100:
                     from core.calc_inspector import CellInspector
@@ -216,7 +211,7 @@ def get_calc_context_for_chat(model, max_context=8000, ctx=None):
                     ctx_str += "Selection Content (CSV-like):\n"
                     for row in cells:
                         ctx_str += ", ".join([str(c['value']) if c['value'] is not None else "" for c in row]) + "\n"
-        
+
         return ctx_str
     except Exception as e:
         return f"Error getting Calc context: {e}"

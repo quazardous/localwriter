@@ -4,16 +4,11 @@ import uno
 from core.calc_address_utils import index_to_column, column_to_index, parse_range_string
 
 class CalcBridge:
-    def __init__(self, ctx):
-        self.ctx = ctx
-        self.smgr = ctx.getServiceManager()
-        self.desktop = self.smgr.createInstanceWithContext("com.sun.star.frame.Desktop", self.ctx)
+    def __init__(self, doc):
+        self.doc = doc
 
     def get_active_document(self):
-        doc = self.desktop.getCurrentComponent()
-        if doc is None:
-            raise RuntimeError("No active LibreOffice document found.")
-        return doc
+        return self.doc
 
     def get_active_sheet(self):
         doc = self.get_active_document()

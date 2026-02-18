@@ -282,13 +282,13 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 debug_log("_do_send: importing calc_tools...", context="Chat")
                 from core.calc_tools import CALC_TOOLS, execute_calc_tool
                 active_tools = CALC_TOOLS
-                execute_fn = execute_calc_tool
+                execute_fn = lambda name, args, doc, ctx: execute_calc_tool(name, args, doc)
                 debug_log("_do_send: calc_tools imported OK (%d tools)" % len(CALC_TOOLS), context="Chat")
             else:
                 debug_log("_do_send: importing document_tools...", context="Chat")
                 from core.document_tools import WRITER_TOOLS, execute_tool
                 active_tools = WRITER_TOOLS
-                execute_fn = execute_tool
+                execute_fn = lambda name, args, doc, ctx: execute_tool(name, args, doc, ctx)
                 debug_log("_do_send: document_tools imported OK (%d tools)" % len(WRITER_TOOLS), context="Chat")
         except Exception as e:
             debug_log("_do_send: tool import FAILED: %s" % e, context="Chat")
@@ -353,7 +353,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
         # 4. Refresh document context in session (start + end excerpts, inline selection/cursor markers)
         self._set_status("Reading document...")
         try:
-            doc_text = get_document_context_for_chat(model, max_context, include_end=True, include_selection=True, ctx=self.ctx)
+            doc_text = get_document_context_for_chat(model, max_context, include_end=True, include_selection=True)
             debug_log("_do_send: document context length=%d" % len(doc_text), context="Chat")
             agent_log("chat_panel.py:doc_context", "Document context for AI", data={"doc_length": len(doc_text), "doc_prefix_first_200": (doc_text or "")[:200], "max_context": max_context}, hypothesis_id="B")
             self.session.update_document_context(doc_text)
