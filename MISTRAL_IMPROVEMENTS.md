@@ -55,57 +55,11 @@ I have thoroughly reviewed the LocalWriter codebase, including:
 
 ## Architectural Improvements
 
-### 1. Enhanced Modularization
+### 1. Enhanced Modularization (Completed)
 
-**Current State**: The codebase is reasonably modular but some cross-cutting concerns could be better isolated.
+**Current State**: The codebase is modular with a clear separation between core, UI, and document-specific logic (`calc_tools.py`, `document_tools.py`).
 
-**Proposed Changes**:
-- Create a dedicated `utils/` directory for shared utilities
-- Separate platform-specific code more clearly
-- Implement a plugin architecture for document types
-- Create interface definitions for core components
-
-**Implementation Plan**:
-```python
-# Example: utils/file_utils.py
-class FileUtils:
-    @staticmethod
-    def ensure_directory_exists(path):
-        """Ensure directory exists, create if needed"""
-        import os
-        os.makedirs(path, exist_ok=True)
-
-# Example: interfaces/document_processor.py
-class DocumentProcessorInterface:
-    def get_context(self, max_length):
-        raise NotImplementedError
-    
-    def apply_changes(self, changes):
-        raise NotImplementedError
-```
-
-### 2. Dependency Injection Framework
-
-**Current State**: Components are tightly coupled in some areas.
-
-**Proposed Changes**:
-- Implement a simple DI container
-- Reduce global state
-- Make dependencies more explicit
-
-**Benefits**:
-- Easier testing
-- Better component isolation
-- More flexible configuration
-
-### 3. Event System Enhancement
-
-**Current State**: Basic event handling exists but could be more robust.
-
-**Proposed Changes**:
-- Implement a proper event bus
-- Standardize event formats
-- Add event prioritization
+**Status**: Basic modularization is complete. Further abstractions (Interface/DI) are deemed overkill for the current scope.
 
 ---
 
@@ -160,30 +114,12 @@ def get_document_structure(document_id):
 
 **Optimization Strategies**:
 
-**A. Connection Pooling**:
-```python
-# Enhanced connection pooling
-class ConnectionPool:
-    def __init__(self, max_connections=5):
-        self.pool = []
-        self.max_connections = max_connections
-        
-    def get_connection(self, endpoint):
-        # Reuse existing connection or create new one
-        for conn in self.pool:
-            if conn.is_available():
-                return conn
-        
-        if len(self.pool) < self.max_connections:
-            new_conn = create_new_connection(endpoint)
-            self.pool.append(new_conn)
-            return new_conn
-        
-        # Wait for available connection
-        return self._wait_for_connection()
-```
+**A. Connection Pooling (Implemented)**:
+Persistent connections are implemented in `LlmClient` using `http.client`.
 
-**B. Request Batching**:
+**B. Request Batching (Calc Priority)**:
+For Calc documents, updating multiple cells in a single tool call (or batching tool requests) is critical for performance.
+
 ```python
 class RequestBatch:
     def __init__(self, max_batch_size=10):
@@ -197,7 +133,7 @@ class RequestBatch:
     
     def flush(self):
         if self.requests:
-            # Send batch request
+            # Send batch request (e.g., update 5 cells at once)
             responses = send_batch(self.requests)
             self.requests = []
             return responses
@@ -205,6 +141,7 @@ class RequestBatch:
 ```
 
 **C. Intelligent Retry**:
+Implement basic retry logic for transient network errors.
 ```python
 class RetryStrategy:
     def __init__(self, max_retries=3, base_delay=1):
@@ -1070,236 +1007,13 @@ class LocalWriterMock:
 
 ### 1. Immediate Priorities (Next 1-2 Months)
 
-**A. Impress Support**:
-```python
-class ImpressDocumentProcessor:
-    """Document processor for Impress presentations"""
-    
-    def __init__(self, document):
-        self.document = document
-        
-    def get_context(self, max_length=5000):
-        """Get presentation context"""
-        context = "[PRESENTATION START]\n"
-        
-        # Add slide information
-        for i, slide in enumerate(self.document.getSlides()):
-            if len(context) >= max_length:
-                break
-                
-            slide_text = self._get_slide_text(slide)
-            context += f"\n[SLIDE {i+1}]\n{slide_text}\n"
-        
-        context += "\n[PRESENTATION END]"
-        return context
-    
-    def _get_slide_text(self, slide):
-        """Extract text from a slide"""
-        text = ""
-        for shape in slide.getShapes():
-            if hasattr(shape, 'getText'):
-                text += shape.getText() + "\n"
-        return text.strip()
-```
-
-**B. Enhanced Markdown Support**:
-```python
-class AdvancedMarkdownProcessor:
-    """Enhanced markdown processing with more features"""
-    
-    def __init__(self):
-        self._extensions = {
-            'tables': TableExtension(),
-            'footnotes': FootnoteExtension(),
-            'definition_lists': DefinitionListExtension()
-        }
-    
-    def process(self, markdown):
-        """Process markdown with extensions"""
-        # Apply extensions
-        for extension in self._extensions.values():
-            markdown = extension.process(markdown)
-        
-        return markdown
-    
-    def add_extension(self, name, extension):
-        """Add custom markdown extension"""
-        self._extensions[name] = extension
-```
-
-**C. Collaboration Features**:
-```python
-class CollaborationManager:
-    """Manage collaborative editing sessions"""
-    
-    def __init__(self):
-        self.sessions = {}
-        self.user_presence = {}
-        
-    def create_session(self, document_id):
-        """Create new collaboration session"""
-        if document_id not in self.sessions:
-            self.sessions[document_id] = {
-                'users': set(),
-                'changes': [],
-                'locks': {}
-            }
-        return self.sessions[document_id]
-    
-    def join_session(self, document_id, user_id):
-        """User joins collaboration session"""
-        session = self.sessions.get(document_id)
-        if session:
-            session['users'].add(user_id)
-            self.user_presence[user_id] = {
-                'document': document_id,
-                'last_active': time.time()
-            }
-    
-    def apply_change(self, document_id, change, user_id):
-        """Apply change to collaborative document"""
-        session = self.sessions.get(document_id)
-        if session:
-            # Check for conflicts
-            if self._check_conflicts(session, change):
-                raise ConflictError("Change conflicts with existing changes")
-            
-            session['changes'].append({
-                'user': user_id,
-                'change': change,
-                'timestamp': time.time()
-            })
-            
-            # Apply change to document
-            self._apply_change_to_document(document_id, change)
-```
+**A. Impress Support**: (Planned)
+**B. Enhanced Markdown Support**: (Planned)
 
 ### 2. Medium-Term Features (3-6 Months)
 
-**A. Advanced Document Analysis**:
-```python
-class DocumentAnalyzer:
-    """Advanced document analysis features"""
-    
-    def __init__(self):
-        self._analyzers = {
-            'sentiment': SentimentAnalyzer(),
-            'readability': ReadabilityAnalyzer(),
-            'structure': StructureAnalyzer()
-        }
-    
-    def analyze(self, document):
-        """Perform comprehensive document analysis"""
-        results = {}
-        
-        for name, analyzer in self._analyzers.items():
-            results[name] = analyzer.analyze(document)
-        
-        return results
-    
-    def get_insights(self, analysis):
-        """Generate insights from analysis"""
-        insights = []
-        
-        # Sentiment insights
-        sentiment = analysis.get('sentiment', {})
-        if sentiment.get('score') < 0.3:
-            insights.append("Document has negative sentiment")
-        
-        # Readability insights
-        readability = analysis.get('readability', {})
-        if readability.get('grade_level') > 12:
-            insights.append("Document may be difficult to read")
-        
-        return insights
-```
-
-**B. Template System**:
-```python
-class TemplateManager:
-    """Document template system"""
-    
-    def __init__(self):
-        self.templates = {}
-        self._load_default_templates()
-        
-    def _load_default_templates(self):
-        """Load default templates"""
-        defaults = {
-            'business_letter': {
-                'description': 'Standard business letter format',
-                'content': self._get_business_letter_template()
-            },
-            'meeting_minutes': {
-                'description': 'Meeting minutes template',
-                'content': self._get_meeting_minutes_template()
-            }
-        }
-        self.templates.update(defaults)
-    
-    def get_template(self, name):
-        """Get template by name"""
-        return self.templates.get(name)
-    
-    def apply_template(self, document, template_name):
-        """Apply template to document"""
-        template = self.get_template(template_name)
-        if template:
-            # Apply template content and formatting
-            document.setContent(template['content'])
-            self._apply_template_formatting(document, template)
-    
-    def create_custom_template(self, name, document):
-        """Create custom template from document"""
-        self.templates[name] = {
-            'description': f'Custom template: {name}',
-            'content': document.getContent(),
-            'formatting': self._extract_formatting(document)
-        }
-```
-
-**C. Version Control Integration**:
-```python
-class VersionControl:
-    """Document version control system"""
-    
-    def __init__(self, storage_backend):
-        self.storage = storage_backend
-        self.current_version = None
-        
-    def commit(self, document, message):
-        """Commit current document state"""
-        version_data = {
-            'content': document.getContent(),
-            'metadata': document.getMetadata(),
-            'timestamp': time.time(),
-            'message': message,
-            'author': get_current_user()
-        }
-        
-        version_id = self.storage.save_version(version_data)
-        self.current_version = version_id
-        return version_id
-    
-    def checkout(self, version_id, document):
-        """Restore document to specific version"""
-        version_data = self.storage.get_version(version_id)
-        if version_data:
-            document.setContent(version_data['content'])
-            document.setMetadata(version_data['metadata'])
-            self.current_version = version_id
-    
-    def get_history(self):
-        """Get version history"""
-        return self.storage.get_all_versions()
-    
-    def diff(self, version1, version2):
-        """Get differences between versions"""
-        data1 = self.storage.get_version(version1)
-        data2 = self.storage.get_version(version2)
-        
-        return self._calculate_diff(data1['content'], data2['content'])
-```
+**A. Advanced Document Analysis**: (Medium Term)
+**B. Template System**: (Medium Term)
 
 ### 3. Long-Term Features (6-12 Months)
 
@@ -1449,220 +1163,8 @@ class CrossDocumentFeatures:
 
 ---
 
-## Documentation Improvements
-
-### 1. Comprehensive API Documentation
-
-**Current State**: Basic documentation exists but could be more comprehensive.
-
-**Proposed Structure**:
-```
-docs/
-├── api/                  # API documentation
-│   ├── core/             # Core API
-│   ├── writer/           # Writer-specific API
-│   ├── calc/             # Calc-specific API
-│   └── chat/             # Chat API
-├── user/                 # User documentation
-│   ├── getting_started/  # Getting started guides
-│   ├── tutorials/        # Tutorials
-│   ├── troubleshooting/  # Troubleshooting
-│   └── faq/              # FAQ
-├── developer/            # Developer documentation
-│   ├── architecture/     # Architecture overview
-│   ├── contributing/     # Contributing guide
-│   ├── testing/          # Testing guide
-│   └── deployment/       # Deployment guide
-├── reference/            # Reference documentation
-│   ├── config/           # Configuration reference
-│   ├── error_codes/      # Error codes
-│   └── limits/           # Limits and quotas
-└── examples/             # Usage examples
-```
-
-### 2. Interactive Documentation
-
-**Current Issues**:
-- Documentation is static
-- No interactive examples
-- Limited search functionality
-
-**Enhancement Ideas**:
-
-**A. Documentation Generator**:
-```python
-class DocumentationGenerator:
-    """Generate documentation from code and templates"""
-    
-    def __init__(self, source_dir, output_dir):
-        self.source_dir = source_dir
-        self.output_dir = output_dir
-        self.parser = PythonParser()
-        
-    def generate(self):
-        """Generate complete documentation"""
-        # Parse source code
-        modules = self._parse_source_code()
-        
-        # Generate API documentation
-        self._generate_api_docs(modules)
-        
-        # Generate user guides
-        self._generate_user_guides()
-        
-        # Generate reference documentation
-        self._generate_reference_docs()
-    
-    def _parse_source_code(self):
-        """Parse source code to extract documentation"""
-        modules = {}
-        
-        for root, dirs, files in os.walk(self.source_dir):
-            for file in files:
-                if file.endswith('.py'):
-                    path = os.path.join(root, file)
-                    module_doc = self.parser.parse_file(path)
-                    modules[file] = module_doc
-        
-        return modules
-    
-    def _generate_api_docs(self, modules):
-        """Generate API documentation"""
-        api_dir = os.path.join(self.output_dir, 'api')
-        os.makedirs(api_dir, exist_ok=True)
-        
-        for module_name, module_doc in modules.items():
-            # Generate markdown documentation for each module
-            markdown = self._module_to_markdown(module_doc)
-            output_path = os.path.join(api_dir, f'{module_name}.md')
-            
-            with open(output_path, 'w') as f:
-                f.write(markdown)
-```
-
-**B. Interactive Examples**:
-```python
-class InteractiveExample:
-    """Interactive documentation example"""
-    
-    def __init__(self, title, description, code, expected_output=None):
-        self.title = title
-        self.description = description
-        self.code = code
-        self.expected_output = expected_output
-        self._result = None
-        
-    def render(self):
-        """Render interactive example"""
-        html = f"""
-        <div class="example">
-            <h3>{self.title}</h3>
-            <p>{self.description}</p>
-            
-            <div class="code">
-                <pre><code>{self.code}</code></pre>
-                <button onclick="runExample('{self.title}')">Run Example</button>
-            </div>
-            
-            <div class="result" id="result-{self.title}">
-                {self._get_result_html()}
-            </div>
-        </div>
-        """
-        return html
-    
-    def run(self):
-        """Run the example code"""
-        try:
-            # Execute code in safe environment
-            result = self._safe_execute(self.code)
-            self._result = {
-                'success': True,
-                'output': result,
-                'matches_expected': result == self.expected_output if self.expected_output else True
-            }
-        except Exception as e:
-            self._result = {
-                'success': False,
-                'error': str(e)
-            }
-    
-    def _get_result_html(self):
-        """Get HTML for current result"""
-        if not self._result:
-            return "<p>Example not run yet.</p>"
-        
-        if self._result['success']:
-            output = escape_html(self._result['output'])
-            if self._result.get('matches_expected'):
-                status = "✓ Output matches expected result"
-            else:
-                status = "⚠ Output differs from expected"
-            
-            return f"""
-            <div class="success">
-                <p>{status}</p>
-                <pre>{output}</pre>
-            </div>
-            """
-        else:
-            error = escape_html(self._result['error'])
-            return f"""
-            <div class="error">
-                <p>✗ Example failed:</p>
-                <pre>{error}</pre>
-            </div>
-            """
-```
-
-**C. Searchable Documentation**:
-```python
-class DocumentationSearch:
-    """Searchable documentation system"""
-    
-    def __init__(self, docs_dir):
-        self.docs_dir = docs_dir
-        self.index = {}
-        self._build_index()
-        
-    def _build_index(self):
-        """Build search index"""
-        for root, dirs, files in os.walk(self.docs_dir):
-            for file in files:
-                if file.endswith('.md'):
-                    path = os.path.join(root, file)
-                    content = self._read_file(path)
-                    
-                    # Index words and phrases
-                    words = self._extract_keywords(content)
-                    for word in words:
-                        if word not in self.index:
-                            self.index[word] = []
-                        self.index[word].append(path)
-    
-    def search(self, query):
-        """Search documentation"""
-        # Tokenize query
-        tokens = self._tokenize_query(query)
-        
-        # Find matching documents
-        results = []
-        for token in tokens:
-            if token in self.index:
-                for path in self.index[token]:
-                    if path not in results:
-                        results.append(path)
-        
-        # Rank results by relevance
-        ranked_results = self._rank_results(query, results)
-        
-        return ranked_results
-    
-    def _rank_results(self, query, results):
-        """Rank search results by relevance"""
-        # Implement ranking algorithm
-        pass
-```
+### 1. Unified Documentation (AGENTS.md)
+The primary source of truth for the codebase architecture and roadmap will be `AGENTS.md`. Smaller focused documents (like `CONFIG_EXAMPLES.md`) will supplement it. Custom search engines are not required.
 
 ---
 

@@ -14,6 +14,8 @@
 - **Settings**: Configure endpoint, model, API key, temperature, request timeout, etc.
 - **Calc** `=PROMPT()`: Cell formula that calls the model
 
+**Connection Management**: LocalWriter includes built-in connection management in `core/api.py` that maintains persistent HTTP/HTTPS connections, significantly reducing overhead for sequential requests to the same endpoint.
+
 Config is stored in `localwriter.json` in LibreOffice's user config directory. See `CONFIG_EXAMPLES.md` for examples (Ollama, OpenWebUI, OpenRouter, etc.).
 
 ---
@@ -25,7 +27,7 @@ localwriter/
 ├── main.py              # MainJob: trigger(), dialogs, delegates to core
 ├── core/                # Shared core logic
 │   ├── config.py        # get_config, set_config, get_api_config (localwriter.json)
-│   ├── api.py           # LlmClient: streaming, chat, tool-calling
+│   ├── api.py           # LlmClient: streaming, chat, tool-calling, connection management
 │   ├── document.py      # get_full_document_text, get_document_end, get_selection_range, get_document_length, get_text_cursor_at_range, get_document_context_for_chat (Writer/Calc), get_calc_context_for_chat (Calc)
 │   ├── logging.py       # init_logging, debug_log(msg, context), agent_log; single debug file + optional agent log
 │   ├── constants.py     # DEFAULT_CHAT_SYSTEM_PROMPT, DEFAULT_CALC_CHAT_SYSTEM_PROMPT, get_chat_system_prompt_for_document
