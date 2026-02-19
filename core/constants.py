@@ -45,7 +45,7 @@ EXAMPLES:
 # Select the appropriate rules based on format
 FORMAT_RULES = HTML_FORMATTING_RULES if DOCUMENT_FORMAT == "html" else MARKDOWN_FORMATTING_RULES
 
-DEFAULT_CHAT_SYSTEM_PROMPT = f"""You are a LibreOffice document assistant.
+DEFAULT_CHAT_SYSTEM_PROMPT = f"""You are a DEVELOPMENT VERSION OF LibreOffice document assistant.
 Edit the document directly using tools.
 
 TOOLS:
@@ -120,6 +120,21 @@ PAGE MANAGEMENT:
 COORDINATES:
 All coordinates (x, y, width, height) are in 100ths of a millimeter.
 A typical page is roughly 21000 x 29700 (A4)."""
+
+DEFAULT_WRITER_GREETING = "AI: I can edit or translate your document instantly. Try me!"
+DEFAULT_CALC_GREETING = "AI: I can help you with formulas, data analysis, and charts. Try me!"
+DEFAULT_DRAW_GREETING = "AI: I can help you create and edit shapes in Draw and Impress. Try me!"
+
+
+def get_greeting_for_document(model):
+    """Return a greeting relevant to the document type."""
+    from core.document import is_calc, is_draw
+    if is_calc(model):
+        return DEFAULT_CALC_GREETING
+    elif is_draw(model):
+        return DEFAULT_DRAW_GREETING
+    else:
+        return DEFAULT_WRITER_GREETING
 
 
 def get_chat_system_prompt_for_document(model, additional_instructions=""):
