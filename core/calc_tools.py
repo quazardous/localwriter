@@ -331,7 +331,7 @@ def _parse_color(color_str):
             return None
     return None
 
-def execute_calc_tool(tool_name, arguments, doc):
+def execute_calc_tool(tool_name, arguments, doc, ctx=None):
     """Execute a Calc tool by name. Returns JSON result string."""
     tools = _get_tools(doc)
     agent_log("calc_tools.py:execute_calc_tool", "Tool call", data={"tool": tool_name, "arguments": arguments})

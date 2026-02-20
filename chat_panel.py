@@ -208,21 +208,8 @@ class SendButtonListener(unohelper.Base, XActionListener):
         """Set Send/Stop button enabled states. Per-control try/except so one failure cannot leave Send stuck disabled.
         Prefer model Enabled property (LibreOffice UNO); fallback to control.setEnable if available."""
         def set_control_enabled(control, enabled):
-            if control is None:
-                return
-            val = bool(enabled)
-            try:
-                model = control.getModel()
-                if model is not None and hasattr(model, "setPropertyValue"):
-                    model.setPropertyValue("Enabled", val)
-                    return
-            except Exception as e1:
-                debug_log("_set_button_states (model) failed: %s" % e1, context="Chat")
-            try:
-                if hasattr(control, "setEnable"):
-                    control.setEnable(val)
-            except Exception as e2:
-                debug_log("_set_button_states (setEnable) failed: %s" % e2, context="Chat")
+            if control and control.getModel():
+                control.getModel().Enabled = bool(enabled)
         set_control_enabled(self.send_control, send_enabled)
         set_control_enabled(self.stop_control, stop_enabled)
 
@@ -308,7 +295,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
                 debug_log("_do_send: importing calc_tools...", context="Chat")
                 from core.calc_tools import CALC_TOOLS, execute_calc_tool
                 active_tools = CALC_TOOLS
-                execute_fn = lambda name, args, doc, ctx: execute_calc_tool(name, args, doc)
+                execute_fn = execute_calc_tool
                 debug_log("_do_send: calc_tools imported OK (%d tools)" % len(CALC_TOOLS), context="Chat")
             elif is_draw_doc:
                 debug_log("_do_send: importing draw_tools...", context="Chat")
@@ -801,25 +788,21 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         send_btn = root_window.getControl("send")
         query_ctrl = root_window.getControl("query")
         response_ctrl = root_window.getControl("response")
-        prompt_selector = None
-        model_selector = None
-        try:
-            prompt_selector = root_window.getControl("prompt_selector")
-        except Exception:
-            pass
-        try:
-            model_selector = root_window.getControl("model_selector")
-        except Exception:
-            pass
-        debug_log("_wireControls: got send/query/response/prompt/model controls", context="Chat")
+        # Helper for optional controls
+        def get_optional(name):
+            try:
+                return root_window.getControl(name)
+            except Exception:
+                return None
 
-        # Status label (may not exist in older XDL)
-        status_ctrl = None
-        try:
-            status_ctrl = root_window.getControl("status")
-            debug_log("_wireControls: got status control", context="Chat")
-        except Exception:
-            debug_log("_wireControls: no status control in XDL (ok)", context="Chat")
+        prompt_selector = get_optional("prompt_selector")
+        model_selector = get_optional("model_selector")
+        status_ctrl = get_optional("status")
+        
+        if status_ctrl:
+             debug_log("_wireControls: got status control", context="Chat")
+        else:
+             debug_log("_wireControls: no status control in XDL (ok)", context="Chat")
 
         # Helper to show errors visibly in the response area
         def _show_init_error(msg):

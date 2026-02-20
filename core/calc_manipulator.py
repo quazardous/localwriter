@@ -695,24 +695,24 @@ class CellManipulator:
             import uno
             from com.sun.star.table import TableSortField
 
+            # Use createSortDescriptor for robust property defaults
+            sort_desc = list(cell_range.createSortDescriptor())
+
+            # Configure the sort field
             sort_field = TableSortField()
             sort_field.Field = sort_column
             sort_field.IsAscending = ascending
             sort_field.IsCaseSensitive = False
+            
+            # Update specific properties in the descriptor
+            for p in sort_desc:
+                if p.Name == "SortFields":
+                    p.Value = (sort_field,)
+                elif p.Name == "ContainsHeader":
+                    p.Value = has_header
 
-            p1 = uno.createUnoStruct("com.sun.star.beans.PropertyValue")
-            p1.Name = "SortFields"
-            p1.Value = (sort_field,)
-            p2 = uno.createUnoStruct("com.sun.star.beans.PropertyValue")
-            p2.Name = "ContainsHeader"
-            p2.Value = has_header
-
-            # Select the range before sorting
-            doc = self.bridge.get_active_document()
-            controller = doc.getCurrentController()
-            controller.select(cell_range)
-
-            sheet.sort((p1, p2))
+            # Sort the range
+            cell_range.sort(tuple(sort_desc))
 
             direction = "ascending" if ascending else "descending"
             logger.info("Range %s sorted %s by column %d.", range_str.upper(), direction, sort_column)

@@ -105,7 +105,7 @@ The sidebar and menu Chat work for **Writer and Calc** (same deck/UI; ContextLis
   - **Auto-scroll**: The response area automatically scrolls to the bottom as text is streamed or tools are called, ensuring the latest AI output is always visible.
   - **Stop button**: A dedicated "Stop" button allows users to halt AI generation mid-stream. It is enabled only while the AI is active and disabled when idle.
   - **Undo grouping**: AI edits performed during tool-calling rounds are grouped into a single undo context ("AI Edit"). Users can revert all changes from an AI turn with a single Ctrl+Z.
-  - **Send/Stop button state (lifecycle-based)**: "AI is busy" is defined by the single run of `actionPerformed`: Send is disabled (Stop enabled) at the **start** of the run, and re-enabled (Stop disabled) **only** in the `finally` block when `_do_send()` has returned. No dependence on internal job_done or drain-loop state. `_set_button_states(send_enabled, stop_enabled)` uses per-control try/except (prefer `control.setEnable()`, fallback to model `Enabled`) so a UNO failure on one control cannot leave Send stuck disabled. `SendButtonListener._send_busy` is set True at run start and False in finally for external checks. This prevents multiple concurrent requests.
+  - **Send/Stop button state (lifecycle-based)**: "AI is busy" is defined by the single run of `actionPerformed`: Send is disabled (Stop enabled) at the **start** of the run, and re-enabled (Stop disabled) **only** in the `finally` block when `_do_send()` has returned. No dependence on internal job_done or drain-loop state. `_set_button_states(send_enabled, stop_enabled)` uses per-control try/except with a simple `control.getModel().Enabled = val` check so a UNO failure on one control cannot leave Send stuck disabled. `SendButtonListener._send_busy` is set True at run start and False in finally for external checks. This prevents multiple concurrent requests.
 - **Implementation**: `chat_panel.py` (ChatPanelFactory, ChatPanelElement, ChatToolPanel); `ContainerWindowProvider` + `ChatPanelDialog.xdl`; `setVisible(True)` required after `createContainerWindow()`.
 - **Tool-calling**: `chat_panel.py` (and the menu path in `main.py`) detect document type using robust service-based identification (`supportsService`) in `core/document.py`. This ensures Writer, Calc, and Draw/Impress documents are never misidentified. **Gotcha**: `hasattr(model, "getDrawPages")` is `True` for Writer (drawing layer for shapes), so strict service checks are required.
     - **Writer**: `com.sun.star.text.TextDocument`. `document_tools.py` exposes **WRITER_TOOLS** = `get_markdown`, `apply_markdown`; implementations in `core/format_support.py`.
@@ -223,6 +223,9 @@ The "Additional Instructions" (previously system prompts) are now unified across
 ### Compact layout
 - Label height ~10, textfield height ~14, gap label→edit ~1, gap between rows ~2
 - Margins ~8. Tighter = more compact but must stay readable.
+
+### Optional Controls
+- When wiring controls that might not exist in all XDL versions (e.g. backward compatibility), use a **`get_optional(name)` helper** to wrap `root_window.getControl(name)` in a try-except block. This avoids repetitive `try: ... except: pass` patterns.
 
 ---
 
