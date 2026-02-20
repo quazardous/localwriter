@@ -1,9 +1,43 @@
 """Cell manipulator - Writing data and formatting LibreOffice Calc cells."""
 
+import json
 import logging
 from core.calc_address_utils import parse_address
+from core.logging import debug_log
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_formula_or_values_string(s: str):
+    """
+    Parse formula_or_values when it arrives as a JSON string (e.g. from the AI tool call).
+
+    Workaround: The AI often sends formula_or_values as a JSON-encoded string (e.g.
+    '["Name"; "Category"; "Value"]'), so after parsing tool args we get a str, not a list.
+    Without this, write_formula_range would write that whole string as one value per cell
+    and formulas would be lost. We normalize LibreOffice-style semicolon separators to
+    commas and flatten 2D arrays to row-major order so per-cell values and formula
+    detection work correctly.
+
+    Returns:
+        A flat list of values, or None if s should not be treated as an array.
+    """
+    if not isinstance(s, str) or not s.strip().startswith("["):
+        return None
+    try:
+        normalized = s.replace(";", ",")
+        data = json.loads(normalized)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, list):
+        return None
+    flat = []
+    for item in data:
+        if isinstance(item, list):
+            flat.extend(item)
+        else:
+            flat.append(item)
+    return flat
 
 
 class CellManipulator:
@@ -777,6 +811,19 @@ class CellManipulator:
             num_rows = end[1] - start[1] + 1
             num_cols = end[0] - start[0] + 1
             total_cells = num_rows * num_cols
+
+            # Workaround: AI often sends formula_or_values as a JSON string (e.g. '["Name"; "Category"; "Value"]')
+            # so we get a str instead of a list; that would be written as one blob per cell and formulas lost.
+            # Parse string-as-array (semicolon to comma) and flatten 2D to row-major so per-cell values and
+            # formula detection work correctly.
+            if isinstance(formula_or_values, str):
+                parsed = _parse_formula_or_values_string(formula_or_values)
+                if parsed is not None:
+                    formula_or_values = parsed
+                    debug_log(
+                        "write_formula_range: parsed formula_or_values from string to %d values" % len(parsed),
+                        context="Chat",
+                    )
 
             # Handle single value vs array of values
             if isinstance(formula_or_values, (list, tuple)):
