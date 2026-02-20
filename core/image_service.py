@@ -86,11 +86,19 @@ class AIHordeImageProvider(ImageProvider):
         self.api_key = config.get("aihorde_api_key", "0000000000")
         # We need a minimal "informer" to bridge AIHordeClient's callbacks
         class SimpleInformer:
-            def __init__(self, callback_context, ctx):
-                self.outer_ctx = callback_context
-                self.toolkit = ctx.ServiceManager.createInstanceWithContext("com.sun.star.awt.Toolkit", ctx)
+            def __init__(self, outer_ctx):
+                self.outer_ctx = outer_ctx
+                self.toolkit = None
+                self.last_error = ""
+                try:
+                    ctx = outer_ctx.get("ctx")
+                    if ctx:
+                        self.toolkit = ctx.getServiceManager().createInstanceWithContext(
+                            "com.sun.star.awt.Toolkit", ctx)
+                except Exception:
+                    pass
 
-            def update_status(self, text, progress): 
+            def update_status(self, text, progress):
                 msg = f"Horde: {text} ({progress}%)"
                 logger.info(msg)
                 if self.outer_ctx.get("status_callback"):
@@ -99,8 +107,9 @@ class AIHordeImageProvider(ImageProvider):
                     except Exception:
                         pass
 
-            def show_error(self, msg, **kwargs): 
+            def show_error(self, msg, **kwargs):
                 logger.error(f"Horde Error: {msg}")
+                self.last_error = msg
                 if self.outer_ctx.get("status_callback"):
                     try:
                         self.outer_ctx["status_callback"](f"Error: {msg}")
@@ -114,11 +123,13 @@ class AIHordeImageProvider(ImageProvider):
             def get_toolkit(self):
                 return self.toolkit
 
-        # Pass context dict so we can inject callback later if needed, 
+        # Pass context dict so we can inject callback later if needed,
         # or just pass it in constructor if we rebuild every time.
         # But here we are in __init__, so we store the dict.
-        self.callback_context = {"status_callback": None}
-        
+        self.callback_context = {"status_callback": None, "ctx": self.ctx}
+
+        self.informer = SimpleInformer(self.callback_context)
+
         self.client = AiHordeClient(
             client_version="1.0.0",
             url_version_update="",
@@ -126,18 +137,18 @@ class AIHordeImageProvider(ImageProvider):
             client_download_url="",
             settings=config,
             client_name="LocalWriter_Horde_Client",
-            informer=SimpleInformer(self.callback_context, self.ctx)
+            informer=self.informer
         )
-        # We need to manually inject the toolkit because SimpleInformer.__init__ 
+        # We need to manually inject the toolkit because SimpleInformer.__init__
         # expects an object with ServiceManager if we passed ctx directly.
         # Actually SimpleInformer above takes outer_ctx which is expected to be the UNO component context.
         # Let's fix SimpleInformer to take (ctx, callback_dict).
-        
+
     def generate(self, prompt, width=512, height=512, model="stable_diffusion", source_image=None, status_callback=None, **kwargs):
         # Update the callback in the context shared with the informer
         if status_callback:
             self.callback_context["status_callback"] = status_callback
-            
+
         options = {
             "prompt": prompt,
             "image_width": width,
@@ -157,8 +168,16 @@ class AIHordeImageProvider(ImageProvider):
             options["init_strength"] = kwargs.get("strength", 0.6)
 
         # AiHordeClient.generate_image is blocking and handles polling internally
-        paths = self.client.generate_image(options)
-        return paths
+        paths = []
+        try:
+            paths = self.client.generate_image(options)
+        except Exception as e:
+            logger.exception("AIHorde generator crashed.")
+            self.informer.last_error = str(e)
+
+        if not paths and self.informer.last_error:
+            return paths, self.informer.last_error
+        return paths, ""
 
 class ImageService:
     def __init__(self, ctx, config):
@@ -182,11 +201,11 @@ class ImageService:
     def generate_image(self, prompt, provider_name=None, status_callback=None, **kwargs):
         if not provider_name:
             provider_name = self.config.get("image_provider", "aihorde")
-            
+
         provider = self.get_provider(provider_name)
         if not provider:
             raise ValueError(f"Unknown provider: {provider_name}")
-            
+
         # Merge configuration defaults with kwargs
         defaults = {
             "width": self.config.get("image_width", 512),
@@ -195,21 +214,19 @@ class ImageService:
             "steps": self.config.get("image_steps", 30),
             "nsfw": self.config.get("image_nsfw", False),
             "censor_nsfw": self.config.get("image_censor_nsfw", True),
-            "nsfw": self.config.get("image_nsfw", False),
-            "censor_nsfw": self.config.get("image_censor_nsfw", True),
             "max_wait": self.config.get("image_max_wait", 5),
         }
-        
+
         # Provider-specific defaults
         if provider_name == "aihorde":
             defaults["model"] = self.config.get("aihorde_model", "stable_diffusion")
 
         # Special case: prompt translation
         if self.config.get("image_translate_prompt", True):
-            # We could add translation logic here if needed, 
+            # We could add translation logic here if needed,
             # or let the provider handle it. LOSHD has it.
             pass
-            
+
         for k, v in defaults.items():
             if k not in kwargs:
                 kwargs[k] = v

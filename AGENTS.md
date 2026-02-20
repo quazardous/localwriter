@@ -83,7 +83,7 @@ localwriter/
 
 ### After
 - Both dialogs use **XDL files** (XML) loaded via `DialogProvider`
-- `LocalWriterDialogs.SettingsDialog` — two-page dialog (Chat/Text and Image Generation) using the `dlg:page` multi-page approach with tab-switching buttons.
+- `LocalWriterDialogs.SettingsDialog` — two-page dialog (Chat/Text and **Image Settings**) using the `dlg:page` multi-page approach with tab-switching buttons. The Image Settings tab is split into shared image options (width, height, auto gallery, insert frame, translate prompt) and an **AI Horde only** section (API key, CFG scale, steps, max wait, NSFW) with a visual separator.
 - `LocalWriterDialogs.EditInputDialog` — label + text field + OK
 
 ### Key implementation details
@@ -210,7 +210,7 @@ LocalWriter can generate and edit images inside Writer and Calc via tools expose
 
 ### UI and config
 
-- **Settings** (`LocalWriterDialogs/SettingsDialog.xdl`): Tabbed. **Chat/Text** tab: Text/Chat Model and **Image model (same endpoint as chat)** comboboxes (LRU). **Image** tab: **Provider (aihorde / same as chat)**, `aihorde_api_key`, width/height, steps, max wait, NSFW, auto gallery, insert frame, translate prompt. All image-related keys applied via `_apply_settings_result` in `main.py`.
+- **Settings** (`LocalWriterDialogs/SettingsDialog.xdl`): Tabbed. **Chat/Text** tab: Text/Chat Model and **Image model (same endpoint as chat)** comboboxes (LRU). **Image Settings** tab: shared section (width, height, auto gallery, insert frame, translate prompt) and **AI Horde only** section (provider via "Use AI Horde" on Chat tab, `aihorde_api_key`, CFG scale, steps, max wait, NSFW) with a fixedline separator. All image-related keys applied via `_apply_settings_result` in `main.py`.
 - **Chat sidebar** (`LocalWriterDialogs/ChatPanelDialog.xdl`, `chat_panel.py`): **AI Model** combobox (text model → `text_model`, `model_lru`) and **Image model (same endpoint as chat)** combobox (→ `image_model`, `image_model_lru`). **"Use Image model"** checkbox (config `chat_direct_image`): when checked, the current message is sent directly to the image pipeline (AI Horde or image model per Settings) for Writer, Calc, and Draw — no chat model round-trip. Orthogonal to which tools are given to the LLM; uses `document_tools.execute_tool("generate_image", ...)` for all doc types. No additional-instructions control in the sidebar; extra instructions come from config only when building the system prompt.
 
 ### Config keys (summary)
@@ -382,7 +382,7 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 - **EditInputDialog**: Consider multiline for long instructions; current layout is single-line.
 
 ### Image generation / Settings dialog
-- **Reorganize Settings Image tab**: The tab is currently labeled in a way that suggests "AI Horde settings" only, but it actually contains **shared image settings** (provider, width, height, steps, etc., used by both endpoint and Horde) **plus** AI Horde–specific options (API key, NSFW, etc.). Reorganize or relabel so it is clear: e.g. "Image" (shared) and "AI Horde" (provider-specific) sections, so the dialog is accurate and easy to follow.
+- ~~**Reorganize Settings Image tab**~~: Done. The tab is titled **Image Settings** and split into a shared section (width, height, auto gallery, insert frame, translate prompt) and an **AI Horde only** section (API key, CFG scale, steps, max wait, NSFW) with a visual separator so users can ignore Horde-specific options when using the same endpoint as chat.
 
 ### Format-preserving replacement
 - **Proportional format mapping**: For large length differences, distribute the original formatting pattern proportionally across the new text instead of simple 1:1 character mapping.
@@ -410,10 +410,11 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 - **Richer Context**: Metadata awareness (word counts, styles, formula dependencies).
 - **Safer Workflows**: Propose-first execution with user confirmation (diff preview).
 - **Predictive Typing**: Trigram-based "ghost text" for real-time drafting assist.
-- **Multimodal Integration**: Image generation/editing via **Stable Diffusion** and DALL-E.
 - **Reliability Foundations**: Robust timeouts, clear error prompts, and rollback safety.
 - **Suite Completeness**: Finalizing Draw and Impress slide/shape toolsets.
 - **Offline First**: Optimized local performance for privacy and speed.
+
+Image generation and AI Horde integration are **complete** (generate_image, edit_image, AI Horde + endpoint providers, Image Settings tab with shared vs Horde-only sections).
 
 ---
 

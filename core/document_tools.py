@@ -227,9 +227,15 @@ def tool_generate_image(model, ctx, args, status_callback=None):
         del args_copy["prompt"]
 
     try:
-        paths = service.generate_image(prompt, provider_name=provider, width=width, height=height, status_callback=status_callback, **args_copy)
-        if not paths:
-            return _tool_error("Generation failed: No image returned.")
+        result = service.generate_image(prompt, provider_name=provider, width=width, height=height, status_callback=status_callback, **args_copy)
+        if isinstance(result, tuple) and len(result) == 2:
+            paths, error_msg = result
+            if not paths:
+                return _tool_error(error_msg or "Generation failed: No image returned.")
+        else:
+            paths = result
+            if not paths:
+                return _tool_error("Generation failed: No image returned.")
         if provider in ("endpoint", "openrouter"):
             image_model_used = (config.get("image_model") or "").strip() or get_text_model(ctx)
             if image_model_used:
@@ -265,9 +271,15 @@ def tool_edit_image(model, ctx, args, status_callback=None):
         del args_copy["prompt"]
 
     try:
-        paths = service.generate_image(prompt, provider_name=provider, source_image=source_b64, status_callback=status_callback, **args_copy)
-        if not paths:
-            return _tool_error("Editing failed: No image returned.")
+        result = service.generate_image(prompt, provider_name=provider, source_image=source_b64, status_callback=status_callback, **args_copy)
+        if isinstance(result, tuple) and len(result) == 2:
+            paths, error_msg = result
+            if not paths:
+                return _tool_error(error_msg or "Editing failed: No image returned.")
+        else:
+            paths = result
+            if not paths:
+                return _tool_error("Editing failed: No image returned.")
         if provider in ("endpoint", "openrouter"):
             image_model_used = (config.get("image_model") or "").strip() or get_text_model(ctx)
             if image_model_used:
