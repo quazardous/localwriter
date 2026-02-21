@@ -53,13 +53,13 @@ class MainJob(unohelper.Base, XJobExecutor):
         """Delegate to core.config."""
         set_config(self.ctx, key, value)
 
-    def _populate_combobox_with_lru(self, ctrl, current_val, lru_key):
+    def _populate_combobox_with_lru(self, ctrl, current_val, lru_key, endpoint):
         """Delegate to core.config."""
-        populate_combobox_with_lru(self.ctx, ctrl, current_val, lru_key)
+        populate_combobox_with_lru(self.ctx, ctrl, current_val, lru_key, endpoint)
 
-    def _update_lru_history(self, val, lru_key, max_items=None):
+    def _update_lru_history(self, val, lru_key, endpoint, max_items=None):
         """Delegate to core.config. Uses LRU_MAX_ITEMS (6) when max_items not given."""
-        update_lru_history(self.ctx, val, lru_key, max_items)
+        update_lru_history(self.ctx, val, lru_key, endpoint, max_items)
 
     def _apply_settings_result(self, result):
         """Apply settings dialog result to config. Shared by Writer and Calc."""
@@ -95,6 +95,9 @@ class MainJob(unohelper.Base, XJobExecutor):
             "aihorde_model"
         ]
         
+        # Get current endpoint for LRU scoping
+        current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+
         # Set direct keys
         for key in direct_keys:
             if key in result:
@@ -108,13 +111,13 @@ class MainJob(unohelper.Base, XJobExecutor):
                 
                 # Update LRU history
                 if key == "text_model" and val:
-                    self._update_lru_history(val, "model_lru")
+                    self._update_lru_history(val, "model_lru", current_endpoint)
                 elif key == "image_model" and val:
                     set_image_model(self.ctx, val)
                 elif key == "additional_instructions" and val:
-                    self._update_lru_history(val, "prompt_lru")
+                    self._update_lru_history(val, "prompt_lru", current_endpoint)
                 elif key == "image_base_size" and val:
-                    self._update_lru_history(str(val), "image_base_size_lru")
+                    self._update_lru_history(str(val), "image_base_size_lru", current_endpoint)
 
         # Handle provider toggle from checkbox
         if "use_aihorde" in result:
@@ -127,7 +130,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             resolved_endpoint = endpoint_from_selector_text(result["endpoint"])
             if resolved_endpoint:
                 self.set_config("endpoint", resolved_endpoint)
-                self._update_lru_history(resolved_endpoint, "endpoint_lru")
+                self._update_lru_history(resolved_endpoint, "endpoint_lru", "") # Endpoint LRU doesn't need scaling by itself
         
         if "api_type" in result:
             api_type_value = str(result["api_type"]).strip().lower()
@@ -249,7 +252,8 @@ class MainJob(unohelper.Base, XJobExecutor):
             # Populate prompt selector history
             prompt_ctrl = dlg.getControl("prompt_selector")
             current_prompt = self.get_config("additional_instructions", "")
-            self._populate_combobox_with_lru(prompt_ctrl, current_prompt, "prompt_lru")
+            current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+            self._populate_combobox_with_lru(prompt_ctrl, current_prompt, "prompt_lru", current_endpoint)
 
             dlg.getControl("edit").setFocus()
             dlg.getControl("edit").setSelection(uno.createUnoStruct("com.sun.star.awt.Selection", 0, len(str(default))))
@@ -335,16 +339,19 @@ class MainJob(unohelper.Base, XJobExecutor):
         dlg.getControl("btn_tab_chat").addActionListener(TabListener(dlg, 1))
         dlg.getControl("btn_tab_image").addActionListener(TabListener(dlg, 2))
 
+        # Get current endpoint for LRU scoping
+        current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+
         try:
             for field in field_specs:
                 ctrl = dlg.getControl(field["name"])
                 if ctrl:
                     if field["name"] == "text_model":
-                        self._populate_combobox_with_lru(ctrl, field["value"], "model_lru")
+                        self._populate_combobox_with_lru(ctrl, field["value"], "model_lru", current_endpoint)
                     elif field["name"] == "image_model":
                         populate_image_model_selector(self.ctx, ctrl)
                     elif field["name"] == "additional_instructions":
-                        self._populate_combobox_with_lru(ctrl, field["value"], "prompt_lru")
+                        self._populate_combobox_with_lru(ctrl, field["value"], "prompt_lru", current_endpoint)
                     elif field["name"] == "endpoint":
                         populate_endpoint_selector(self.ctx, ctrl, field["value"])
                         # When user selects an item from dropdown, set combobox text to the URL (so it's visible and editable)
@@ -368,7 +375,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                                     pass
                             ctrl.addItemListener(EndpointItemListener(ctrl))
                     elif field["name"] == "image_base_size":
-                        self._populate_combobox_with_lru(ctrl, field["value"], "image_base_size_lru")
+                        self._populate_combobox_with_lru(ctrl, field["value"], "image_base_size_lru", current_endpoint)
                     else:
                                 is_checkbox = False
                                 try:
@@ -536,11 +543,12 @@ class MainJob(unohelper.Base, XJobExecutor):
                     try:
                         extra_instructions = self.get_config("additional_instructions", "")
                         system_prompt = extra_instructions # Extend usually benefits from just the custom prompt or none
-                        self._update_lru_history(system_prompt, "prompt_lru")
+                        current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+                        self._update_lru_history(system_prompt, "prompt_lru", current_endpoint)
                         prompt = text_range.getString()
                         max_tokens = self.get_config("extend_selection_max_tokens", 70)
                         model_val = self.get_config("text_model", "") or self.get_config("model", "")
-                        self._update_lru_history(model_val, "model_lru")
+                        self._update_lru_history(model_val, "model_lru", current_endpoint)
                         api_type = str(self.get_config("api_type", "completions")).lower()
                         api_config = get_api_config(self.ctx)
                         ok, err_msg = validate_api_config(api_config)
@@ -571,7 +579,8 @@ class MainJob(unohelper.Base, XJobExecutor):
                     
                     if extra_instructions:
                         self.set_config("additional_instructions", extra_instructions)
-                        self._update_lru_history(extra_instructions, "prompt_lru")
+                        current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+                        self._update_lru_history(extra_instructions, "prompt_lru", current_endpoint)
 
                 except Exception as e:
                     self.show_error(format_error_message(e), "LocalWriter: Edit Selection")
@@ -668,7 +677,8 @@ class MainJob(unohelper.Base, XJobExecutor):
                         
                         if extra_instructions:
                             self.set_config("additional_instructions", extra_instructions)
-                            self._update_lru_history(extra_instructions, "prompt_lru")
+                            current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+                            self._update_lru_history(extra_instructions, "prompt_lru", current_endpoint)
 
                         prompt = f"Spreadsheet content summary:\n\n{doc_text}\n\nUser question: {user_query}"
                         system_prompt = get_chat_system_prompt_for_document(model, extra_instructions or "")

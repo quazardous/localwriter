@@ -140,10 +140,12 @@ def _safe_int(value, default):
         return default
 
 
-def populate_combobox_with_lru(ctx, ctrl, current_val, lru_key):
+def populate_combobox_with_lru(ctx, ctrl, current_val, lru_key, endpoint):
     """Helper to populate a combobox with values from an LRU list in config.
-    Ensures current_val is at the top/selected."""
-    lru = get_config(ctx, lru_key, [])
+    Ensures current_val is at the top/selected.
+    LRU is scoped to the provided endpoint."""
+    scoped_key = f"{lru_key}@{endpoint}" if endpoint else lru_key
+    lru = get_config(ctx, scoped_key, [])
     if not isinstance(lru, list):
         lru = []
     
@@ -159,22 +161,23 @@ def populate_combobox_with_lru(ctx, ctrl, current_val, lru_key):
             ctrl.setText(curr_val_str)
 
 
-def update_lru_history(ctx, val, lru_key, max_items=None):
-    """Helper to update an LRU list in config."""
+def update_lru_history(ctx, val, lru_key, endpoint, max_items=None):
+    """Helper to update an LRU list in config. Scoped to endpoint."""
     if max_items is None:
         max_items = LRU_MAX_ITEMS
     val_str = str(val).strip()
     if not val_str:
         return
 
-    lru = get_config(ctx, lru_key, [])
+    scoped_key = f"{lru_key}@{endpoint}" if endpoint else lru_key
+    lru = get_config(ctx, scoped_key, [])
     if not isinstance(lru, list):
         lru = []
 
     if val_str in lru:
         lru.remove(val_str)
     lru.insert(0, val_str)
-    set_config(ctx, lru_key, lru[:max_items])
+    set_config(ctx, scoped_key, lru[:max_items])
 
 
 def get_text_model(ctx):
@@ -282,7 +285,8 @@ def set_image_model(ctx, val, update_lru=True):
     else:
         set_config(ctx, "image_model", val_str)
         if update_lru:
-            update_lru_history(ctx, val_str, "image_model_lru")
+            endpoint = str(get_config(ctx, "endpoint", "")).strip()
+            update_lru_history(ctx, val_str, "image_model_lru", endpoint)
     
     notify_config_changed(ctx)
 
@@ -327,4 +331,5 @@ def populate_image_model_selector(ctx, ctrl):
         ctrl.setText(current_image_model)
     else:
         current_image_model = get_image_model(ctx)
-        populate_combobox_with_lru(ctx, ctrl, current_image_model, "image_model_lru")
+        endpoint = str(get_config(ctx, "endpoint", "")).strip()
+        populate_combobox_with_lru(ctx, ctrl, current_image_model, "image_model_lru", endpoint)

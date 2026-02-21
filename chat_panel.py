@@ -365,8 +365,9 @@ class SendButtonListener(unohelper.Base, XActionListener):
                         from core.document_tools import execute_tool
                         try:
                             # Also update LRU
-                            from core.config import update_lru_history
-                            update_lru_history(self.ctx, base_size_val, "image_base_size_lru")
+                            from core.config import update_lru_history, get_config
+                            current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+                            update_lru_history(self.ctx, base_size_val, "image_base_size_lru", current_endpoint)
                         except Exception as elru:
                             debug_log("LRU update error: %s" % elru, context="Chat")
                             
@@ -471,7 +472,8 @@ class SendButtonListener(unohelper.Base, XActionListener):
             selected_model = self.model_selector.getText()
             if selected_model:
                 set_config(self.ctx, "text_model", selected_model)
-                update_lru_history(self.ctx, selected_model, "model_lru")
+                current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+                update_lru_history(self.ctx, selected_model, "model_lru", current_endpoint)
                 debug_log("_do_send: text model updated to %s" % selected_model, context="Chat")
         if self.image_model_selector:
             selected_image_model = self.image_model_selector.getText()
@@ -961,10 +963,12 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         current_model = get_text_model(self.ctx)
         extra_instructions = get_config(self.ctx, "additional_instructions", "")
         
+        current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+        
         if model_selector:
-            populate_combobox_with_lru(self.ctx, model_selector, current_model, "model_lru")
+            populate_combobox_with_lru(self.ctx, model_selector, current_model, "model_lru", current_endpoint)
         if prompt_selector:
-            populate_combobox_with_lru(self.ctx, prompt_selector, extra_instructions, "prompt_lru")
+            populate_combobox_with_lru(self.ctx, prompt_selector, extra_instructions, "prompt_lru", current_endpoint)
             
         # Refresh visual (image) model via shared helper
         populate_image_model_selector(self.ctx, image_model_selector)
@@ -1071,7 +1075,8 @@ class ChatPanelElement(unohelper.Base, XUIElement):
                 aspect_ratio_selector.addItems(("Square", "Landscape (16:9)", "Portrait (9:16)", "Landscape (3:2)", "Portrait (2:3)"), 0)
                 aspect_ratio_selector.setText(get_config(self.ctx, "image_default_aspect", "Square"))
             if base_size_input:
-                populate_combobox_with_lru(self.ctx, base_size_input, str(get_config(self.ctx, "image_base_size", 512)), "image_base_size_lru")
+                current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+                populate_combobox_with_lru(self.ctx, base_size_input, str(get_config(self.ctx, "image_base_size", 512)), "image_base_size_lru", current_endpoint)
 
             def update_base_size_label(aspect_str):
                 if not base_size_label: return
