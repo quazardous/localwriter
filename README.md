@@ -97,7 +97,6 @@ To handle complex spreadsheet tasks, LocalWriter is optimized for high-throughpu
 We are moving towards a native "AI co-pilot" experience:
 
 *   **Richer Document Awareness**: Adding deep metadata awareness (paragraph styles, word counts, formula dependencies) so the AI understands document structure as well as text.
-*   **Safer Workflows**: Implementing "Propose-First" paths where the AI generates a visual preview (diff) for user approval before touching the document.
 *   **Predictive "Ghost Text"**: Real-time suggestions as you type, driven by local trigram models trained on your current document context.
 *   **Reliability Foundations**: Strengthening timeout management, clear error recovery, and universal rollback-friendly behavior for professional stability.
 *   **Suite-Wide Completeness**: Finalizing deep integration for **LibreOffice Draw and Impress**, ensuring every application in the suite is AI-powered.

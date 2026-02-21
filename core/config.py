@@ -161,11 +161,12 @@ def get_provider_from_endpoint(endpoint):
     return None
 
 
-def populate_combobox_with_lru(ctx, ctrl, current_val, lru_key, endpoint):
+def populate_combobox_with_lru(ctx, ctrl, current_val, lru_key, endpoint, strict=False):
     """Helper to populate a combobox with values from an LRU list in config.
-    Ensures current_val is at the top/selected.
     LRU is scoped to the provided endpoint.
-    If LRU is empty, pre-populates with default models for the provider."""
+    If LRU is empty, pre-populates with default models for the provider.
+    When strict=True, only show models for this endpoint; if current_val is not
+    in that list, set selection to first item or empty. Returns the value set."""
     scoped_key = f"{lru_key}@{endpoint}" if endpoint else lru_key
     lru = get_config(ctx, scoped_key, [])
     if not isinstance(lru, list):
@@ -181,14 +182,24 @@ def populate_combobox_with_lru(ctx, ctrl, current_val, lru_key, endpoint):
 
     curr_val_str = str(current_val).strip()
     to_show = list(lru)
-    if curr_val_str and curr_val_str not in to_show:
-        to_show.insert(0, curr_val_str)
+    if strict:
+        if curr_val_str not in to_show:
+            display_val = to_show[0] if to_show else ""
+        else:
+            display_val = curr_val_str
+    else:
+        if curr_val_str and curr_val_str not in to_show:
+            to_show.insert(0, curr_val_str)
+        display_val = curr_val_str if curr_val_str else (to_show[0] if to_show else "")
     
     if to_show:
         ctrl.removeItems(0, ctrl.getItemCount())
         ctrl.addItems(tuple(to_show), 0)
-        if curr_val_str:
-            ctrl.setText(curr_val_str)
+    if display_val:
+        ctrl.setText(display_val)
+    elif ctrl.getItemCount() == 0 and hasattr(ctrl, "setText"):
+        ctrl.setText("")
+    return display_val if display_val else ""
 
 
 def update_lru_history(ctx, val, lru_key, endpoint, max_items=None):
@@ -347,11 +358,12 @@ def get_api_config(ctx):
     }
 
 
-def populate_image_model_selector(ctx, ctrl):
-    """Adaptive population of image model selector (ComboBox) based on provider."""
+def populate_image_model_selector(ctx, ctrl, override_endpoint=None):
+    """Adaptive population of image model selector (ComboBox) based on provider.
+    When image_provider is endpoint, uses override_endpoint if provided else config endpoint;
+    uses strict=True so only models for that endpoint are shown. Returns the value set."""
     if not ctrl:
-        return
-        
+        return ""
     image_provider = get_config(ctx, "image_provider", "aihorde")
     if image_provider == "aihorde":
         current_image_model = get_image_model(ctx)
@@ -359,7 +371,7 @@ def populate_image_model_selector(ctx, ctrl):
         ctrl.removeItems(0, ctrl.getItemCount())
         ctrl.addItems(tuple(MODELS), 0)
         ctrl.setText(current_image_model)
-    else:
-        current_image_model = get_image_model(ctx)
-        endpoint = str(get_config(ctx, "endpoint", "")).strip()
-        populate_combobox_with_lru(ctx, ctrl, current_image_model, "image_model_lru", endpoint)
+        return current_image_model
+    current_image_model = get_image_model(ctx)
+    endpoint = override_endpoint if override_endpoint is not None else str(get_config(ctx, "endpoint", "")).strip()
+    return populate_combobox_with_lru(ctx, ctrl, current_image_model, "image_model_lru", endpoint, strict=True)

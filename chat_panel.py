@@ -1004,7 +1004,7 @@ class ChatPanelElement(unohelper.Base, XUIElement):
                 return root.getControl(name)
             except Exception:
                 return None
-        from core.config import get_config, populate_combobox_with_lru, get_text_model, populate_image_model_selector
+        from core.config import get_config, populate_combobox_with_lru, get_text_model, get_image_model, populate_image_model_selector, set_config, set_image_model
         
         model_selector = get_optional("model_selector")
         prompt_selector = get_optional("prompt_selector")
@@ -1016,12 +1016,18 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
         
         if model_selector:
-            populate_combobox_with_lru(self.ctx, model_selector, current_model, "model_lru", current_endpoint)
+            set_val = populate_combobox_with_lru(self.ctx, model_selector, current_model, "model_lru", current_endpoint, strict=True)
+            if set_val != current_model:
+                set_config(self.ctx, "text_model", set_val)
         if prompt_selector:
             populate_combobox_with_lru(self.ctx, prompt_selector, extra_instructions, "prompt_lru", current_endpoint)
             
-        # Refresh visual (image) model via shared helper
-        populate_image_model_selector(self.ctx, image_model_selector)
+        # Refresh visual (image) model via shared helper; persist correction if strict replaced value
+        if image_model_selector:
+            current_image = get_image_model(self.ctx)
+            set_image_val = populate_image_model_selector(self.ctx, image_model_selector)
+            if set_image_val != current_image:
+                set_image_model(self.ctx, set_image_val, update_lru=False)
         # Sync "Use Image model" checkbox from config (same write as Settings: setState first, else model.State)
         direct_image_check = get_optional("direct_image_check")
         if direct_image_check:
@@ -1084,15 +1090,25 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         try:
             # Read system prompt from config; use helper so Writer/Calc prompt matches document
             debug_log("_wireControls: importing core config...", context="Chat")
-            from core.config import get_config, populate_combobox_with_lru, populate_image_model_selector, set_image_model, set_config
+            from core.config import get_config, get_text_model, get_image_model, populate_combobox_with_lru, populate_image_model_selector, set_image_model, set_config
             from core.constants import get_chat_system_prompt_for_document, DEFAULT_CHAT_SYSTEM_PROMPT
             from core.document import is_writer, is_calc, is_draw
             
             extra_instructions = get_config(self.ctx, "additional_instructions", "")
-            current_model = get_config(self.ctx, "text_model", "") or get_config(self.ctx, "model", "")
+            current_model = get_text_model(self.ctx)
+            current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
             
-            # Adaptive image model population via shared helper
-            populate_image_model_selector(self.ctx, image_model_selector)
+            # Model selector: strict so only current endpoint's models shown; persist correction if needed
+            if model_selector:
+                set_model_val = populate_combobox_with_lru(self.ctx, model_selector, current_model, "model_lru", current_endpoint, strict=True)
+                if set_model_val != current_model:
+                    set_config(self.ctx, "text_model", set_model_val)
+            # Adaptive image model population via shared helper (uses strict for endpoint); persist correction if needed
+            if image_model_selector:
+                current_image = get_image_model(self.ctx)
+                set_image_val = populate_image_model_selector(self.ctx, image_model_selector)
+                if set_image_val != current_image:
+                    set_image_model(self.ctx, set_image_val, update_lru=False)
 
             # Add real-time sync listeners to selectors
             if model_selector and hasattr(model_selector, "addItemListener"):

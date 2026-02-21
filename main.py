@@ -171,9 +171,9 @@ class MainJob(unohelper.Base, XJobExecutor):
         """Delegate to core.config."""
         set_config(self.ctx, key, value)
 
-    def _populate_combobox_with_lru(self, ctrl, current_val, lru_key, endpoint):
-        """Delegate to core.config."""
-        populate_combobox_with_lru(self.ctx, ctrl, current_val, lru_key, endpoint)
+    def _populate_combobox_with_lru(self, ctrl, current_val, lru_key, endpoint, strict=False):
+        """Delegate to core.config. When strict=True, only show models for this endpoint."""
+        return populate_combobox_with_lru(self.ctx, ctrl, current_val, lru_key, endpoint, strict)
 
     def _update_lru_history(self, val, lru_key, endpoint, max_items=None):
         """Delegate to core.config. Uses LRU_MAX_ITEMS (6) when max_items not given."""
@@ -214,8 +214,11 @@ class MainJob(unohelper.Base, XJobExecutor):
             "mcp_enabled",
         ]
         
-        # Get current endpoint for LRU scoping
-        current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+        # Resolve endpoint first so LRU updates use the endpoint being saved
+        effective_endpoint = endpoint_from_selector_text(result.get("endpoint", "")) if "endpoint" in result else str(get_config(self.ctx, "endpoint", "")).strip()
+        if "endpoint" in result and effective_endpoint:
+            self.set_config("endpoint", effective_endpoint)
+        current_endpoint = effective_endpoint or str(get_config(self.ctx, "endpoint", "")).strip()
 
         # Set direct keys
         for key in direct_keys:
@@ -225,6 +228,9 @@ class MainJob(unohelper.Base, XJobExecutor):
                 # Special handling for image_provider derived from use_aihorde
                 if key == "image_provider":
                     continue # handled by use_aihorde check below
+                # Endpoint already set above (resolved); skip to avoid overwriting with raw label
+                if key == "endpoint":
+                    continue
                 
                 self.set_config(key, val)
                 
@@ -244,12 +250,9 @@ class MainJob(unohelper.Base, XJobExecutor):
             self.set_config("image_provider", provider)
 
         
-        # Handle special cases: resolve endpoint (preset label or URL) and update endpoint_lru
-        if "endpoint" in result:
-            resolved_endpoint = endpoint_from_selector_text(result["endpoint"])
-            if resolved_endpoint:
-                self.set_config("endpoint", resolved_endpoint)
-                self._update_lru_history(resolved_endpoint, "endpoint_lru", "") # Endpoint LRU doesn't need scaling by itself
+        # Update endpoint_lru when user changed endpoint (endpoint already set above)
+        if "endpoint" in result and effective_endpoint:
+            self._update_lru_history(effective_endpoint, "endpoint_lru", "")
         
         if "api_type" in result:
             api_type_value = str(result["api_type"]).strip().lower()
@@ -476,17 +479,19 @@ class MainJob(unohelper.Base, XJobExecutor):
                 ctrl = dlg.getControl(field["name"])
                 if ctrl:
                     if field["name"] == "text_model":
-                        self._populate_combobox_with_lru(ctrl, field["value"], "model_lru", current_endpoint)
+                        self._populate_combobox_with_lru(ctrl, field["value"], "model_lru", current_endpoint, strict=True)
                     elif field["name"] == "image_model":
                         populate_image_model_selector(self.ctx, ctrl)
                     elif field["name"] == "additional_instructions":
                         self._populate_combobox_with_lru(ctrl, field["value"], "prompt_lru", current_endpoint)
                     elif field["name"] == "endpoint":
                         populate_endpoint_selector(self.ctx, ctrl, field["value"])
-                        # When user selects an item from dropdown, set combobox text to the URL (so it's visible and editable)
+                        # When user selects an item from dropdown, set combobox text to URL and refresh model combos
                         if hasattr(ctrl, "addItemListener"):
                             class EndpointItemListener(unohelper.Base, XItemListener):
-                                def __init__(self, combo_ctrl):
+                                def __init__(self, dialog, main_job, combo_ctrl):
+                                    self._dlg = dialog
+                                    self._main = main_job
                                     self._ctrl = combo_ctrl
                                 def itemStateChanged(self, ev):
                                     try:
@@ -498,11 +503,28 @@ class MainJob(unohelper.Base, XJobExecutor):
                                             url = endpoint_from_selector_text(item_text)
                                             if url:
                                                 self._ctrl.setText(url)
+                                            resolved = endpoint_from_selector_text(self._ctrl.getText())
+                                            if not resolved:
+                                                return
+                                            text_ctrl = self._dlg.getControl("text_model")
+                                            image_ctrl = self._dlg.getControl("image_model")
+                                            if text_ctrl:
+                                                populate_combobox_with_lru(
+                                                    self._main.ctx, text_ctrl,
+                                                    get_config(self._main.ctx, "text_model", "") or get_config(self._main.ctx, "model", ""),
+                                                    "model_lru", resolved, strict=True)
+                                            if image_ctrl:
+                                                if get_config(self._main.ctx, "image_provider", "aihorde") == "endpoint":
+                                                    populate_combobox_with_lru(
+                                                        self._main.ctx, image_ctrl, get_image_model(self._main.ctx),
+                                                        "image_model_lru", resolved, strict=True)
+                                                else:
+                                                    populate_image_model_selector(self._main.ctx, image_ctrl)
                                     except Exception:
                                         pass
                                 def disposing(self, ev):
                                     pass
-                            ctrl.addItemListener(EndpointItemListener(ctrl))
+                            ctrl.addItemListener(EndpointItemListener(dlg, self, ctrl))
                     elif field["name"] == "image_base_size":
                         self._populate_combobox_with_lru(ctrl, field["value"], "image_base_size_lru", current_endpoint)
                     else:
