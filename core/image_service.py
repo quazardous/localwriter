@@ -207,9 +207,17 @@ class ImageService:
             raise ValueError(f"Unknown provider: {provider_name}")
 
         # Merge configuration defaults with kwargs
+        # Note: width/height are explicitly calculated in tool_generate_image
+        # but we provide safe fallbacks here just in case of direct calls
+        base_size = self.config.get("image_base_size", 512)
+        try:
+            base_size = int(base_size)
+        except (ValueError, TypeError):
+            base_size = 512
+            
         defaults = {
-            "width": self.config.get("image_width", 512),
-            "height": self.config.get("image_height", 512),
+            "width": base_size,
+            "height": base_size,
             "strength": self.config.get("image_cfg_scale", 7.5),
             "steps": self.config.get("image_steps", 30),
             "nsfw": self.config.get("image_nsfw", False),

@@ -9,14 +9,14 @@ if _ext_dir not in sys.path:
 import unohelper
 import officehelper
 
-from core.config import get_config, set_config, as_bool, get_api_config, validate_api_config, populate_combobox_with_lru, update_lru_history, notify_config_changed, populate_image_model_selector
+from core.config import get_config, set_config, as_bool, get_api_config, validate_api_config, populate_combobox_with_lru, update_lru_history, notify_config_changed, populate_image_model_selector, populate_endpoint_selector, endpoint_from_selector_text
 from core.api import LlmClient, format_error_message
 from core.document import get_full_document_text, get_document_context_for_chat
 from core.async_stream import run_stream_completion_async
 from core.logging import agent_log, init_logging
 from core.constants import get_chat_system_prompt_for_document
 from com.sun.star.task import XJobExecutor
-from com.sun.star.awt import MessageBoxButtons as MSG_BUTTONS
+from com.sun.star.awt import MessageBoxButtons as MSG_BUTTONS, XItemListener
 from com.sun.star.awt.MessageBoxType import ERRORBOX
 from com.sun.star.awt.MessageBoxButtons import BUTTONS_OK
 import uno
@@ -61,8 +61,8 @@ class MainJob(unohelper.Base, XJobExecutor):
         """Delegate to core.config."""
         populate_combobox_with_lru(self.ctx, ctrl, current_val, lru_key)
 
-    def _update_lru_history(self, val, lru_key, max_items=10):
-        """Delegate to core.config."""
+    def _update_lru_history(self, val, lru_key, max_items=None):
+        """Delegate to core.config. Uses LRU_MAX_ITEMS (6) when max_items not given."""
         update_lru_history(self.ctx, val, lru_key, max_items)
 
     def _apply_settings_result(self, result):
@@ -85,8 +85,8 @@ class MainJob(unohelper.Base, XJobExecutor):
             "chat_max_tool_rounds",
             "image_provider",
             "aihorde_api_key",
-            "image_width",
-            "image_height",
+            "image_base_size",
+            "image_default_aspect",
             "image_cfg_scale",
             "image_steps",
             "image_nsfw",
@@ -117,6 +117,8 @@ class MainJob(unohelper.Base, XJobExecutor):
                     self._update_lru_history(val, "image_model_lru")
                 elif key == "additional_instructions" and val:
                     self._update_lru_history(val, "prompt_lru")
+                elif key == "image_base_size" and val:
+                    self._update_lru_history(str(val), "image_base_size_lru")
 
         # Handle provider toggle from checkbox
         if "use_aihorde" in result:
@@ -124,9 +126,12 @@ class MainJob(unohelper.Base, XJobExecutor):
             self.set_config("image_provider", provider)
 
         
-        # Handle special cases
-        if "endpoint" in result and result["endpoint"].startswith("http"):
-            self.set_config("endpoint", result["endpoint"])
+        # Handle special cases: resolve endpoint (preset label or URL) and update endpoint_lru
+        if "endpoint" in result:
+            resolved_endpoint = endpoint_from_selector_text(result["endpoint"])
+            if resolved_endpoint:
+                self.set_config("endpoint", resolved_endpoint)
+                self._update_lru_history(resolved_endpoint, "endpoint_lru")
         
         if "api_type" in result:
             api_type_value = str(result["api_type"]).strip().lower()
@@ -292,8 +297,8 @@ class MainJob(unohelper.Base, XJobExecutor):
             {"name": "chat_max_tool_rounds", "value": str(self.get_config("chat_max_tool_rounds", "5")), "type": "int"},
             {"name": "use_aihorde", "value": "true" if self.get_config("image_provider", "aihorde") == "aihorde" else "false", "type": "bool"},
             {"name": "aihorde_api_key", "value": str(self.get_config("aihorde_api_key", ""))},
-            {"name": "image_width", "value": str(self.get_config("image_width", "512")), "type": "int"},
-            {"name": "image_height", "value": str(self.get_config("image_height", "512")), "type": "int"},
+            {"name": "image_base_size", "value": str(self.get_config("image_base_size", "512")), "type": "int"},
+            {"name": "image_default_aspect", "value": str(self.get_config("image_default_aspect", "Square"))},
             {"name": "image_cfg_scale", "value": str(self.get_config("image_cfg_scale", "7.5")), "type": "float"},
             {"name": "image_steps", "value": str(self.get_config("image_steps", "30")), "type": "int"},
             {"name": "image_nsfw", "value": "true" if as_bool(self.get_config("image_nsfw", False)) else "false", "type": "bool"},
@@ -344,6 +349,30 @@ class MainJob(unohelper.Base, XJobExecutor):
                         populate_image_model_selector(self.ctx, ctrl)
                     elif field["name"] == "additional_instructions":
                         self._populate_combobox_with_lru(ctrl, field["value"], "prompt_lru")
+                    elif field["name"] == "endpoint":
+                        populate_endpoint_selector(self.ctx, ctrl, field["value"])
+                        # When user selects an item from dropdown, set combobox text to the URL (so it's visible and editable)
+                        if hasattr(ctrl, "addItemListener"):
+                            class EndpointItemListener(unohelper.Base, XItemListener):
+                                def __init__(self, combo_ctrl):
+                                    self._ctrl = combo_ctrl
+                                def itemStateChanged(self, ev):
+                                    try:
+                                        idx = getattr(ev, "Selected", -1)
+                                        if idx < 0:
+                                            return
+                                        item_text = self._ctrl.getItem(idx)
+                                        if item_text:
+                                            url = endpoint_from_selector_text(item_text)
+                                            if url:
+                                                self._ctrl.setText(url)
+                                    except Exception:
+                                        pass
+                                def disposing(self, ev):
+                                    pass
+                            ctrl.addItemListener(EndpointItemListener(ctrl))
+                    elif field["name"] == "image_base_size":
+                        self._populate_combobox_with_lru(ctrl, field["value"], "image_base_size_lru")
                     else:
                                 is_checkbox = False
                                 try:
@@ -378,7 +407,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                         try:
                             ctrl = dlg.getControl(field["name"])
                             if ctrl:
-                                if field["name"] in ("text_model", "image_model", "additional_instructions"):
+                                if field["name"] in ("text_model", "image_model", "additional_instructions", "endpoint", "image_base_size"):
                                     # For ComboBox, use getText() to get the actual edit text (user input)
                                     control_text = ctrl.getText()
                                 else:

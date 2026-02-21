@@ -330,10 +330,47 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
                 def run_direct_image():
                     try:
+                        # Fetch aspect ratio and base size from UI
+                        aspect_ratio_str = "Square"
+                        if self.aspect_ratio_selector and hasattr(self.aspect_ratio_selector, "getText"):
+                            aspect_ratio_str = self.aspect_ratio_selector.getText()
+                            
+                        # Map UI string to backend enum
+                        aspect_map = {
+                            "Square": "square",
+                            "Landscape (16:9)": "landscape_16_9",
+                            "Portrait (9:16)": "portrait_9_16",
+                            "Landscape (3:2)": "landscape_3_2",
+                            "Portrait (2:3)": "portrait_2_3"
+                        }
+                        mapped_aspect = aspect_map.get(aspect_ratio_str, "square")
+
+                        base_size_val = 512
+                        if self.base_size_input:
+                            if hasattr(self.base_size_input, "getText"):
+                                base_size_val = self.base_size_input.getText()
+                            elif hasattr(self.base_size_input.getModel(), "Text"):
+                                base_size_val = self.base_size_input.getModel().Text
+                        try:
+                            base_size_val = int(base_size_val)
+                        except (ValueError, TypeError):
+                            base_size_val = 512
+
                         from core.document_tools import execute_tool
+                        try:
+                            # Also update LRU
+                            from core.config import update_lru_history
+                            update_lru_history(self.ctx, base_size_val, "image_base_size_lru")
+                        except Exception as elru:
+                            debug_log("LRU update error: %s" % elru, context="Chat")
+                            
                         result = execute_tool(
                             "generate_image",
-                            {"prompt": query_text},
+                            {
+                                "prompt": query_text,
+                                "aspect_ratio": mapped_aspect,
+                                "base_size": base_size_val
+                            },
                             model,
                             self.ctx,
                             status_callback=lambda t: q.put(("status", t)),
@@ -955,8 +992,12 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         image_model_selector = get_optional("image_model_selector")
         prompt_selector = get_optional("prompt_selector")
         model_selector = get_optional("model_selector")
+        model_label = get_optional("model_label")
         status_ctrl = get_optional("status")
         direct_image_check = get_optional("direct_image_check")
+        aspect_ratio_selector = get_optional("aspect_ratio_selector")
+        base_size_input = get_optional("base_size_input")
+        base_size_label = get_optional("base_size_label")
         
         if status_ctrl:
              debug_log("_wireControls: got status control", context="Chat")
@@ -992,29 +1033,83 @@ class ChatPanelElement(unohelper.Base, XUIElement):
             if model_selector:
                 populate_combobox_with_lru(self.ctx, model_selector, current_model, "model_lru")
 
+            # Initialize aspect ratio and base size
+            if aspect_ratio_selector:
+                aspect_ratio_selector.addItems(("Square", "Landscape (16:9)", "Portrait (9:16)", "Landscape (3:2)", "Portrait (2:3)"), 0)
+                aspect_ratio_selector.setText(get_config(self.ctx, "image_default_aspect", "Square"))
+            if base_size_input:
+                populate_combobox_with_lru(self.ctx, base_size_input, str(get_config(self.ctx, "image_base_size", 512)), "image_base_size_lru")
+
+            def update_base_size_label(aspect_str):
+                if not base_size_label: return
+                txt = "Size:"
+                if "Landscape" in aspect_str: txt = "Height:"
+                elif "Portrait" in aspect_str: txt = "Width:"
+                if hasattr(base_size_label, "setText"):
+                    base_size_label.setText(txt)
+                elif hasattr(base_size_label.getModel(), "Label"):
+                    base_size_label.getModel().Label = txt
+
+            if aspect_ratio_selector:
+                update_base_size_label(aspect_ratio_selector.getText())
+                if hasattr(aspect_ratio_selector, "addItemListener"):
+                    class AspectListener(unohelper.Base, XItemListener):
+                        def itemStateChanged(self, ev):
+                            try:
+                                idx = getattr(ev, "Selected", -1)
+                                if idx >= 0:
+                                    update_base_size_label(aspect_ratio_selector.getItem(idx))
+                            except Exception: pass
+                        def disposing(self, ev): pass
+                    aspect_ratio_selector.addItemListener(AspectListener())
+
+            # Helper to toggle visibility
+            def toggle_image_ui(is_image_mode):
+                if model_label and hasattr(model_label, "setVisible"):
+                    model_label.setVisible(not is_image_mode)
+                if model_selector and hasattr(model_selector, "setVisible"):
+                    model_selector.setVisible(not is_image_mode)
+                
+                if image_model_selector and hasattr(image_model_selector, "setVisible"):
+                    image_model_selector.setVisible(is_image_mode)
+                    
+                if aspect_ratio_selector and hasattr(aspect_ratio_selector, "setVisible"):
+                    aspect_ratio_selector.setVisible(is_image_mode)
+                    
+                if base_size_input and hasattr(base_size_input, "setVisible"):
+                    base_size_input.setVisible(is_image_mode)
+                if base_size_label and hasattr(base_size_label, "setVisible"):
+                    base_size_label.setVisible(is_image_mode)
+
             # "Use Image model" checkbox: same read/write as Settings (main.py) - setState on control first, else model.State
             if direct_image_check:
                 try:
                     from core.config import set_config
                     direct_checked = get_config(self.ctx, "chat_direct_image", False)
                     val = 1 if direct_checked else 0
+                    toggle_image_ui(direct_checked)
+                    
                     if hasattr(direct_image_check, "setState"):
                         direct_image_check.setState(val)
                     elif direct_image_check.getModel() and hasattr(direct_image_check.getModel(), "State"):
                         direct_image_check.getModel().State = val
                     if hasattr(direct_image_check, "addItemListener"):
                         class DirectImageCheckListener(unohelper.Base, XItemListener):
-                            def __init__(self, ctx):
+                            def __init__(self, ctx, toggle_cb):
                                 self.ctx = ctx
+                                self.toggle_cb = toggle_cb
                             def itemStateChanged(self, ev):
                                 try:
-                                    state = getattr(ev, "State", 0)
-                                    set_config(self.ctx, "chat_direct_image", (state == 1))
-                                except Exception:
-                                    pass
+                                    state = getattr(ev, "Selected", 0)
+                                    is_checked = (state == 1)
+                                    
+                                    set_config(self.ctx, "chat_direct_image", is_checked)
+                                    self.toggle_cb(is_checked)
+                                except Exception as e:
+                                    debug_log("Image checkbox listener error: %s" % e, context="Chat")
                             def disposing(self, ev):
                                 pass
-                        direct_image_check.addItemListener(DirectImageCheckListener(self.ctx))
+                        direct_image_check.addItemListener(DirectImageCheckListener(self.ctx, toggle_image_ui))
                 except Exception as e:
                     debug_log("direct_image_check wire error: %s" % e, context="Chat")
 

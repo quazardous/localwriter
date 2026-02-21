@@ -9,6 +9,26 @@ import uno
 
 CONFIG_FILENAME = "localwriter.json"
 
+# Max items for all LRU lists (model_lru, prompt_lru, image_model_lru, endpoint_lru).
+LRU_MAX_ITEMS = 6
+
+# Endpoint presets: local first, then FOSS-friendly / open-model providers, proprietary last. Base URLs only; api.py adds /v1 (or /api for OpenWebUI).
+# Uncomment any FOSS-focused line below once the base URL is verified OpenAI-compatible.
+ENDPOINT_PRESETS = [
+    ("Local (Ollama)", "http://localhost:11434"),
+    ("OpenRouter", "https://openrouter.ai/api"),
+    ("Mistral", "https://api.mistral.ai"),
+    ("Together AI", "https://api.together.xyz"),
+    ("OpenAI", "https://api.openai.com"),
+    # ("Hugging Face", "https://api-inference.huggingface.co"),  # verify OpenAI-compatible base URL
+    # ("Groq", "https://api.groq.com/openai"),
+    # ("Fireworks AI", "https://api.fireworks.ai/inference"),
+    # ("Anyscale", "https://api.anyscale.com"),
+    # ("Replicate", "https://api.replicate.com/v1"),  # verify base URL / compatibility
+    # ("Modal", "https://your-workspace--endpoint.modal.run/v1"),  # per-deployment URL
+    # ("RunPod", "https://api.runpod.ai/v2"),  # verify; often per-endpoint
+]
+
 
 def _config_path(ctx):
     """Return the absolute path to localwriter.json."""
@@ -133,21 +153,24 @@ def populate_combobox_with_lru(ctx, ctrl, current_val, lru_key):
         to_show.insert(0, curr_val_str)
     
     if to_show:
+        ctrl.removeItems(0, ctrl.getItemCount())
         ctrl.addItems(tuple(to_show), 0)
         if curr_val_str:
             ctrl.setText(curr_val_str)
 
 
-def update_lru_history(ctx, val, lru_key, max_items=10):
+def update_lru_history(ctx, val, lru_key, max_items=None):
     """Helper to update an LRU list in config."""
+    if max_items is None:
+        max_items = LRU_MAX_ITEMS
     val_str = str(val).strip()
     if not val_str:
         return
-    
+
     lru = get_config(ctx, lru_key, [])
     if not isinstance(lru, list):
         lru = []
-    
+
     if val_str in lru:
         lru.remove(val_str)
     lru.insert(0, val_str)
@@ -157,6 +180,71 @@ def update_lru_history(ctx, val, lru_key, max_items=10):
 def get_text_model(ctx):
     """Return the text/chat model (stored as text_model, fallback to model)."""
     return str(get_config(ctx, "text_model", "") or get_config(ctx, "model", "")).strip()
+
+
+def get_endpoint_presets():
+    """Return list of (label, url) for endpoint selector, in display order."""
+    return list(ENDPOINT_PRESETS)
+
+
+def _normalize_endpoint_url(url):
+    """Strip and rstrip slash for consistent storage."""
+    if not url or not isinstance(url, str):
+        return ""
+    return url.strip().rstrip("/")
+
+
+def endpoint_from_selector_text(text):
+    """Resolve combobox text to endpoint URL. If text is a preset label, return its URL; else return normalized text."""
+    if not text or not isinstance(text, str):
+        return ""
+    t = text.strip()
+    for label, url in ENDPOINT_PRESETS:
+        if label == t:
+            return _normalize_endpoint_url(url)
+    return _normalize_endpoint_url(t)
+
+
+def endpoint_to_selector_display(current_url):
+    """Return string to show in endpoint combobox: preset label if URL matches a preset, else the URL."""
+    url = _normalize_endpoint_url(current_url or "")
+    if not url:
+        return ""
+    for label, preset_url in ENDPOINT_PRESETS:
+        if _normalize_endpoint_url(preset_url) == url:
+            return label
+    return url
+
+
+def populate_endpoint_selector(ctx, ctrl, current_endpoint):
+    """Populate endpoint combobox: preset labels first, then endpoint_lru URLs. Combobox text = URL (visible and editable)."""
+    if not ctrl:
+        return
+    current_url = _normalize_endpoint_url(current_endpoint or "")
+
+    preset_labels = [label for label, _ in ENDPOINT_PRESETS]
+    lru = get_config(ctx, "endpoint_lru", [])
+    if not isinstance(lru, list):
+        lru = []
+
+    preset_urls_normalized = {_normalize_endpoint_url(p[1]) for p in ENDPOINT_PRESETS}
+    to_show = list(preset_labels)
+    for url in lru:
+        u = _normalize_endpoint_url(url)
+        if not u or u in preset_urls_normalized:
+            continue
+        if u not in to_show:
+            to_show.append(u)
+    # Ensure current URL is in list when it's custom (not a preset)
+    if current_url and current_url not in preset_urls_normalized and current_url not in to_show:
+        to_show.append(current_url)
+
+    ctrl.removeItems(0, ctrl.getItemCount())
+    if to_show:
+        ctrl.addItems(tuple(to_show), 0)
+    # Always show the actual URL in the text field so user can see and edit it
+    if current_url:
+        ctrl.setText(current_url)
 
 
 def validate_api_config(config):

@@ -216,8 +216,33 @@ def tool_generate_image(model, ctx, args, status_callback=None):
 
     prompt = args.get("prompt")
     provider = args.get("provider", config.get("image_provider", "aihorde"))
-    width = args.get("width", config.get("image_width", 512))
-    height = args.get("height", config.get("image_height", 512))
+    
+    # Handle direct path explicit sizing or config defaults
+    base_size = args.get("base_size", config.get("image_base_size", 512))
+    try:
+        base_size = int(base_size)
+    except (ValueError, TypeError):
+        base_size = 512
+        
+    aspect = args.get("aspect_ratio", config.get("image_default_aspect", "square"))
+    if aspect == "landscape_16_9":
+        w, h = int(base_size * 16 / 9), base_size
+    elif aspect == "portrait_9_16":
+        w, h = base_size, int(base_size * 16 / 9)
+    elif aspect == "landscape_3_2":
+        w, h = int(base_size * 1.5), base_size
+    elif aspect == "portrait_2_3":
+        w, h = base_size, int(base_size * 1.5)
+    else:  # square or unknown
+        w, h = base_size, base_size
+
+    # Snap to nearest 64
+    w = (w // 64) * 64
+    h = (h // 64) * 64
+
+    # Allow LLM explicit overrides if provided (legacy support)
+    width = args.get("width", w)
+    height = args.get("height", h)
     add_to_gallery = as_bool(config.get("image_auto_gallery", True))
     add_frame = as_bool(config.get("image_insert_frame", False))
 
