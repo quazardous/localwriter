@@ -83,7 +83,7 @@ localwriter/
 
 ### After
 - Both dialogs use **XDL files** (XML) loaded via `DialogProvider`
-- `LocalWriterDialogs.SettingsDialog` — two-page dialog (Chat/Text and **Image Settings**) using the `dlg:page` multi-page approach with tab-switching buttons. The Image Settings tab is split into shared image options (width, height, auto gallery, insert frame, translate prompt) and an **AI Horde only** section (API key, CFG scale, steps, max wait, NSFW) with a visual separator.
+- `LocalWriterDialogs.SettingsDialog` — two-page dialog (Chat/Text and **Image Settings**) using the `dlg:page` multi-page approach with tab-switching buttons. The Image Settings tab is split into shared image options and an **AI Horde** section (toggled by "Use AI Horde for Image Generation", previously "AI Horde only") with a visual separator.
 - `LocalWriterDialogs.EditInputDialog` — label + text field + OK
 
 ### Key implementation details
@@ -211,7 +211,7 @@ LocalWriter can generate and edit images inside Writer and Calc via tools expose
 
 ### UI and config
 
-- **Settings** (`LocalWriterDialogs/SettingsDialog.xdl`): Tabbed. **Chat/Text** tab: Text/Chat Model and **Image model (same endpoint as chat)** comboboxes (LRU). **Image Settings** tab: shared section (width, height, auto gallery, insert frame, translate prompt) and **AI Horde only** section (provider via "Use AI Horde" on Chat tab, `aihorde_api_key`, CFG scale, steps, max wait, NSFW) with a fixedline separator. All image-related keys applied via `_apply_settings_result` in `main.py`.
+- **Settings** (`LocalWriterDialogs/SettingsDialog.xdl`): Tabbed. **Chat/Text** tab: Text/Chat Model and **Image model (same endpoint as chat)** comboboxes (LRU). **Image Settings** tab: shared section (width, height, auto gallery, insert frame, translate prompt) and **AI Horde** section (provider enabled via **"Use AI Horde for Image Generation"** on this tab, `aihorde_api_key`, CFG scale, steps, max wait, NSFW) with a fixedline separator. All image-related keys applied via `_apply_settings_result` in `main.py`.
 - **Chat sidebar** (`LocalWriterDialogs/ChatPanelDialog.xdl`, `chat_panel.py`): **AI Model** combobox (text model → `text_model`, `model_lru`) and **Image model (same endpoint as chat)** combobox (→ `image_model`, `image_model_lru`). **"Use Image model"** checkbox (config `chat_direct_image`): when checked, the current message is sent directly to the image pipeline (AI Horde or image model per Settings) for Writer, Calc, and Draw — no chat model round-trip. Orthogonal to which tools are given to the LLM; uses `document_tools.execute_tool("generate_image", ...)` for all doc types. No additional-instructions control in the sidebar; extra instructions come from config only when building the system prompt.
 
 ### Config keys (summary)
