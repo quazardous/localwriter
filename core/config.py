@@ -5,6 +5,7 @@ Reads/writes localwriter.json in LibreOffice's user config directory.
 import os
 import json
 import uno
+from .default_models import DEFAULT_MODELS
 
 
 CONFIG_FILENAME = "localwriter.json"
@@ -140,15 +141,42 @@ def _safe_int(value, default):
         return default
 
 
+def get_provider_from_endpoint(endpoint):
+    """Return provider key for DEFAULT_MODELS based on endpoint URL or labels."""
+    if not endpoint:
+        return None
+    url = _normalize_endpoint_url(endpoint).lower()
+    if "openrouter.ai" in url:
+        return "openrouter"
+    if "together.xyz" in url:
+        return "together"
+    if "localhost:11434" in url or "ollama" in url:
+        return "ollama"
+    if "api.mistral.ai" in url:
+        return "mistral"
+    if "api.openai.com" in url:
+        return "openai"
+    return None
+
+
 def populate_combobox_with_lru(ctx, ctrl, current_val, lru_key, endpoint):
     """Helper to populate a combobox with values from an LRU list in config.
     Ensures current_val is at the top/selected.
-    LRU is scoped to the provided endpoint."""
+    LRU is scoped to the provided endpoint.
+    If LRU is empty, pre-populates with default models for the provider."""
     scoped_key = f"{lru_key}@{endpoint}" if endpoint else lru_key
     lru = get_config(ctx, scoped_key, [])
     if not isinstance(lru, list):
         lru = []
     
+    # If LRU is empty, try to populate from DEFAULT_MODELS
+    if not lru:
+        provider = get_provider_from_endpoint(endpoint)
+        if provider and provider in DEFAULT_MODELS:
+            model_type = "image" if "image" in lru_key.lower() else "text"
+            defaults = DEFAULT_MODELS[provider].get(model_type, [])
+            lru = [m["id"] for m in defaults]
+
     curr_val_str = str(current_val).strip()
     to_show = list(lru)
     if curr_val_str and curr_val_str not in to_show:
