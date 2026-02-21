@@ -151,7 +151,6 @@ def run_stream_completion_async(
                 append_thinking_callback=lambda t: q.put(("thinking", t)),
                 status_callback=lambda t: q.put(("status", t)),
                 stop_checker=stop_checker,
-                dispatch_events=False,
             )
             if stop_checker and stop_checker():
                 q.put(("stopped",))

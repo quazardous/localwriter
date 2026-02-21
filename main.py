@@ -9,8 +9,9 @@ if _ext_dir not in sys.path:
 import unohelper
 import officehelper
 
-from core.config import get_config, set_config, as_bool, get_api_config, validate_api_config, populate_combobox_with_lru, update_lru_history, notify_config_changed, populate_image_model_selector, populate_endpoint_selector, endpoint_from_selector_text, get_image_model, set_image_model, get_api_key_for_endpoint, set_api_key_for_endpoint
+from core.config import get_config, set_config, as_bool, get_api_config, get_current_endpoint, validate_api_config, populate_combobox_with_lru, update_lru_history, notify_config_changed, populate_image_model_selector, populate_endpoint_selector, endpoint_from_selector_text, get_image_model, set_image_model, get_api_key_for_endpoint, set_api_key_for_endpoint
 from core.api import LlmClient, format_error_message
+from core.uno_ui_helpers import is_checkbox_control, get_checkbox_state, set_checkbox_state
 from core.document import get_full_document_text, get_document_context_for_chat
 from core.async_stream import run_stream_completion_async
 from core.logging import agent_log, init_logging
@@ -179,58 +180,61 @@ class MainJob(unohelper.Base, XJobExecutor):
         """Delegate to core.config. Uses LRU_MAX_ITEMS (6) when max_items not given."""
         update_lru_history(self.ctx, val, lru_key, endpoint, max_items)
 
+    def _get_settings_field_specs(self):
+        """Return field specs for Settings dialog (single source for dialog and apply keys)."""
+        openai_compatibility_value = "true" if as_bool(self.get_config("openai_compatibility", False)) else "false"
+        is_openwebui_value = "true" if as_bool(self.get_config("is_openwebui", False)) else "false"
+        current_endpoint_for_specs = get_current_endpoint(self.ctx)
+        return [
+            {"name": "endpoint", "value": str(self.get_config("endpoint", "http://127.0.0.1:5000"))},
+            {"name": "text_model", "value": str(self.get_config("text_model", "") or self.get_config("model", ""))},
+            {"name": "image_model", "value": str(get_image_model(self.ctx))},
+            {"name": "api_key", "value": str(get_api_key_for_endpoint(self.ctx, current_endpoint_for_specs))},
+            {"name": "api_type", "value": str(self.get_config("api_type", "completions"))},
+            {"name": "is_openwebui", "value": is_openwebui_value, "type": "bool"},
+            {"name": "openai_compatibility", "value": openai_compatibility_value, "type": "bool"},
+            {"name": "temperature", "value": str(self.get_config("temperature", "0.5")), "type": "float"},
+            {"name": "seed", "value": str(self.get_config("seed", ""))},
+            {"name": "extend_selection_max_tokens", "value": str(self.get_config("extend_selection_max_tokens", "70")), "type": "int"},
+            {"name": "edit_selection_max_new_tokens", "value": str(self.get_config("edit_selection_max_new_tokens", "0")), "type": "int"},
+            {"name": "chat_max_tokens", "value": str(self.get_config("chat_max_tokens", "16384")), "type": "int"},
+            {"name": "chat_context_length", "value": str(self.get_config("chat_context_length", "8000")), "type": "int"},
+            {"name": "additional_instructions", "value": str(self.get_config("additional_instructions", ""))},
+            {"name": "request_timeout", "value": str(self.get_config("request_timeout", "120")), "type": "int"},
+            {"name": "chat_max_tool_rounds", "value": str(self.get_config("chat_max_tool_rounds", "5")), "type": "int"},
+            {"name": "use_aihorde", "value": "true" if self.get_config("image_provider", "aihorde") == "aihorde" else "false", "type": "bool"},
+            {"name": "aihorde_api_key", "value": str(self.get_config("aihorde_api_key", ""))},
+            {"name": "image_base_size", "value": str(self.get_config("image_base_size", "512")), "type": "int"},
+            {"name": "image_default_aspect", "value": str(self.get_config("image_default_aspect", "Square"))},
+            {"name": "image_cfg_scale", "value": str(self.get_config("image_cfg_scale", "7.5")), "type": "float"},
+            {"name": "image_steps", "value": str(self.get_config("image_steps", "30")), "type": "int"},
+            {"name": "image_nsfw", "value": "true" if as_bool(self.get_config("image_nsfw", False)) else "false", "type": "bool"},
+            {"name": "image_censor_nsfw", "value": "true" if as_bool(self.get_config("image_censor_nsfw", True)) else "false", "type": "bool"},
+            {"name": "image_max_wait", "value": str(self.get_config("image_max_wait", "5")), "type": "int"},
+            {"name": "image_auto_gallery", "value": "true" if as_bool(self.get_config("image_auto_gallery", True)) else "false", "type": "bool"},
+            {"name": "image_insert_frame", "value": "true" if as_bool(self.get_config("image_insert_frame", False)) else "false", "type": "bool"},
+            {"name": "image_translate_prompt", "value": "true" if as_bool(self.get_config("image_translate_prompt", True)) else "false", "type": "bool"},
+            {"name": "image_translate_from", "value": str(self.get_config("image_translate_from", ""))},
+            {"name": "mcp_enabled", "value": "true" if as_bool(self.get_config("mcp_enabled", False)) else "false", "type": "bool"},
+            {"name": "mcp_port", "value": str(self.get_config("mcp_port", 8765)), "type": "int"},
+        ]
+
     def _apply_settings_result(self, result):
         """Apply settings dialog result to config. Shared by Writer and Calc."""
-        # Define config keys that can be set directly
-        direct_keys = [
-            "extend_selection_max_tokens",
-            "edit_selection_max_new_tokens",
-            "is_openwebui",
-            "openai_compatibility",
-            "text_model",
-            "image_model",
-            "temperature",
-            "seed",
-            "chat_max_tokens",
-            "chat_context_length",
-            "additional_instructions",
-            "request_timeout",
-            "chat_max_tool_rounds",
-            "image_provider",
-            "aihorde_api_key",
-            "image_base_size",
-            "image_default_aspect",
-            "image_cfg_scale",
-            "image_steps",
-            "image_nsfw",
-            "image_censor_nsfw",
-            "image_max_wait",
-            "image_auto_gallery",
-            "image_insert_frame",
-            "image_translate_prompt",
-            "image_translate_from",
-            "aihorde_model",
-            "mcp_enabled",
-        ]
-        
+        # Keys to set directly from result; derived from dialog field specs (exclude specially handled ones)
+        _apply_skip = ("endpoint", "api_key", "use_aihorde", "api_type", "mcp_port")
+        apply_keys = [f["name"] for f in self._get_settings_field_specs() if f["name"] not in _apply_skip]
+
         # Resolve endpoint first so LRU updates use the endpoint being saved
-        effective_endpoint = endpoint_from_selector_text(result.get("endpoint", "")) if "endpoint" in result else str(get_config(self.ctx, "endpoint", "")).strip()
+        effective_endpoint = endpoint_from_selector_text(result.get("endpoint", "")) if "endpoint" in result else get_current_endpoint(self.ctx)
         if "endpoint" in result and effective_endpoint:
             self.set_config("endpoint", effective_endpoint)
-        current_endpoint = effective_endpoint or str(get_config(self.ctx, "endpoint", "")).strip()
+        current_endpoint = effective_endpoint or get_current_endpoint(self.ctx)
 
-        # Set direct keys
-        for key in direct_keys:
+        # Set keys from result (endpoint, api_key, use_aihorde, api_type, mcp_port handled below)
+        for key in apply_keys:
             if key in result:
                 val = result[key]
-                
-                # Special handling for image_provider derived from use_aihorde
-                if key == "image_provider":
-                    continue # handled by use_aihorde check below
-                # Endpoint already set above (resolved); skip to avoid overwriting with raw label
-                if key == "endpoint":
-                    continue
-                
                 self.set_config(key, val)
                 
                 # Update LRU history
@@ -384,7 +388,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             # Populate prompt selector history
             prompt_ctrl = dlg.getControl("prompt_selector")
             current_prompt = self.get_config("additional_instructions", "")
-            current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+            current_endpoint = get_current_endpoint(self.ctx)
             self._populate_combobox_with_lru(prompt_ctrl, current_prompt, "prompt_lru", current_endpoint)
 
             dlg.getControl("edit").setFocus()
@@ -401,49 +405,12 @@ class MainJob(unohelper.Base, XJobExecutor):
     def settings_box(self, title="", x=None, y=None):
         """ Settings dialog loaded from XDL (LocalWriterDialogs/SettingsDialog.xdl).
         Uses DialogProvider for proper Map AppFont sizing. """
-        """ Settings dialog loaded from XDL (LocalWriterDialogs/SettingsDialog.xdl).
-        Uses DialogProvider for proper Map AppFont sizing. """
         import uno
 
         ctx = self.ctx
         smgr = ctx.getServiceManager()
 
-        openai_compatibility_value = "true" if as_bool(self.get_config("openai_compatibility", False)) else "false"
-        is_openwebui_value = "true" if as_bool(self.get_config("is_openwebui", False)) else "false"
-        current_endpoint_for_specs = str(self.get_config("endpoint", "")).strip()
-        field_specs = [
-            {"name": "endpoint", "value": str(self.get_config("endpoint", "http://127.0.0.1:5000"))},
-            {"name": "text_model", "value": str(self.get_config("text_model", "") or self.get_config("model", ""))},
-            {"name": "image_model", "value": str(get_image_model(self.ctx))},
-            {"name": "api_key", "value": str(get_api_key_for_endpoint(self.ctx, current_endpoint_for_specs))},
-            {"name": "api_type", "value": str(self.get_config("api_type", "completions"))},
-            {"name": "is_openwebui", "value": is_openwebui_value, "type": "bool"},
-            {"name": "openai_compatibility", "value": openai_compatibility_value, "type": "bool"},
-            {"name": "temperature", "value": str(self.get_config("temperature", "0.5")), "type": "float"},
-            {"name": "seed", "value": str(self.get_config("seed", ""))},
-            {"name": "extend_selection_max_tokens", "value": str(self.get_config("extend_selection_max_tokens", "70")), "type": "int"},
-            {"name": "edit_selection_max_new_tokens", "value": str(self.get_config("edit_selection_max_new_tokens", "0")), "type": "int"},
-            {"name": "chat_max_tokens", "value": str(self.get_config("chat_max_tokens", "16384")), "type": "int"},
-            {"name": "chat_context_length", "value": str(self.get_config("chat_context_length", "8000")), "type": "int"},
-            {"name": "additional_instructions", "value": str(self.get_config("additional_instructions", ""))},
-            {"name": "request_timeout", "value": str(self.get_config("request_timeout", "120")), "type": "int"},
-            {"name": "chat_max_tool_rounds", "value": str(self.get_config("chat_max_tool_rounds", "5")), "type": "int"},
-            {"name": "use_aihorde", "value": "true" if self.get_config("image_provider", "aihorde") == "aihorde" else "false", "type": "bool"},
-            {"name": "aihorde_api_key", "value": str(self.get_config("aihorde_api_key", ""))},
-            {"name": "image_base_size", "value": str(self.get_config("image_base_size", "512")), "type": "int"},
-            {"name": "image_default_aspect", "value": str(self.get_config("image_default_aspect", "Square"))},
-            {"name": "image_cfg_scale", "value": str(self.get_config("image_cfg_scale", "7.5")), "type": "float"},
-            {"name": "image_steps", "value": str(self.get_config("image_steps", "30")), "type": "int"},
-            {"name": "image_nsfw", "value": "true" if as_bool(self.get_config("image_nsfw", False)) else "false", "type": "bool"},
-            {"name": "image_censor_nsfw", "value": "true" if as_bool(self.get_config("image_censor_nsfw", True)) else "false", "type": "bool"},
-            {"name": "image_max_wait", "value": str(self.get_config("image_max_wait", "5")), "type": "int"},
-            {"name": "image_auto_gallery", "value": "true" if as_bool(self.get_config("image_auto_gallery", True)) else "false", "type": "bool"},
-            {"name": "image_insert_frame", "value": "true" if as_bool(self.get_config("image_insert_frame", False)) else "false", "type": "bool"},
-            {"name": "image_translate_prompt", "value": "true" if as_bool(self.get_config("image_translate_prompt", True)) else "false", "type": "bool"},
-            {"name": "image_translate_from", "value": str(self.get_config("image_translate_from", ""))},
-            {"name": "mcp_enabled", "value": "true" if as_bool(self.get_config("mcp_enabled", False)) else "false", "type": "bool"},
-            {"name": "mcp_port", "value": str(self.get_config("mcp_port", 8765)), "type": "int"},
-        ]
+        field_specs = self._get_settings_field_specs()
 
         pip = ctx.getValueByName("/singletons/com.sun.star.deployment.PackageInformationProvider")
         base_url = pip.getPackageLocation("org.extension.localwriter")
@@ -475,7 +442,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         dlg.getControl("btn_tab_image").addActionListener(TabListener(dlg, 2))
 
         # Get current endpoint for LRU scoping
-        current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+        current_endpoint = get_current_endpoint(self.ctx)
 
         try:
             for field in field_specs:
@@ -537,24 +504,11 @@ class MainJob(unohelper.Base, XJobExecutor):
                     elif field["name"] == "image_base_size":
                         self._populate_combobox_with_lru(ctrl, field["value"], "image_base_size_lru", current_endpoint)
                     else:
-                                is_checkbox = False
-                                try:
-                                    if ctrl.supportsService("com.sun.star.awt.UnoControlCheckBox"):
-                                        is_checkbox = True
-                                    elif hasattr(ctrl, "setState"):
-                                        is_checkbox = True
-                                    elif hasattr(ctrl.getModel(), "State"):
-                                        is_checkbox = True
-                                except Exception:
-                                    pass
-
+                                is_checkbox = is_checkbox_control(ctrl)
                                 if field.get("type") == "bool" and is_checkbox:
                                     val = 1 if as_bool(field["value"]) else 0
                                     try:
-                                        if hasattr(ctrl, "setState"):
-                                            ctrl.setState(val)
-                                        elif hasattr(ctrl.getModel(), "State"):
-                                            ctrl.getModel().State = val
+                                        set_checkbox_state(ctrl, val)
                                     except Exception as e:
                                         agent_log("main.py:settings_box", "checkbox init error", data={"field": field["name"], "error": str(e)}, hypothesis_id="H5")
                                 else:
@@ -583,37 +537,16 @@ class MainJob(unohelper.Base, XJobExecutor):
                                 if field_type == "int":
                                     result[field["name"]] = int(control_text) if control_text.isdigit() else control_text
                                 elif field_type == "bool":
-                                    # Default to text value (e.g. "true"/"false")
                                     val = as_bool(control_text)
-                                    
-                                    # Check if it's a checkbox
-                                    is_checkbox = False
-                                    try:
-                                        if ctrl.supportsService("com.sun.star.awt.UnoControlCheckBox"):
-                                            is_checkbox = True
-                                        elif hasattr(ctrl, "getState"):
-                                            is_checkbox = True
-                                        elif hasattr(ctrl.getModel(), "State"):
-                                            is_checkbox = True
-                                    except Exception:
-                                        pass
-
-                                    if is_checkbox:
+                                    if is_checkbox_control(ctrl):
                                         try:
-                                            # Try to get state from view then model
-                                            state = 0
-                                            if hasattr(ctrl, "getState"):
-                                                state = ctrl.getState()
-                                            elif hasattr(ctrl.getModel(), "State"):
-                                                state = ctrl.getModel().State
-                                            val = (state == 1)
+                                            val = (get_checkbox_state(ctrl) == 1)
                                         except Exception as e:
                                             from core.logging import debug_log
                                             debug_log(f"checkbox state error for {field['name']}: {e}", context="Settings")
-                                    
                                     result[field["name"]] = val
                                     from core.logging import debug_log
-                                    debug_log(f"Field {field['name']}: is_checkbox={is_checkbox}, val={val}, ctrl_services={ctrl.getSupportedServiceNames() if hasattr(ctrl, 'getSupportedServiceNames') else 'N/A'}", context="Settings")
+                                    debug_log(f"Field {field['name']}: is_checkbox={is_checkbox_control(ctrl)}, val={val}, ctrl_services={ctrl.getSupportedServiceNames() if hasattr(ctrl, 'getSupportedServiceNames') else 'N/A'}", context="Settings")
                                 elif field_type == "float":
                                     try:
                                         result[field["name"]] = float(control_text)
@@ -712,7 +645,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                     try:
                         extra_instructions = self.get_config("additional_instructions", "")
                         system_prompt = extra_instructions # Extend usually benefits from just the custom prompt or none
-                        current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+                        current_endpoint = get_current_endpoint(self.ctx)
                         self._update_lru_history(system_prompt, "prompt_lru", current_endpoint)
                         prompt = text_range.getString()
                         max_tokens = self.get_config("extend_selection_max_tokens", 70)
@@ -748,7 +681,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                     
                     if extra_instructions:
                         self.set_config("additional_instructions", extra_instructions)
-                        current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+                        current_endpoint = get_current_endpoint(self.ctx)
                         self._update_lru_history(extra_instructions, "prompt_lru", current_endpoint)
 
                 except Exception as e:

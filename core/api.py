@@ -23,7 +23,6 @@ from core.logging import debug_log, update_activity_state, init_logging
 
 def format_error_message(e):
     """Map common exceptions to user-friendly advice."""
-    import socket
     import urllib.error
 
     msg = str(e)
@@ -207,10 +206,6 @@ def _is_openai_compatible(config):
     return config.get("openai_compatibility", False) or (
         "api.openai.com" in endpoint.lower()
     )
-
-
-# LiteLLM: streaming_handler.py ~L198 safety_checker(), issue #5158
-REPEATED_STREAMING_CHUNK_LIMIT = 20
 
 
 def _normalize_delta(delta):
@@ -481,7 +476,6 @@ class LlmClient:
         append_callback,
         append_thinking_callback=None,
         stop_checker=None,
-        dispatch_events=True,
     ):
         """Stream a completion/chat response via callbacks."""
         method, path, body, headers = self.make_api_request(
@@ -493,7 +487,6 @@ class LlmClient:
             append_callback,
             append_thinking_callback,
             stop_checker=stop_checker,
-            dispatch_events=dispatch_events,
         )
 
     def _run_streaming_loop(
@@ -659,7 +652,6 @@ class LlmClient:
         append_callback,
         append_thinking_callback=None,
         stop_checker=None,
-        dispatch_events=True,
     ):
         """Stream a completion/chat response and append chunks via callbacks."""
         self._run_streaming_loop(
@@ -680,7 +672,6 @@ class LlmClient:
         append_callback,
         append_thinking_callback=None,
         stop_checker=None,
-        dispatch_events=True,
     ):
         """Stream a final chat response (no tools) using the messages array."""
         method, path, body, headers = self.make_chat_request(
@@ -692,7 +683,6 @@ class LlmClient:
             append_callback,
             append_thinking_callback,
             stop_checker=stop_checker,
-            dispatch_events=dispatch_events,
         )
 
     def request_with_tools(self, messages, max_tokens=512, tools=None, body_override=None):
@@ -757,7 +747,6 @@ class LlmClient:
         append_callback=None,
         append_thinking_callback=None,
         stop_checker=None,
-        dispatch_events=True,
     ):
         """Streaming chat request with tools. Returns same shape as request_with_tools."""
         init_logging(self.ctx)

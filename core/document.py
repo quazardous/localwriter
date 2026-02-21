@@ -34,8 +34,7 @@ def get_full_document_text(model, max_chars=8000):
     try:
         if is_calc(model):
             # Calc document
-            import uno
-            bridge = CalcBridge(uno.getComponentContext())
+            bridge = CalcBridge(model)
             analyzer = SheetAnalyzer(bridge)
             summary = analyzer.get_sheet_summary()
             text = f"Sheet: {summary['sheet_name']}\nUsed Range: {summary['used_range']}\n"

@@ -18,6 +18,7 @@ if _ext_dir not in sys.path:
 
 from core.logging import agent_log, debug_log, update_activity_state, start_watchdog_thread, init_logging
 from core.async_stream import run_stream_completion_async, run_stream_drain_loop
+from core.uno_ui_helpers import get_optional as get_optional_control, get_checkbox_state, set_checkbox_state
 
 from com.sun.star.ui import XUIElementFactory, XUIElement, XToolPanel, XSidebarPanel
 from com.sun.star.ui.UIElementType import TOOLPANEL
@@ -351,18 +352,12 @@ class SendButtonListener(unohelper.Base, XActionListener):
             self.query_control.getModel().Text = ""
 
         # Direct image path: orthogonal to LLM tool list; uses document_tools.execute_tool for all doc types
-        # Read checkbox same way as Settings dialog (main.py): getState() on control first, else getModel().State
         direct_image_checked = False
         read_state = None
         if self.direct_image_checkbox:
             try:
-                state = 0
-                if hasattr(self.direct_image_checkbox, "getState"):
-                    state = self.direct_image_checkbox.getState()
-                elif self.direct_image_checkbox.getModel() and hasattr(self.direct_image_checkbox.getModel(), "State"):
-                    state = self.direct_image_checkbox.getModel().State
-                read_state = state
-                direct_image_checked = (state == 1)
+                read_state = get_checkbox_state(self.direct_image_checkbox)
+                direct_image_checked = (read_state == 1)
             except Exception as e:
                 debug_log("_do_send: Use Image model checkbox read error: %s" % e, context="Chat")
         debug_log("_do_send: Use Image model checkbox state=%s -> %s" % (read_state, "image model (direct)" if direct_image_checked else "chat model"), context="Chat")
@@ -411,8 +406,8 @@ class SendButtonListener(unohelper.Base, XActionListener):
                         from core.document_tools import execute_tool
                         try:
                             # Also update LRU
-                            from core.config import update_lru_history, get_config
-                            current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+                            from core.config import update_lru_history, get_current_endpoint
+                            current_endpoint = get_current_endpoint(self.ctx)
                             update_lru_history(self.ctx, base_size_val, "image_base_size_lru", current_endpoint)
                         except Exception as elru:
                             debug_log("LRU update error: %s" % elru, context="Chat")
@@ -508,7 +503,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
             return
 
         # System prompt: extra_instructions from config only (not in sidebar)
-        from core.config import set_config, update_lru_history, set_image_model
+        from core.config import set_config, update_lru_history, set_image_model, get_config, get_current_endpoint
         extra_instructions = get_config(self.ctx, "additional_instructions", "") or ""
         from core.constants import get_chat_system_prompt_for_document
         self.session.messages[0]["content"] = get_chat_system_prompt_for_document(model, extra_instructions)
@@ -518,7 +513,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
             selected_model = self.model_selector.getText()
             if selected_model:
                 set_config(self.ctx, "text_model", selected_model)
-                current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+                current_endpoint = get_current_endpoint(self.ctx)
                 update_lru_history(self.ctx, selected_model, "model_lru", current_endpoint)
                 debug_log("_do_send: text model updated to %s" % selected_model, context="Chat")
         if self.image_model_selector:
@@ -610,7 +605,6 @@ class SendButtonListener(unohelper.Base, XActionListener):
                         append_callback=lambda t: q.put(("chunk", t)),
                         append_thinking_callback=lambda t: q.put(("thinking", t)),
                         stop_checker=lambda: self.stop_requested,
-                        dispatch_events=False,
                     )
                     if self.stop_requested:
                         q.put(("stopped",))
@@ -641,7 +635,6 @@ class SendButtonListener(unohelper.Base, XActionListener):
                     client.stream_chat_response(
                         self.session.messages, max_tokens, append_c, append_t,
                         stop_checker=lambda: self.stop_requested,
-                        dispatch_events=False,
                     )
                     if self.stop_requested:
                         q.put(("stopped",))
@@ -999,13 +992,11 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         root = self.m_panelRootWindow
         if not root or not hasattr(root, "getControl"):
             return
+        from core.config import get_config, get_current_endpoint, populate_combobox_with_lru, get_text_model, get_image_model, populate_image_model_selector, set_config, set_image_model
+
         def get_optional(name):
-            try:
-                return root.getControl(name)
-            except Exception:
-                return None
-        from core.config import get_config, populate_combobox_with_lru, get_text_model, get_image_model, populate_image_model_selector, set_config, set_image_model
-        
+            return get_optional_control(root, name)
+
         model_selector = get_optional("model_selector")
         prompt_selector = get_optional("prompt_selector")
         image_model_selector = get_optional("image_model_selector")
@@ -1013,7 +1004,7 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         current_model = get_text_model(self.ctx)
         extra_instructions = get_config(self.ctx, "additional_instructions", "")
         
-        current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+        current_endpoint = get_current_endpoint(self.ctx)
         
         if model_selector:
             set_val = populate_combobox_with_lru(self.ctx, model_selector, current_model, "model_lru", current_endpoint, strict=True)
@@ -1033,11 +1024,7 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         if direct_image_check:
             try:
                 direct_checked = get_config(self.ctx, "chat_direct_image", False)
-                val = 1 if direct_checked else 0
-                if hasattr(direct_image_check, "setState"):
-                    direct_image_check.setState(val)
-                elif direct_image_check.getModel() and hasattr(direct_image_check.getModel(), "State"):
-                    direct_image_check.getModel().State = val
+                set_checkbox_state(direct_image_check, 1 if direct_checked else 0)
             except Exception:
                 pass
 
@@ -1052,12 +1039,9 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         send_btn = root_window.getControl("send")
         query_ctrl = root_window.getControl("query")
         response_ctrl = root_window.getControl("response")
-        # Helper for optional controls
+
         def get_optional(name):
-            try:
-                return root_window.getControl(name)
-            except Exception:
-                return None
+            return get_optional_control(root_window, name)
 
         image_model_selector = get_optional("image_model_selector")
         prompt_selector = get_optional("prompt_selector")
@@ -1090,13 +1074,13 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         try:
             # Read system prompt from config; use helper so Writer/Calc prompt matches document
             debug_log("_wireControls: importing core config...", context="Chat")
-            from core.config import get_config, get_text_model, get_image_model, populate_combobox_with_lru, populate_image_model_selector, set_image_model, set_config
+            from core.config import get_config, get_current_endpoint, get_text_model, get_image_model, populate_combobox_with_lru, populate_image_model_selector, set_image_model, set_config
             from core.constants import get_chat_system_prompt_for_document, DEFAULT_CHAT_SYSTEM_PROMPT
             from core.document import is_writer, is_calc, is_draw
             
             extra_instructions = get_config(self.ctx, "additional_instructions", "")
             current_model = get_text_model(self.ctx)
-            current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+            current_endpoint = get_current_endpoint(self.ctx)
             
             # Model selector: strict so only current endpoint's models shown; persist correction if needed
             if model_selector:
@@ -1141,7 +1125,7 @@ class ChatPanelElement(unohelper.Base, XUIElement):
                 aspect_ratio_selector.addItems(("Square", "Landscape (16:9)", "Portrait (9:16)", "Landscape (3:2)", "Portrait (2:3)"), 0)
                 aspect_ratio_selector.setText(get_config(self.ctx, "image_default_aspect", "Square"))
             if base_size_input:
-                current_endpoint = str(get_config(self.ctx, "endpoint", "")).strip()
+                current_endpoint = get_current_endpoint(self.ctx)
                 populate_combobox_with_lru(self.ctx, base_size_input, str(get_config(self.ctx, "image_base_size", 512)), "image_base_size_lru", current_endpoint)
 
             def update_base_size_label(aspect_str):
@@ -1185,18 +1169,13 @@ class ChatPanelElement(unohelper.Base, XUIElement):
                 if base_size_label and hasattr(base_size_label, "setVisible"):
                     base_size_label.setVisible(is_image_mode)
 
-            # "Use Image model" checkbox: same read/write as Settings (main.py) - setState on control first, else model.State
+            # "Use Image model" checkbox
             if direct_image_check:
                 try:
                     from core.config import set_config
                     direct_checked = get_config(self.ctx, "chat_direct_image", False)
-                    val = 1 if direct_checked else 0
+                    set_checkbox_state(direct_image_check, 1 if direct_checked else 0)
                     toggle_image_ui(direct_checked)
-                    
-                    if hasattr(direct_image_check, "setState"):
-                        direct_image_check.setState(val)
-                    elif direct_image_check.getModel() and hasattr(direct_image_check.getModel(), "State"):
-                        direct_image_check.getModel().State = val
                     if hasattr(direct_image_check, "addItemListener"):
                         class DirectImageCheckListener(unohelper.Base, XItemListener):
                             def __init__(self, ctx, toggle_cb):

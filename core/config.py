@@ -80,6 +80,11 @@ def get_config_dict(ctx):
         return {}
 
 
+def get_current_endpoint(ctx):
+    """Return the current endpoint URL from config, normalized (stripped)."""
+    return str(get_config(ctx, "endpoint", "")).strip()
+
+
 def set_config(ctx, key, value):
     """Set a config key to value. Creates file if needed."""
     config_file_path = _config_path(ctx)
@@ -96,7 +101,8 @@ def set_config(ctx, key, value):
         with open(config_file_path, "w", encoding="utf-8") as f:
             json.dump(config_data, f, indent=4)
     except IOError as e:
-        print("Error writing to %s: %s" % (config_file_path, e))
+        from .logging import debug_log
+        debug_log("Error writing to %s: %s" % (config_file_path, e), context="Config")
 
 
 def remove_config(ctx, key):
@@ -114,7 +120,8 @@ def remove_config(ctx, key):
         with open(config_file_path, "w", encoding="utf-8") as f:
             json.dump(config_data, f, indent=4)
     except IOError as e:
-        print("Error writing to %s: %s" % (config_file_path, e))
+        from .logging import debug_log
+        debug_log("Error writing to %s: %s" % (config_file_path, e), context="Config")
 
 
 # Listeners are called when config is changed (e.g. after Settings dialog).
@@ -344,8 +351,7 @@ def set_image_model(ctx, val, update_lru=True):
     else:
         set_config(ctx, "image_model", val_str)
         if update_lru:
-            endpoint = str(get_config(ctx, "endpoint", "")).strip()
-            update_lru_history(ctx, val_str, "image_model_lru", endpoint)
+            update_lru_history(ctx, val_str, "image_model_lru", get_current_endpoint(ctx))
     
     notify_config_changed(ctx)
 
@@ -356,7 +362,7 @@ def _migrate_api_key_to_map_if_needed(ctx):
     if isinstance(data, dict) and data:
         return
     legacy_key = str(get_config(ctx, "api_key", "")).strip()
-    current_endpoint = str(get_config(ctx, "endpoint", "")).strip()
+    current_endpoint = get_current_endpoint(ctx)
     if not legacy_key or not current_endpoint:
         return
     if not isinstance(data, dict):
@@ -428,5 +434,5 @@ def populate_image_model_selector(ctx, ctrl, override_endpoint=None):
         ctrl.setText(current_image_model)
         return current_image_model
     current_image_model = get_image_model(ctx)
-    endpoint = override_endpoint if override_endpoint is not None else str(get_config(ctx, "endpoint", "")).strip()
+    endpoint = override_endpoint if override_endpoint is not None else get_current_endpoint(ctx)
     return populate_combobox_with_lru(ctx, ctrl, current_image_model, "image_model_lru", endpoint, strict=True)

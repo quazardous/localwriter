@@ -36,6 +36,7 @@ localwriter/
 │   ├── document.py      # get_full_document_text, get_document_end, get_selection_range, get_document_length, get_text_cursor_at_range, get_document_context_for_chat (Writer/Calc), get_calc_context_for_chat (Calc)
 │   ├── logging.py       # init_logging, debug_log(msg, context), agent_log; single debug file + optional agent log
 │   ├── constants.py     # DEFAULT_CHAT_SYSTEM_PROMPT, DEFAULT_CALC_CHAT_SYSTEM_PROMPT, get_chat_system_prompt_for_document
+│   ├── uno_ui_helpers.py # get_optional, is_checkbox_control, get_checkbox_state, set_checkbox_state (shared dialog/panel helpers)
 │   ├── async_stream.py  # run_stream_completion_async: worker + queue + main-thread drain (no UNO Timer)
 │   ├── mcp_thread.py    # execute_on_main_thread, drain_mcp_queue (for MCP HTTP handler → main thread)
 │   ├── mcp_server.py    # MCPHttpServer, MCPHandler (GET /health, /tools, /, /documents; POST /tools/{name}); port utilities
@@ -285,7 +286,7 @@ LocalWriter can generate and edit images inside Writer and Calc via tools expose
 - Margins ~8. Tighter = more compact but must stay readable.
 
 ### Optional Controls
-- When wiring controls that might not exist in all XDL versions (e.g. backward compatibility), use a **`get_optional(name)` helper** to wrap `root_window.getControl(name)` in a try-except block. This avoids repetitive `try: ... except: pass` patterns.
+- When wiring controls that might not exist in all XDL versions (e.g. backward compatibility), use **`get_optional(root_window, name)`** from `core/uno_ui_helpers` (returns control or None). For checkboxes, use **`get_checkbox_state(ctrl)`** / **`set_checkbox_state(ctrl, value)`** and **`is_checkbox_control(ctrl)`** from the same module so LibreOffice control quirks are handled in one place.
 
 ---
 
@@ -336,7 +337,7 @@ We implemented a custom engine in `core/format_support.py` that iterates charact
   - macOS: `~/Library/Application Support/LibreOffice/4/user/localwriter.json`
   - Windows: `%APPDATA%\LibreOffice\4\user\localwriter.json`
 - **Single file**: No presets or multiple configs. To use a different setup, copy your config to the path above as `localwriter.json`.
-- **Settings dialog** reads/writes this file via `get_config()` / `set_config()` in `core/config.py`.
+- **Settings dialog** reads/writes this file via `get_config()` / `set_config()` in `core/config.py`. Use **`get_current_endpoint(ctx)`** for the normalized current endpoint URL (single source; used by main.py and chat_panel.py).
 - **Chat-related keys**: `chat_context_length` (default 8000), `chat_max_tokens` (default 512 menu / 16384 sidebar), `additional_instructions`. Also **per-endpoint API keys**: `api_keys_by_endpoint` (JSON map: normalized endpoint URL → API key); `get_api_key_for_endpoint(ctx, endpoint)` / `set_api_key_for_endpoint(ctx, endpoint, key)` in `core/config.py`. Legacy `api_key` is migrated once into the map under the current endpoint and then removed. Settings dialog shows and saves the key for the selected endpoint. `api_type` for the configured endpoint.
 - **Model keys**: `text_model` (chat/LLM model; backward compat: `model`), `model_lru` (recent text models); `image_model` (image model when using chat endpoint for images), `image_model_lru` (recent image models). See Section 3d.
 
@@ -398,6 +399,12 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 - API key and auth for the configured endpoint are already implemented; optional: endpoint preset dropdown in Settings.
 - Impress support; Calc range-aware behavior.
 
+### Optional refactoring (future work)
+- **chat_panel.py**: Split `SendButtonListener._do_send` into smaller methods (e.g. `_do_send_direct_image`, `_do_send_with_tools`, `_do_send_simple_stream`) with a short `_do_send` that validates and dispatches. Optionally simplify `_wireControls` by extracting "build initial model/prompt from config," "wire Send/Stop/Clear," "wire optional image UI."
+- **main.py**: Split `trigger()` into handlers (e.g. `_handle_mcp`, `_handle_writer`, `_handle_calc`, `_handle_draw`) so `trigger` only delegates; optionally extract settings populate/read into helpers driven by `field_specs`.
+- **core/config.py**: Introduce internal helpers for "read full config" / "write full config" (e.g. build on `get_config_dict`) so `set_config`/`remove_config` share one write path and future caching or storage changes touch one place.
+- **chat_panel.py**: Consider a small doc-type registry (Writer/Calc/Draw → tools + execute function) so choosing tools and executor in `_do_send` is data-driven and adding a new doc type doesn't require editing a long if/elif chain.
+
 ### Chat settings in UI — DONE
 - ~~Expose `chat_context_length`, `chat_max_tokens`, `additional_instructions` in the Settings dialog~~ (implemented in SettingsDialog.xdl).
 
@@ -440,7 +447,7 @@ Image generation and AI Horde integration are **complete** (generate_image, edit
 
 ## 8. Gotchas
 
-- **PR dependency**: Settings dialog field list must match `get_config`/`set_config` keys. If submitting to a repo without PR #31 and #36 merged, either base on those PRs or remove unused fields from `SettingsDialog.xdl`.
+- **Settings dialog fields**: The list of settings is defined in **`MainJob._get_settings_field_specs()`** (single source); `_apply_settings_result` derives apply keys from it. Settings dialog field list in XDL must match the names in that method.
 - **Library name**: `LocalWriterDialogs` (folder name) must match `library:name` in `dialog.xlb`.
 - **DialogProvider deadlock**: Using `vnd.sun.star.script:...?location=application` URLs with `DialogProvider.createDialog()` will deadlock when the sidebar panel (chat_panel.py) is also registered as a UNO component. Always use direct package URLs instead (see Section 3).
 - **Use `self.ctx` for PackageInformationProvider**: `uno.getComponentContext()` returns a limited global context that cannot look up extension singletons. Always use `self.ctx` (the context passed to the UNO component constructor).
