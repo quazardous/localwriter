@@ -34,25 +34,28 @@ Opus 4.6 one-shotted this Arch Linux resume:
 
 ![Chat Sidebar with Dashboard](Sonnet46Spreadsheet.png)
 
-### 3. Edit & Extend Selection (Writer)
+### 4. Edit & Extend Selection (Writer)
 **Hotkey:** `Ctrl+Q`
 The model continues the selected text. Ideal for drafting emails, stories, or generating lists.
 
-### 3. Edit Selection
+### 5. Edit Selection
 **Hotkey:** `Ctrl+E`
 Prompt the model to rewrite your selection according to specific instructions (e.g., "make this more formal", "translate to Spanish").
 
-### 4. Format preservation (Writer)
+### 6. Format preservation (Writer)
 When you ask the AI to fix a typo or change a name, the result can keep the formatting you already had: highlights, bold, colors, font size, and so on. The AI does not need to—and typically cannot—describe LibreOffice’s full formatting model. In practice, the AI often sends back markup (e.g. bold like **Michael**) even for simple corrections. We auto-detect: when it sends **plain text**, we preserve your existing formatting; when it sends Markdown or HTML, we use the import path. So when the model does send plain text, you get full preservation without the AI needing to know LibreOffice’s capabilities.
 
 *Example:* The document has “Micheal” (one-letter typo) with yellow highlight and bold. You ask the AI to correct the spelling. If the AI returns plain “Michael,” we preserve the yellow highlight and bold. If it returns “**Michael**,” we treat that as formatted content (import path) and the highlight can be lost—a model quirk. The feature is especially valuable when the AI sends plain text.
 
 Replacing text in Writer normally inherits formatting from the insertion point, so per-character formatting on the original text would be lost. We use two strategies: for **plain-text replacements** (name corrections, typo fixes) we replace in a way that preserves existing per-character formatting; for **structured content** (Markdown/HTML) we use the import path to inject formatted content with native styles. The choice is automatic—we detect whether the new content is plain text or contains markup—so the AI does not have to choose. This applies to Chat with Document tool edits in Writer.
 
-### 5. Image generation and AI Horde integration
+### 7. Image generation and AI Horde integration
 Image generation and editing are integrated and complete. You can generate images from the chat (via tools or “Use Image model”) and edit selected images (Img2Img). Two backends are supported: **AI Horde** (Stable Diffusion, SDXL, etc., with its own API key and queue) and **same endpoint as chat** (uses your configured endpoint and a separate image model). Settings are in **LocalWriter > Settings** under the **Image Settings** tab, with shared options (size, insert behavior, prompt translation) and a clearly separated **AI Horde only** section.
 
-### 6. Calc `=PROMPT()` function
+### 8. MCP Server (optional, external AI clients)
+When enabled in **LocalWriter > Settings** (Chat/Text page), an HTTP server runs on localhost and exposes the same Writer/Calc/Draw tools to external AI clients (Cursor, Claude Desktop via a proxy, or any script). Clients target a document by sending the **`X-Document-URL`** header (or use the active document). Use **LocalWriter > Toggle MCP Server** and **MCP Server Status** to control and check the server. See [MCP_PROTOCOL.md](MCP_PROTOCOL.md) for endpoints, usage, and future work.
+
+### 9. Calc `=PROMPT()` function
 A cell formula to call the model directly from within your spreadsheet:
 `=PROMPT(message, [system_prompt], [model], [max_tokens])`
 
@@ -77,7 +80,7 @@ Their pioneering work on AI support for LibreOffice provided the foundation and 
 
 **[LibreOffice MCP Extension](https://github.com/quazardous/mcp-libre)**
 
-Their work on an embedded MCP (Model Context Protocol) server for LibreOffice was an invaluable reference for expanding LocalWriter's Writer tool set. From their project we adapted production-quality UNO implementations for style inspection, comment management, track-changes control, and table editing — resulting in 12 new Writer tools now available to LocalWriter's embedded AI. Their extension also introduced us to useful patterns for server lifecycle management, dynamic menu state, and health-check probing that inform our roadmap for exposing LocalWriter's tools to external AI clients. We're grateful for the high-quality open work and encourage everyone to check it out.
+Their work on an embedded MCP (Model Context Protocol) server for LibreOffice was an invaluable reference for expanding LocalWriter's Writer tool set. From their project we adapted production-quality UNO implementations for style inspection, comment management, track-changes control, and table editing — resulting in 12 new Writer tools now available to LocalWriter's embedded AI. We also used their patterns for server lifecycle, health-check probing, and port utilities when we added LocalWriter's built-in MCP HTTP server. We're grateful for the high-quality open work and encourage everyone to check it out.
 
 ## Performance & Batch Optimizations
 
@@ -97,7 +100,7 @@ We are moving towards a native "AI co-pilot" experience:
 *   **Reliability Foundations**: Strengthening timeout management, clear error recovery, and universal rollback-friendly behavior for professional stability.
 *   **Suite-Wide Completeness**: Finalizing deep integration for **LibreOffice Draw and Impress**, ensuring every application in the suite is AI-powered.
 *   **Offline First**: Continued focus on performance with the fastest local models (Ollama, etc.) to ensure privacy and speed without cloud dependencies.
-*   **MCP Server (External AI Access)**: A planned optional HTTP server that exposes LocalWriter's full tool set to external AI clients such as Claude Desktop and Cursor. When enabled, any MCP-compatible client would be able to read and edit your open LibreOffice documents using the same tools the built-in sidebar AI uses — with no second extension to install. In fact we plan to talk to the extension owner if he'd like to join our team. See [MCP_PROTOCOL.md](MCP_PROTOCOL.md) for the full design and implementation plan.
+*   **MCP Server**: Implemented. Optional HTTP server (enable in Settings) exposes LocalWriter's tool set to external clients; document targeting via `X-Document-URL` header. See [MCP_PROTOCOL.md](MCP_PROTOCOL.md) for status and future work (e.g. stdio proxy for Claude Desktop, dynamic menu icons).
 
 ## Setup
 
@@ -115,12 +118,13 @@ LocalWriter requires an OpenAI-compatible backend. Recommended options:
 
 ## Settings
 
-Configure your endpoint, model, and behavior in **LocalWriter > Settings**.
+Configure your endpoint, model, and behavior in **LocalWriter > Settings**. The dialog has two tabs: **Chat/Text** (endpoint, models, API key, temperature, context length, additional instructions, and an **MCP Server** section: enable checkbox and port) and **Image Settings** (size, aspect ratio, AI Horde options).
 
 *   **Endpoint URL**: e.g., `http://localhost:11434` for Ollama.
 *   **Additional Instructions**: A shared system prompt for all features with history support.
 *   **API Key**: Required for cloud providers.
 *   **Connection Keep-Alive**: Automatically enabled to reduce latency.
+*   **MCP Server**: Opt-in; when enabled, an HTTP server runs on the configured port (default 8765) for external AI clients. Use **Toggle MCP Server** and **MCP Server Status** from the menu.
 
 For detailed configuration examples, see [CONFIG_EXAMPLES.md](CONFIG_EXAMPLES.md).
 

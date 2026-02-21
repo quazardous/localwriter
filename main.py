@@ -26,6 +26,124 @@ import re
 from com.sun.star.beans import PropertyValue
 from com.sun.star.container import XNamed
 
+# ---------------------------------------------------------------------------
+# MCP Server (module-level state; UNO Timer for main-thread drain)
+# ---------------------------------------------------------------------------
+
+_mcp_server = None
+_mcp_timer = None
+_mcp_timer_listener = None
+
+
+def _start_mcp_timer(ctx):
+    """Start UNO Timer that drains MCP queue on main thread. Keep refs in module globals.
+    Listener class is defined here so XTimerListener is imported only inside LibreOffice (avoids
+    ImportError when pythonloader runs main.py for writeRegistryInfo outside UNO context).
+    """
+    global _mcp_timer, _mcp_timer_listener
+    try:
+        from com.sun.star.util import XTimerListener
+
+        class _MCPTimerListener(unohelper.Base, XTimerListener):
+            def notifyTimer(self, event):
+                try:
+                    from core.mcp_thread import drain_mcp_queue
+                    drain_mcp_queue()
+                except Exception:
+                    pass
+
+            def disposing(self, event):
+                pass
+
+        smgr = ctx.getServiceManager()
+        timer = smgr.createInstanceWithContext("com.sun.star.util.Timer", ctx)
+        _mcp_timer_listener = _MCPTimerListener()
+        timer.addTimerListener(_mcp_timer_listener)
+        timer.Timeout = 100
+        timer.IsRepeating = True
+        timer.start()
+        _mcp_timer = timer
+    except Exception:
+        _mcp_timer = None
+        _mcp_timer_listener = None
+
+
+def _stop_mcp_timer():
+    global _mcp_timer, _mcp_timer_listener
+    try:
+        if _mcp_timer:
+            _mcp_timer.stop()
+            _mcp_timer = None
+        _mcp_timer_listener = None
+    except Exception:
+        pass
+
+
+def _start_mcp_server(ctx):
+    """Start MCP HTTP server and drain timer if enabled in config."""
+    global _mcp_server
+    from core.config import get_config
+    from core.mcp_server import MCPHttpServer, _kill_zombies_on_port
+    if not as_bool(get_config(ctx, "mcp_enabled", False)):
+        return
+    if _mcp_server is not None:
+        return
+    port = int(get_config(ctx, "mcp_port", 8765))
+    if port <= 0 or port > 65535:
+        port = 8765
+    _kill_zombies_on_port("127.0.0.1", port)
+    try:
+        _mcp_server = MCPHttpServer(ctx, port=port)
+        _mcp_server.start()
+        _start_mcp_timer(ctx)
+    except Exception as e:
+        _mcp_server = None
+        from core.logging import debug_log
+        debug_log("MCP server start failed: %s" % e, context="MCP")
+
+
+def _stop_mcp_server():
+    global _mcp_server
+    _stop_mcp_timer()
+    try:
+        if _mcp_server is not None:
+            _mcp_server.stop()
+            _mcp_server = None
+    except Exception:
+        _mcp_server = None
+
+
+def _toggle_mcp_server(ctx):
+    """Start server if stopped, stop if running."""
+    global _mcp_server
+    if _mcp_server is not None:
+        _stop_mcp_server()
+    else:
+        _start_mcp_server(ctx)
+
+
+def _do_mcp_status(ctx):
+    """Show a small status dialog: running/stopped, port, health check."""
+    global _mcp_server
+    from core.config import get_config
+    smgr = ctx.getServiceManager()
+    desktop = smgr.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
+    frame = desktop.getCurrentFrame()
+    if frame and frame.ActiveFrame:
+        frame = frame.ActiveFrame
+    window_peer = frame.getContainerWindow() if frame else None
+    if not window_peer:
+        return
+    toolkit = smgr.createInstanceWithContext("com.sun.star.awt.Toolkit", ctx)
+    port = int(get_config(ctx, "mcp_port", 8765))
+    status = "RUNNING" if _mcp_server is not None else "STOPPED"
+    url = "http://localhost:%s" % port
+    from core.mcp_server import _probe_health
+    ok = _probe_health("127.0.0.1", port) if _mcp_server else False
+    health = "OK" if ok else ("FAIL" if _mcp_server else "N/A")
+    msg = "MCP Server: %s\nPort: %s\nURL: %s\nHealth: %s" % (status, port, url, health)
+    box = toolkit.createMessageBox(window_peer, 0, BUTTONS_OK, "MCP Server Status", msg)
+    box.execute()
 
 
 # The MainJob is a UNO component derived from unohelper.Base class
@@ -92,7 +210,8 @@ class MainJob(unohelper.Base, XJobExecutor):
             "image_insert_frame",
             "image_translate_prompt",
             "image_translate_from",
-            "aihorde_model"
+            "aihorde_model",
+            "mcp_enabled",
         ]
         
         # Get current endpoint for LRU scoping
@@ -137,6 +256,14 @@ class MainJob(unohelper.Base, XJobExecutor):
             if api_type_value not in ("chat", "completions"):
                 api_type_value = "completions"
             self.set_config("api_type", api_type_value)
+
+        if "mcp_port" in result:
+            try:
+                port = int(result["mcp_port"])
+                if 1 <= port <= 65535:
+                    self.set_config("mcp_port", port)
+            except (TypeError, ValueError):
+                pass
 
         notify_config_changed(self.ctx)
 
@@ -308,6 +435,8 @@ class MainJob(unohelper.Base, XJobExecutor):
             {"name": "image_insert_frame", "value": "true" if as_bool(self.get_config("image_insert_frame", False)) else "false", "type": "bool"},
             {"name": "image_translate_prompt", "value": "true" if as_bool(self.get_config("image_translate_prompt", True)) else "false", "type": "bool"},
             {"name": "image_translate_from", "value": str(self.get_config("image_translate_from", ""))},
+            {"name": "mcp_enabled", "value": "true" if as_bool(self.get_config("mcp_enabled", False)) else "false", "type": "bool"},
+            {"name": "mcp_port", "value": str(self.get_config("mcp_port", 8765)), "type": "int"},
         ]
 
         pip = ctx.getValueByName("/singletons/com.sun.star.deployment.PackageInformationProvider")
@@ -487,6 +616,13 @@ class MainJob(unohelper.Base, XJobExecutor):
         if args == "settings" and (not model or (not is_writer(model) and not is_calc(model) and not is_draw(model))):
             agent_log("main.py:trigger", "settings requested but no compatible document", data={"args": str(args)}, hypothesis_id="H2")
 
+        if args == "ToggleMCPServer":
+            _toggle_mcp_server(self.ctx)
+            return
+        if args == "MCPStatus":
+            _do_mcp_status(self.ctx)
+            return
+
         if args == "RunFormatTests":
             try:
                 from core.format_tests import run_markdown_tests
@@ -661,6 +797,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                     agent_log("main.py:trigger", "about to call settings_box (Writer)", hypothesis_id="H1,H2")
                     result = self.settings_box("Settings")
                     self._apply_settings_result(result)
+                    _start_mcp_server(self.ctx)
                 except Exception as e:
                     agent_log("main.py:trigger", "settings exception (Writer)", data={"error": str(e)}, hypothesis_id="H5")
                     self.show_error(format_error_message(e), "LocalWriter: Settings")
@@ -726,6 +863,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                         agent_log("main.py:trigger", "about to call settings_box (Calc)", hypothesis_id="H1,H2")
                         result = self.settings_box("Settings")
                         self._apply_settings_result(result)
+                        _start_mcp_server(self.ctx)
                     except Exception as e:
                         agent_log("main.py:trigger", "settings exception (Calc)", data={"error": str(e)}, hypothesis_id="H5")
                         self.show_error(format_error_message(e), "LocalWriter: Settings")
@@ -863,6 +1001,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                 try:
                     result = self.settings_box("Settings")
                     self._apply_settings_result(result)
+                    _start_mcp_server(self.ctx)
                 except Exception as e:
                     self.show_error(format_error_message(e), "LocalWriter: Settings")
                 return

@@ -17,6 +17,7 @@
 - **Settings**: Configure endpoint, model, API key, temperature, request timeout, image generation settings (provider, API keys, dimensions), etc.
 - **Image Generation & Editing**: Multimodal capabilities via `generate_image` (create and insert) and `edit_image` (Img2Img on selected object) tools.
 - **Calc** `=PROMPT()`: Cell formula that calls the model
+- **MCP Server** (opt-in): HTTP server on localhost that exposes Writer/Calc/Draw tools to external AI clients (Cursor, Claude Desktop proxy, scripts). Document targeting via `X-Document-URL` header; opt-in via Settings.
 
 **Connection Management & Identification**: LocalWriter includes built-in connection management in `core/api.py` that maintains persistent HTTP/HTTPS connections. All requests use unified `USER_AGENT`, `APP_REFERER`, and `APP_TITLE` headers from `core.constants` for consistent identification across providers (OpenRouter, Together AI, etc.).
 
@@ -36,6 +37,8 @@ localwriter/
 │   ├── logging.py       # init_logging, debug_log(msg, context), agent_log; single debug file + optional agent log
 │   ├── constants.py     # DEFAULT_CHAT_SYSTEM_PROMPT, DEFAULT_CALC_CHAT_SYSTEM_PROMPT, get_chat_system_prompt_for_document
 │   ├── async_stream.py  # run_stream_completion_async: worker + queue + main-thread drain (no UNO Timer)
+│   ├── mcp_thread.py    # execute_on_main_thread, drain_mcp_queue (for MCP HTTP handler → main thread)
+│   ├── mcp_server.py    # MCPHttpServer, MCPHandler (GET /health, /tools, /, /documents; POST /tools/{name}); port utilities
 │   ├── calc_bridge.py   # in-process get_active_document, get_active_sheet, etc.
 │   ├── calc_address_utils.py
 │   ├── calc_inspector.py
@@ -69,7 +72,7 @@ localwriter/
 ├── Accelerators.xcu       # Ctrl+Q, Ctrl+E
 ├── description.xml
 ├── build.sh               # Creates localwriter.oxt
-├── assets/                # icon_16.png, logo.png
+├── assets/                # icon_16.png, logo.png, MCP icons (running_*, starting_*, stopped_*.png)
 ├── localwriter.json.example
 └── CONFIG_EXAMPLES.md     # Config templates
 ```
@@ -84,7 +87,7 @@ localwriter/
 
 ### After
 - Both dialogs use **XDL files** (XML) loaded via `DialogProvider`
-- `LocalWriterDialogs.SettingsDialog` — two-page dialog (Chat/Text and **Image Settings**) using the `dlg:page` multi-page approach with tab-switching buttons. The Image Settings tab is split into shared image options and an **AI Horde** section (toggled by "Use AI Horde for Image Generation", previously "AI Horde only") with a visual separator.
+- `LocalWriterDialogs.SettingsDialog` — two-page dialog (Chat/Text and **Image Settings**) using the `dlg:page` multi-page approach with tab-switching buttons. **Page 1 (Chat/Text)** uses a compact layout: short fields (API Type, Temperature, Max Tokens, Context Len) in multi-column rows; `openai_compatibility` is a checkbox; an **MCP Server** section below a fixedline (Enable checkbox, Port, "Localhost only, no auth."). The Image Settings tab is split into shared image options and an **AI Horde** section (toggled by "Use AI Horde for Image Generation") with a visual separator.
 - `LocalWriterDialogs.EditInputDialog` — label + text field + OK
 
 ### Key implementation details
@@ -401,13 +404,14 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 ### Writer Tools Expansion — DONE
 - ~~**Writer tool set expansion**~~: Added 12 new Writer tools in `core/writer_ops.py` and wired into `core/document_tools.py`. Removed 7 legacy unused functions. New tools: `list_styles`, `get_style_info`, `list_comments`, `add_comment`, `delete_comment`, `set_track_changes`, `get_tracked_changes`, `accept_all_changes`, `reject_all_changes`, `list_tables`, `read_table`, `write_table_cell`. System prompt updated to mention them.
 
-### MCP Server (external AI client access) — Future
-- Add `core/mcp_thread.py` (~40 lines): `_Future` + `execute_on_main_thread` + `drain_mcp_queue` — thin wrapper on the existing `queue.Queue` pattern already proven in `core/async_stream.py`.
-- Add `core/mcp_server.py` (~120 lines): HTTP server that routes to LocalWriter's existing `execute_tool` / `execute_calc_tool` / `execute_draw_tool`.
-- **Idle-time draining** (pick one): (A) UNO Timer in `main.py` (`com.sun.star.util.XTimer`, 100ms) for standalone MCP use; or (B) two lines added to `run_stream_drain_loop` in `async_stream.py` to service MCP requests during active chat turns (zero new infrastructure).
-- Add config keys `mcp_enabled` (default false) and `mcp_port` (default 8765).
-- Add "MCP Server" tab to `SettingsDialog.xdl`.
-- See **`MCP_PROTOCOL.md`** for full implementation plan, code sketches, and architecture diagram.
+### MCP Server (external AI client access) — DONE
+- **`core/mcp_thread.py`**: `_Future`, `execute_on_main_thread`, `drain_mcp_queue` — work is queued from HTTP handler threads and drained on the main thread.
+- **`core/mcp_server.py`**: `MCPHttpServer` and `MCPHandler`; GET `/health`, `/tools`, `/`, `/documents`; POST `/tools/{name}`. **Document targeting**: `X-Document-URL` header; server resolves document by iterating `desktop.getComponents()` and matching `getURL()`. Falls back to active document if header absent. Port utilities: `_probe_health`, `_is_port_bound`, `_kill_zombies_on_port` (Windows).
+- **Idle-time draining**: UNO Timer in `main.py` (Path A): `com.sun.star.util.Timer`, 100ms repeating, calls `drain_mcp_queue()` so MCP requests are serviced even when no chat is active.
+- **Config**: `mcp_enabled` (default false), `mcp_port` (default 8765). Settings Page 1 has an MCP section (below fixedline): Enable MCP Server checkbox, Port field, "Localhost only, no auth." label. No separate tab.
+- **Menu**: "Toggle MCP Server" and "MCP Server Status" under LocalWriter. Status dialog shows RUNNING/STOPPED, port, URL, and health check. Auto-start: when user saves Settings with MCP enabled, server (and timer) start if not already running.
+- **Icons**: `assets/` includes `running_16.png`, `running_26.png`, `starting_16.png`, `starting_26.png`, `stopped_16.png`, `stopped_26.png` (from libreoffice-mcp-extension).
+- See **`MCP_PROTOCOL.md`** for protocol details and architecture.
 
 ### Document Tree Tool — Future (Session 2)
 - Port `get_document_tree()` from `libreoffice-mcp-extension/pythonpath/uno_bridge.py` (~300 lines including helpers: `_build_heading_tree`, `_ensure_heading_bookmarks`, `_apply_content_strategy`, `_get_body_preview`, `_annotate_pages`). Improves context quality for long documents.
@@ -450,6 +454,7 @@ Image generation and AI Horde integration are **complete** (generate_image, edit
 - **Writer has a Drawing Layer**: `hasattr(model, "getDrawPages")` returns `True` for Writer documents because they have a drawing layer for shapes. Always use `is_writer(model)` (via `supportsService`) to avoid misidentifying Writer as Draw.
 - **Context function signatures**: All document context functions should follow the signature `(model, max_context, ctx=None)`. Missing the `ctx` default can lead to `TypeError` during document type transitions in the sidebar.
 - **API Keys / Security**: API keys MUST be handled via the Settings dialog and stored in `localwriter.json`. Never bake in fallbacks to environment variables (like `OPENROUTER_API_KEY`) in production code, as this bypasses the user's manual configuration and complicates privacy auditing. Env vars are for developer testing ONLY.
+- **MCP Server**: The MCP HTTP server and UNO Timer for `drain_mcp_queue` are started from `main.py` only (not from the sidebar). Server binds to localhost only; no authentication. External clients target a document via the `X-Document-URL` header to avoid races with the active document.
 
 ---
 

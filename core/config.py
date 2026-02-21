@@ -10,6 +10,8 @@ from .default_models import DEFAULT_MODELS
 
 CONFIG_FILENAME = "localwriter.json"
 
+# MCP server: mcp_enabled (bool, default False), mcp_port (int, default 8765)
+
 # Max items for all LRU lists (model_lru, prompt_lru, image_model_lru, endpoint_lru).
 LRU_MAX_ITEMS = 6
 

@@ -54,6 +54,28 @@
               <value>_self</value>
             </prop>
           </node>
+          <node oor:name="M3b" oor:op="replace">
+            <prop oor:name="Title">
+              <value xml:lang="en-US">Toggle MCP Server</value>
+            </prop>
+            <prop oor:name="URL">
+              <value>service:org.extension.localwriter.Main?ToggleMCPServer</value>
+            </prop>
+            <prop oor:name="Target" oor:type="xs:string">
+              <value>_self</value>
+            </prop>
+          </node>
+          <node oor:name="M3c" oor:op="replace">
+            <prop oor:name="Title">
+              <value xml:lang="en-US">MCP Server Status</value>
+            </prop>
+            <prop oor:name="URL">
+              <value>service:org.extension.localwriter.Main?MCPStatus</value>
+            </prop>
+            <prop oor:name="Target" oor:type="xs:string">
+              <value>_self</value>
+            </prop>
+          </node>
           <node oor:name="M4" oor:op="replace">
             <prop oor:name="Title">
               <value xml:lang="en-US">Run format tests</value>

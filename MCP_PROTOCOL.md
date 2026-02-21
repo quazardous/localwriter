@@ -1,19 +1,39 @@
-# MCP Protocol — Future Work Plan
+# MCP Protocol — Status and Future Work
 
 ## What Is This?
 
 MCP (Model Context Protocol) is a standard for exposing tool sets to external AI clients
 (Claude Desktop, Cursor, custom scripts, etc.) over HTTP. The `libreoffice-mcp-extension/`
-directory in this repo is an existing standalone extension that already implements this for
-LibreOffice, running its own HTTP server on `localhost:8765`.
+directory in this repo is an existing standalone extension that implements a similar HTTP API
+for LibreOffice.
 
-This document describes the plan for adding equivalent MCP server capability **directly into
-LocalWriter**, so that users who install LocalWriter can use it both as an embedded AI editing
-tool (the sidebar) AND as a source of document tools for any external AI client.
+LocalWriter now includes an **MCP HTTP server** built in: users who install LocalWriter can
+use it as an embedded AI editing tool (the sidebar) **and** as a source of document tools
+for external AI clients. This document describes what was implemented, how it works, and
+what to consider doing next.
 
 ---
 
-## What Has Already Been Done (This Session)
+## Current Status — What Was Implemented
+
+The MCP server is **implemented and opt-in** (default off). Summary:
+
+- **`core/mcp_thread.py`**: `_Future`, `execute_on_main_thread()`, `drain_mcp_queue()`. Work from HTTP handler threads is queued and executed on LibreOffice’s main thread.
+- **`core/mcp_server.py`**: HTTP server on localhost; GET `/health`, `/`, `/tools`, `/documents`; POST `/tools/{name}`. Port utilities: `_probe_health`, `_is_port_bound`, `_kill_zombies_on_port`.
+- **Idle-time draining**: **UNO Timer** in `main.py` (Path A). Timer fires every 100ms and calls `drain_mcp_queue()`. Option B (piggyback on the chat stream drain loop) was **not** used — it would only service MCP during active chat, which is inadequate for standalone MCP use.
+- **Document targeting**: **`X-Document-URL`** HTTP header. The server resolves the target document by iterating `desktop.getComponents()` and matching `getURL()` to the header. If the header is absent, it falls back to the active document. `GET /documents` returns all open documents with URLs and types so clients can discover targets. This avoids races when multiple documents or users are involved; “active document only” was not used.
+- **Config**: `mcp_enabled` (default false), `mcp_port` (default 8765). Documented in `core/config.py`.
+- **Settings**: MCP section on **Page 1** of the Settings dialog (no separate tab): “Enable MCP Server” checkbox, Port field, “Localhost only, no auth.” label. Dialog layout was compacted so short fields share rows and the OK button sits at the bottom with minimal gap.
+- **Menu**: “Toggle MCP Server” and “MCP Server Status” under LocalWriter. Status dialog shows RUNNING/STOPPED, port, URL, and health check.
+- **Auto-start**: When the user saves Settings with MCP enabled, the server (and timer) start if not already running.
+- **Icons**: Six PNGs copied from `libreoffice-mcp-extension/icons/` to `assets/` (for possible future dynamic menu icons).
+- **Import fix**: `XTimerListener` is imported only inside `_start_mcp_timer()` so that the Python loader can load `main.py` for registry info without requiring UNO.
+
+See **AGENTS.md** (Section “MCP Server — DONE”) and the code in `main.py`, `core/mcp_thread.py`, and `core/mcp_server.py` for details.
+
+---
+
+## What Had Already Been Done (Writer Tools, Pre-MCP)
 
 Before building the MCP server itself, the Writer tool set was expanded so that LocalWriter's
 embedded AI (and future MCP clients) have a richer set of operations to work with.
@@ -65,48 +85,27 @@ is straightforward.
 
 ---
 
-## How Clients Discover Tools and Context
+## How Clients Discover Tools and Context (implemented)
 
-### The three endpoints
+### Endpoints
 
-The HTTP server exposes three read endpoints that external AI clients call:
+The HTTP server exposes:
 
 ```
-GET /health   → {"status": "ok"}   — alive check
-GET /tools    → {"tools": [...], "count": N}  — full tool schema list
-GET /         → {"name": "...", "instructions": "...", "tools_count": N, ...}
+GET /health     → {"status": "ok", "name": "LocalWriter MCP"}   — alive check (identifies our server)
+GET /tools      → {"tools": [...], "count": N}  — tool list for target document (use X-Document-URL or active doc)
+GET /           → {"name": "LocalWriter", "instructions": "...", "tools_count": N}  — system prompt for target document
+GET /documents  → {"documents": [{"url": "...", "type": "writer"|"calc"|"draw"}, ...]}  — list open documents for X-Document-URL
+POST /tools/{name}  → JSON result  — execute tool (send X-Document-URL header to target a document)
 ```
 
-`GET /tools` is the primary one. It returns every tool's `name`, `description`, and
-`parameters` (JSON Schema). The client reads these descriptions to understand what each
-tool does and how to call it — the same way an LLM reads the `function` descriptions in an
-OpenAI tool-calling payload.
+`GET /tools` returns the tool list for the **target document** (from `X-Document-URL` header
+or the active document). Each tool has `name`, `description`, and `parameters` (JSON Schema).
 
-`GET /` serves "agent instructions": a free-form text blob intended to orient the AI before
-it starts calling tools. In the standalone extension this is loaded from an `AGENT.md` file
-in the extension root — **that file does not exist in the repo** (the `instructions` field
-comes back empty string). This is an obvious gap.
-
-For LocalWriter this gap is already filled: `core/constants.py` has
-`DEFAULT_CHAT_SYSTEM_PROMPT`, `DEFAULT_CALC_CHAT_SYSTEM_PROMPT`, and
-`DEFAULT_DRAW_CHAT_SYSTEM_PROMPT` — exactly the right document-type-aware instructions.
-Serve the relevant one from `GET /` based on the active document type:
-
-```python
-def _get_instructions(ctx) -> str:
-    from core.constants import get_chat_system_prompt_for_document
-    from core.document import get_active_document
-    try:
-        doc = get_active_document(ctx)
-        return get_chat_system_prompt_for_document(doc)
-    except Exception:
-        from core.constants import DEFAULT_CHAT_SYSTEM_PROMPT
-        return DEFAULT_CHAT_SYSTEM_PROMPT
-```
-
-No separate markdown file needed. LocalWriter's existing prompts are already well-crafted
-for document editing — they contain tool usage hints, formatting rules, and workflow guidance
-that the external AI client will benefit from just as much as the embedded sidebar AI.
+`GET /` returns **agent instructions** (system prompt) for the target document. LocalWriter
+uses `get_chat_system_prompt_for_document(doc)` from `core/constants.py` — Writer, Calc, and
+Draw each have the right prompt. No separate AGENT.md file; the instructions are built in. The same prompts used by the
+sidebar chat (tool usage, formatting rules, workflow) are served to external clients.
 
 ---
 
@@ -119,7 +118,7 @@ The extension's HTTP API is **not** the Anthropic MCP specification. Real MCP us
 - **Discovery**: Claude Desktop reads `~/.config/claude/claude_desktop_config.json` which
   lists MCP servers by command path
 
-What the extension implements (and what LocalWriter would implement) is a simpler custom
+What the extension implements (and what LocalWriter implements) is a simpler custom
 HTTP REST API. Claude Desktop **cannot** talk to it natively — it expects stdio/SSE.
 
 **However**, Cursor's MCP support does accept HTTP-based servers. And any custom AI client
@@ -183,19 +182,18 @@ server simple. Path B is an optimization once Path A is validated to work.
 ```
 External AI client (Claude Desktop, Cursor, etc.)
         |
-        | HTTP POST /tools/list_tables  {"table_name": "Budget"}
+        | HTTP POST /tools/list_tables  + header X-Document-URL: file:///path/to/doc.odt
         v
   HTTPServer thread (background)
-  MCPRequestHandler.do_POST()
+  MCPHandler.do_POST()
         |
-        | put (func, args, result_future) on global _request_queue
-        | result_future.result(timeout=30)   <-- blocks HTTP thread
+        | put (func, args, future) on _mcp_queue; future.result(timeout=30)  <-- blocks HTTP thread
         v
   UNO Timer (fires every 100ms on main thread)
-  _drain_request_queue()
+  drain_mcp_queue()
         |
-        | calls execute_tool(tool_name, args, doc, ctx)
-        | result_future.set_result(json_result)
+        | _resolve_document(ctx, X-Document-URL) -> doc; execute_tool(tool_name, args, doc, ctx)
+        | future.set_result(json_result)
         v
   HTTP thread unblocks, returns JSON to client
 ```
@@ -258,179 +256,27 @@ def drain_mcp_queue(max_per_tick=5):
             future.set_exception(e)
 ```
 
-### The One Genuinely New Piece: Idle-Time Draining
+### Idle-Time Draining (implemented: UNO Timer)
 
-The existing drain loop in `run_stream_drain_loop` only runs **during an active chat send**
-(`actionPerformed`). Between user interactions, the main thread returns to LibreOffice's own
-VCL event loop and `drain_mcp_queue()` is never called.
+The existing drain loop in `run_stream_drain_loop` only runs **during an active chat send**.
+Between user interactions, the main thread is in LibreOffice’s VCL event loop, so MCP requests
+would never be serviced if we only drained there.
 
-Two options for idle-time draining:
+**Implemented: Option A — UNO Timer.** A timer in `main.py` (100ms, repeating) calls
+`drain_mcp_queue()` on the main thread. The listener class and `XTimerListener` import are
+defined inside `_start_mcp_timer()` so the module can load without UNO (e.g. for registry
+writing). See `main.py` for the exact code.
 
-**Option A — UNO Timer** (recommended for standalone MCP use):
+**Option B (piggyback on chat drain loop) was not used.** Servicing MCP only during active
+chat would break standalone use (e.g. external client with no sidebar chat). So we use the
+UNO Timer only.
 
-Available in `main.py` context (NOT in the sidebar — see AGENTS.md gotchas). Fires every
-100ms regardless of chat state:
+### Reference: `core/mcp_server.py` (implemented)
 
-```python
-from com.sun.star.util import XTimerListener
-import unohelper
+Thin HTTP server that reuses `execute_tool()`, `execute_calc_tool()`, and `execute_draw_tool()`.
+The **actual implementation** in `core/mcp_server.py` uses `_resolve_document(ctx, X-Document-URL header)` to target a document by URL (or active document if header is absent), and implements GET `/documents`, GET `/`, GET `/tools`, GET `/health`, and POST `/tools/{name}` with CORS. The sketch below shows the dispatch pattern; document resolution is via header in the real code.
 
-class MCPTimerListener(unohelper.Base, XTimerListener):
-    def notifyTimer(self, event):
-        from core.mcp_thread import drain_mcp_queue
-        drain_mcp_queue()
-    def disposing(self, event): pass
-
-def _start_mcp_timer(ctx):
-    smgr = ctx.ServiceManager
-    timer = smgr.createInstanceWithContext("com.sun.star.util.Timer", ctx)
-    listener = MCPTimerListener()
-    timer.addTimerListener(listener)
-    timer.Timeout = 100
-    timer.IsRepeating = True
-    timer.start()
-    return timer, listener   # keep references alive to prevent GC
-```
-
-**Option B — Piggyback on chat drain loop** (zero new infrastructure):
-
-Add a single line to `run_stream_drain_loop` in `async_stream.py`:
-
-```python
-# Inside the while loop, just before processEventsToIdle():
-from core.mcp_thread import drain_mcp_queue
-drain_mcp_queue()
-toolkit.processEventsToIdle()
-```
-
-Trade-off: MCP requests are only serviced during active chat turns. Fine for "AI client and
-embedded AI collaborate on the same document during a session"; breaks for standalone MCP use
-when no chat is happening.
-
-**Recommendation**: Start with Option B (two lines of code, zero new infrastructure). Add the
-UNO Timer (Option A) only if standalone MCP use without an active chat session is needed.
-
-### Step 2 — `core/mcp_server.py` (new file, ~120 lines)
-
-Thin HTTP server. Reuse LocalWriter's existing `execute_tool()` from `document_tools.py`
-and `execute_calc_tool()` / `execute_draw_tool()` from `calc_tools.py` / `draw_tools.py`.
-
-```python
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import threading, json
-from core.mcp_thread import execute_on_main_thread
-from core.document import is_calc, is_draw
-
-class MCPHandler(BaseHTTPRequestHandler):
-    ctx = None   # set at class level before server starts
-
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length)) if length else {}
-        tool_name = self.path[7:] if self.path.startswith("/tools/") else body.get("tool")
-
-        def _run():
-            from core.calc_bridge import CalcBridge
-            # resolve active document, pick correct dispatcher
-            smgr = self.ctx.ServiceManager
-            desktop = smgr.createInstanceWithContext("com.sun.star.frame.Desktop", self.ctx)
-            doc = desktop.getCurrentComponent()
-            if is_calc(doc):
-                from core.calc_tools import execute_calc_tool
-                return execute_calc_tool(tool_name, body, CalcBridge(doc), self.ctx)
-            elif is_draw(doc):
-                from core.draw_tools import execute_draw_tool
-                from core.draw_bridge import DrawBridge
-                return execute_draw_tool(tool_name, body, DrawBridge(doc), self.ctx)
-            else:
-                from core.document_tools import execute_tool
-                return execute_tool(tool_name, body, doc, self.ctx)
-
-        try:
-            result = execute_on_main_thread(_run, timeout=30.0)
-            self._respond(200, result)
-        except TimeoutError:
-            self._respond(504, json.dumps({"status": "error", "message": "timeout"}))
-        except Exception as e:
-            self._respond(500, json.dumps({"status": "error", "message": str(e)}))
-
-    def do_GET(self):
-        if self.path == "/health":
-            self._respond(200, json.dumps({"status": "ok"}))
-        elif self.path == "/tools":
-            from core.document_tools import WRITER_TOOLS
-            self._respond(200, json.dumps({"tools": WRITER_TOOLS}))
-        else:
-            self._respond(404, json.dumps({"error": "not found"}))
-
-    def _respond(self, code, body):
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body.encode())
-
-    def log_message(self, *args): pass   # suppress default request log
-
-
-class MCPHttpServer:
-    def __init__(self, ctx, port=8765):
-        MCPHandler.ctx = ctx
-        self._server = HTTPServer(("localhost", port), MCPHandler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-
-    def start(self):
-        self._thread.start()
-
-    def stop(self):
-        self._server.shutdown()
-```
-
-### Step 3 — UNO Timer in `main.py`
-
-Register the drain loop as a UNO Timer when the extension initialises. The timer should start
-as part of `MCPAutoStartJob.execute()` (already called on `onFirstVisibleTask`):
-
-```python
-from com.sun.star.util import XTimerListener
-import unohelper
-
-class MCPTimerListener(unohelper.Base, XTimerListener):
-    def notifyTimer(self, event):
-        from core.mcp_thread import drain_request_queue
-        drain_request_queue()
-    def disposing(self, event): pass
-
-def _start_mcp_timer(ctx):
-    smgr = ctx.ServiceManager
-    timer = smgr.createInstanceWithContext("com.sun.star.util.Timer", ctx)
-    listener = MCPTimerListener()
-    timer.addTimerListener(listener)
-    timer.Timeout = 100   # milliseconds
-    timer.IsRepeating = True
-    timer.start()
-    return timer, listener   # keep references alive
-```
-
-### Step 4 — Config keys (add to `core/config.py` defaults)
-
-```python
-"mcp_enabled": False,    # user must opt in
-"mcp_port": 8765,
-```
-
-### Step 5 — Settings dialog tab
-
-Add a third tab "MCP Server" to `LocalWriterDialogs/SettingsDialog.xdl`:
-- Enable MCP Server (checkbox → `mcp_enabled`)
-- Port (numeric field → `mcp_port`, default 8765)
-- Status label: "Server running at http://localhost:8765"
-- Health check button
-
-### Step 6 — Menu items (`Addons.xcu`)
-
-Optional. Could expose Start/Stop/Status menu entries under LocalWriter menu, similar to how
-the standalone extension does it in its `registration.py`.
+See `core/mcp_server.py` for the full implementation. Dispatch pattern: `_resolve_document(ctx, X-Document-URL)` returns `(doc, doc_type)`; then call `execute_calc_tool`, `execute_draw_tool`, or `execute_tool` accordingly. All run via `execute_on_main_thread(_run, timeout=30)`.
 
 ---
 
@@ -448,25 +294,21 @@ to its own embedded AI:
 
 **Draw**: All `DRAW_TOOLS` from `core/draw_tools.py`.
 
-The server detects the active document type and routes to the correct dispatcher automatically
-(see Step 2 above).
+The server resolves the target document via the **`X-Document-URL`** header (or active
+document if absent) and routes to the correct dispatcher by type.
 
 ---
 
-## Document Targeting
+## Document Targeting (implemented)
 
-One open question: when multiple documents are open, which one does an external tool call
-target? Two options:
+When multiple documents are open, the server does **not** rely on “active document” only —
+that would race with focus and multiple users. **Implemented: `X-Document-URL` header.**
 
-1. **Active document** (simplest): always operate on `desktop.getCurrentComponent()`. This
-   matches how most external AI clients work — the user brings the document to focus, then
-   asks the AI client to act on it.
+- The client sends the document URL in the `X-Document-URL` HTTP header (e.g. from `GET /documents`).
+- The server iterates `desktop.getComponents()` and matches `doc.getURL()` to the header value.
+- If the header is missing, the server falls back to `desktop.getCurrentComponent()` for simple single-document use.
 
-2. **`file_path` parameter**: add an optional `file_path` to every tool call so the external
-   client can address a specific open document. This is what the standalone extension does.
-   More powerful but adds complexity to every tool schema.
-
-Recommendation: start with (1). Add `file_path` support when a real use case requires it.
+No tool schema changes; targeting is at the transport layer. Optional per-call `file_path` (or similar) can be considered later if needed.
 
 ---
 
@@ -814,41 +656,42 @@ In priority order:
 
 ---
 
+## Future Work — Consider Doing Next
 
+Use this list to keep MCP and related tooling moving forward. Nothing here is required for
+current functionality.
 
-New files to create:
+### MCP / protocol
 
-- `core/mcp_thread.py` (~40 lines): `_Future`, `execute_on_main_thread`, `drain_mcp_queue`
-- `core/mcp_server.py` (~180 lines): HTTP server + port utilities (from `registration.py`)
+- **Stdio proxy for Claude Desktop** (Path A in “Critical distinction” above): small script
+  that talks JSON-RPC over stdio to Claude and forwards to LocalWriter’s HTTP server. No
+  change to LocalWriter; lets Claude Desktop use LocalWriter as an MCP server.
+- **JSON-RPC in the server** (Path B): optional `POST /` with `method=tools/list` etc. for
+  clients that expect strict MCP JSON-RPC instead of REST. Only if a client needs it.
+- **Dynamic menu state**: menu item label “Start MCP Server” / “Stop MCP Server” and icon
+  (running/stopped/starting) via status listeners. Icons are in `assets/`; switching is
+  disabled in the standalone extension due to rendering issues — re-enable with care.
+- **Optional `file_path` (or URL) on tool calls**: if clients need to target by path in the
+  request body as well as (or instead of) the `X-Document-URL` header, extend the handler
+  to accept it.
 
-Existing files to modify:
+### Tool and prompt improvements (from “Tool Description and System Prompt Analysis” below)
 
-- `core/async_stream.py`: add `drain_mcp_queue()` call before `processEventsToIdle()` (Option B, 2 lines); OR wire UNO Timer in `main.py` (Option A)
-- `main.py`: add `_start_mcp_server()` / `_stop_mcp_server()`, autostart job, dispatch cases for `toggle_mcp_server` and `mcp_status`, status dialog
-- `core/config.py`: add defaults `mcp_enabled: False`, `mcp_port: 8765`
-- `LocalWriterDialogs/SettingsDialog.xdl`: add page 3 "MCP Server" with enable checkbox, port field, health URL label
-- `Addons.xcu`: add MCP Server menu entries under existing LocalWriter menu
-- `META-INF/manifest.xml`: register autostart job if using Option A (UNO Timer approach)
-- `assets/`: copy 6 icon files from `libreoffice-mcp-extension/icons/`
+- **Tool descriptions**: e.g. add to `apply_document_content`: “Plain-text replacements via
+  `target='search'` automatically preserve character formatting.” Add usage hints to
+  `set_track_changes` and similar.
+- **`find_text` context**: optional parameter to return N characters (or paragraphs) around
+  each match so the AI can confirm it’s editing the right place.
+- **`refresh_indexes` / `update_fields`**: short helpers (~10 lines each) to refresh TOC
+  and fields after structural edits. Good follow-up when doing document-tree work.
+- **`set_paragraph_style` (direct)**: re-expose so the AI can apply a style by name after
+  `list_styles`. Other items from “What they have that LocalWriter lacks” (e.g. document
+  protection, document properties) as needed.
 
----
+### Other
 
-## Effort Estimate
-
-| Task | Lines | Source |
-|---|---|---|
-| `core/mcp_thread.py` | ~40 | New (pattern from `async_stream.py`) |
-| `core/mcp_server.py` (HTTP + port utilities) | ~180 | Adapted from `ai_interface.py` + `registration.py` |
-| Option B drain (2 lines in `async_stream.py`) | ~2 | New |
-| Start/stop + status dialog in `main.py` | ~120 | Adapted from `registration.py` |
-| Dynamic menu state (status listeners) | ~60 | Adapted from `registration.py` |
-| Settings dialog tab (XDL + Python) | ~90 | New, modeled on existing tabs |
-| `Addons.xcu` menu entries | ~20 | Adapted from extension's `Addons.xcu` |
-| Config defaults in `core/config.py` | ~5 | New |
-| Copy icon files | 0 | Direct copy from `libreoffice-mcp-extension/icons/` |
-| Build, install, smoke test | — | ~30 min |
-| **Total** | **~520** | **~4–5 hours** |
-
-The threading pattern is solved. The HTTP server, port utilities, status dialog, and dynamic
-menu state are all near-copy from `registration.py` / `ai_interface.py` with identifier
-substitution. The main effort is the Settings dialog tab and wiring everything together.
+- **Auto-start on LO launch**: optional `XJob` with `onFirstVisibleTask` that starts the
+  MCP server if `mcp_enabled` is true, so the server is up without opening Settings first.
+  Currently the server starts when the user saves Settings with MCP enabled or uses Toggle.
+- **Document tree / outline tool**: `get_document_tree()` (e.g. from `libreoffice-mcp-extension`
+  `uno_bridge.py`) for better context on long documents; see AGENTS.md “Document Tree Tool”.
