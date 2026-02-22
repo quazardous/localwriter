@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
-# Basic client for AiHorde
+# basic client for AiHorde
 # Authors:
 #  * blueturtleai <https://github.com/blueturtleai> Original Code
 #  * Igor Támara <https://github.com/ikks>
@@ -9,6 +9,17 @@
 #
 # https://github.com/ikks/aihorde-client/blob/main/LICENSE
 # Copied over 2/17/2026
+#
+# MODIFICATIONS FOR LOCALWRITER 02-22-2026
+# - Integrated with project core: uses core.api.sync_request, core.logging for debug/exceptions,
+#   and core.constants.USER_AGENT.
+# - Removed asyncio/abc dependencies: switched to synchronous patterns suitable for
+#   LibreOffice's threading model.
+# - Simplified error handling: centralized logic in _raise_horde_http_error for better UX.
+# - Removed upstream-specific helper classes: removed HordeClientSettings and
+#   ProcedureInformation, as config and logic are handled by LocalWriter's unified systems.
+# - Refined informer pattern: used direct callbacks via a simple informer object instead of
+#   the upstream abstract interface.
 
 
 from datetime import date, datetime
