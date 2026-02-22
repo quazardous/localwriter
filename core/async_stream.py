@@ -20,15 +20,28 @@ def run_stream_drain_loop(
     on_stopped,
     on_error,
     on_status_fn=None,
+    ctx=None,
 ):
     """
     Main-thread drain loop: batch items from queue, maintain thinking/chunk buffers,
     call apply_chunk_fn for content. on_stream_done(response) returns True if job is
     finished, False if more items will be pushed (e.g. next tool round). on_stopped()
     and on_error(exception) are called when stopped or error; job_done is set and loop exits.
+    When ctx is provided and MCP is enabled in config, we also drain the MCP queue each
+    iteration so MCP requests are serviced during streaming without a separate Timer.
     """
     thinking_open = [False]
     while not job_done[0]:
+        # Service MCP queue when enabled: this loop runs on the main thread during
+        # streaming, so we use it to drain the MCP queue and avoid a separate UNO Timer.
+        if ctx is not None:
+            try:
+                from core.config import get_config, as_bool
+                if as_bool(get_config(ctx, "mcp_enabled", False)):
+                    from core.mcp_thread import drain_mcp_queue
+                    drain_mcp_queue()
+            except Exception:
+                pass
         items = []
         try:
             items.append(q.get(timeout=0.1))
@@ -179,5 +192,6 @@ def run_stream_completion_async(
         on_stopped=on_done_fn,
         on_error=on_error_fn,
         on_status_fn=on_status_fn,
+        ctx=ctx,
     )
 

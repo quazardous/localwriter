@@ -30,6 +30,9 @@ from com.sun.star.container import XNamed
 # ---------------------------------------------------------------------------
 # MCP Server (module-level state; UNO Timer for main-thread drain)
 # ---------------------------------------------------------------------------
+# The timer is needed because MCP request work is queued and must be drained on
+# LibreOffice's main thread. We use a UNO Timer (not the sidebar's processEventsToIdle
+# pattern) because we need periodic ticks even when no user action is active.
 
 _mcp_server = None
 _mcp_timer = None
@@ -38,10 +41,15 @@ _mcp_timer_listener = None
 
 def _start_mcp_timer(ctx):
     """Start UNO Timer that drains MCP queue on main thread. Keep refs in module globals.
-    Listener class is defined here so XTimerListener is imported only inside LibreOffice (avoids
-    ImportError when pythonloader runs main.py for writeRegistryInfo outside UNO context).
+
+    Requires the 'com' package (from com.sun.star.util import XTimerListener). That is
+    available when this is called from the sidebar context, but NOT when called from
+    the dispatch context (system Python). So we start the timer from the sidebar when
+    the panel is created; see try_ensure_mcp_timer() and chat_panel._wireControls.
     """
     global _mcp_timer, _mcp_timer_listener
+    from core.logging import debug_log
+
     try:
         from com.sun.star.util import XTimerListener
 
@@ -64,11 +72,33 @@ def _start_mcp_timer(ctx):
         timer.IsRepeating = True
         timer.start()
         _mcp_timer = timer
+        debug_log("MCP Timer started (drain every 100ms)", context="MCP")
     except Exception as e:
         _mcp_timer = None
         _mcp_timer_listener = None
-        from core.logging import debug_log
         debug_log("MCP timer failed to start: %s" % e, context="MCP")
+        debug_log("MCP timer failure sys.executable=%s" % getattr(sys, "executable", "?"), context="MCP")
+
+
+def try_ensure_mcp_timer(ctx):
+    """Start the MCP drain timer if the server is running but the timer is not.
+    Called from the sidebar when the panel is created (context has 'com' available).
+    If config has mcp_enabled but the server was not started this session (e.g. after
+    restart), start the server first so the timer can run."""
+    global _mcp_server, _mcp_timer
+    from core.logging import debug_log
+    if _mcp_server is None:
+        if as_bool(get_config(ctx, "mcp_enabled", False)):
+            debug_log("MCP: config enabled but server not running, starting server from sidebar", context="MCP")
+            _start_mcp_server(ctx)
+        if _mcp_server is None:
+            debug_log("MCP: server not running, skipping timer start", context="MCP")
+            return
+    if _mcp_timer is not None:
+        debug_log("MCP: timer already running", context="MCP")
+        return
+    debug_log("MCP: starting drain timer from sidebar", context="MCP")
+    _start_mcp_timer(ctx)
 
 
 def _stop_mcp_timer():
@@ -86,7 +116,8 @@ def _start_mcp_server(ctx):
     """Start MCP HTTP server and drain timer if enabled in config."""
     global _mcp_server
     from core.config import get_config
-    from core.mcp_server import MCPHttpServer, _kill_zombies_on_port
+    from core.mcp_server import MCPHttpServer, _kill_zombies_on_port, _probe_health
+    from core.logging import debug_log
     if not as_bool(get_config(ctx, "mcp_enabled", False)):
         return
     if _mcp_server is not None:
@@ -98,10 +129,17 @@ def _start_mcp_server(ctx):
     try:
         _mcp_server = MCPHttpServer(ctx, port=port)
         _mcp_server.start()
-        _start_mcp_timer(ctx)
+        # Timer is started from the sidebar (try_ensure_mcp_timer) where 'com' is available
+    except OSError as e:
+        if getattr(e, "errno", None) == 98 or "Address already in use" in str(e):
+            if _probe_health("127.0.0.1", port):
+                debug_log("MCP server already running on port %s (e.g. from sidebar), not starting again" % port, context="MCP")
+                _show_mcp_already_running(ctx, port)
+                return
+        _mcp_server = None
+        debug_log("MCP server start failed: %s" % e, context="MCP")
     except Exception as e:
         _mcp_server = None
-        from core.logging import debug_log
         debug_log("MCP server start failed: %s" % e, context="MCP")
 
 
@@ -125,10 +163,30 @@ def _toggle_mcp_server(ctx):
         _start_mcp_server(ctx)
 
 
+def _show_mcp_already_running(ctx, port):
+    """Tell user the server is already running (e.g. started by the sidebar)."""
+    try:
+        smgr = ctx.getServiceManager()
+        desktop = smgr.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
+        frame = desktop.getCurrentFrame()
+        if frame and frame.ActiveFrame:
+            frame = frame.ActiveFrame
+        window_peer = frame.getContainerWindow() if frame else None
+        if not window_peer:
+            return
+        toolkit = smgr.createInstanceWithContext("com.sun.star.awt.Toolkit", ctx)
+        msg = "MCP server is already running on port %s (e.g. started by the sidebar).\n\nUse 'MCP Server Status' to confirm." % port
+        box = toolkit.createMessageBox(window_peer, 0, BUTTONS_OK, "MCP Server", msg)
+        box.execute()
+    except Exception:
+        pass
+
+
 def _do_mcp_status(ctx):
     """Show a small status dialog: running/stopped, port, health check."""
     global _mcp_server
     from core.config import get_config
+    from core.mcp_server import _probe_health
     smgr = ctx.getServiceManager()
     desktop = smgr.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
     frame = desktop.getCurrentFrame()
@@ -139,10 +197,10 @@ def _do_mcp_status(ctx):
         return
     toolkit = smgr.createInstanceWithContext("com.sun.star.awt.Toolkit", ctx)
     port = int(get_config(ctx, "mcp_port", 8765))
-    status = "RUNNING" if _mcp_server is not None else "STOPPED"
+    ok = _probe_health("127.0.0.1", port)
+    # Show RUNNING if we have a handle or if the port responds (e.g. server started by sidebar)
+    status = "RUNNING" if (_mcp_server is not None or ok) else "STOPPED"
     url = "http://localhost:%s" % port
-    from core.mcp_server import _probe_health
-    ok = _probe_health("127.0.0.1", port) if _mcp_server else False
     health = "OK" if ok else ("FAIL" if _mcp_server else "N/A")
     msg = "MCP Server: %s\nPort: %s\nURL: %s\nHealth: %s" % (status, port, url, health)
     box = toolkit.createMessageBox(window_peer, 0, BUTTONS_OK, "MCP Server Status", msg)

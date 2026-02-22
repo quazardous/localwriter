@@ -48,11 +48,13 @@ def post_to_main_thread(func, *args):
 
 def drain_mcp_queue(max_per_tick=5):
     """Drain pending MCP requests. Called on the main thread."""
+    n = 0
     for _ in range(max_per_tick):
         try:
             func, args, future = _mcp_queue.get_nowait()
         except queue.Empty:
             break
+        n += 1
         try:
             res = func(*args)
             if future:
@@ -60,3 +62,9 @@ def drain_mcp_queue(max_per_tick=5):
         except Exception as e:
             if future:
                 future.set_exception(e)
+    if n:
+        try:
+            from core.logging import debug_log
+            debug_log("MCP queue drained %d item(s)" % n, context="MCP")
+        except Exception:
+            pass
