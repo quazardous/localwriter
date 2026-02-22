@@ -119,7 +119,7 @@ The sidebar and menu Chat work for **Writer and Calc** (same deck/UI; ContextLis
 - **Tool-calling**: `chat_panel.py` (and the menu path in `main.py`) detect document type using robust service-based identification (`supportsService`) in `core/document.py`. This ensures Writer, Calc, and Draw/Impress documents are never misidentified. **Gotcha**: `hasattr(model, "getDrawPages")` is `True` for Writer (drawing layer for shapes), so strict service checks are required.
     - **Writer**: `com.sun.star.text.TextDocument`. `core/document_tools.py` exposes **WRITER_TOOLS** = `get_document_content`, `apply_document_content`, `find_text` (in `core/format_support.py`) + `list_styles`, `get_style_info`, `list_comments`, `add_comment`, `delete_comment`, `set_track_changes`, `get_tracked_changes`, `accept_all_changes`, `reject_all_changes`, `list_tables`, `read_table`, `write_table_cell` (in `core/writer_ops.py`) + `generate_image`, `edit_image`.
     - **Calc**: `com.sun.star.sheet.SpreadsheetDocument`. `core/calc_tools.py` exposes **CALC_TOOLS** and `execute_calc_tool`; core logic in `core/calc_*.py`.
-    - **Draw/Impress**: `com.sun.star.drawing.DrawingDocument` or `com.sun.star.presentation.PresentationDocument`. `core/draw_tools.py` exposes **DRAW_TOOLS** and `execute_draw_tool`.
+    - **Draw/Impress**: `com.sun.star.drawing.DrawingDocument` or `com.sun.star.presentation.PresentationDocument`. `core/draw_tools.py` exposes **DRAW_TOOLS** and `execute_draw_tool`. Includes slide/page management (`add_slide`, `delete_slide`) and speaker notes context.
 - **Menu fallback**: Menu item "Chat with Document" opens input dialog, streams response with no tool-calling. **Writer**: appends to document end. **Calc**: streams to "AI Response" sheet. Both sidebar and menu use the same robust document detection.
 - **Config keys** (used by chat): `chat_context_length`, `chat_max_tokens`, `additional_instructions` (in Settings).
 - **Unified Prompt System**: See Section 3c.
@@ -429,6 +429,7 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 - **Range-based markdown replace (DONE)**: `get_markdown` returns `document_length` and supports scope `"range"` with `start`/`end`; `apply_markdown` supports target `"full"` (replace entire document) and target `"range"` with `start`/`end` (replace by character span). Enables "read once, replace with new markdown only" so the AI does not send document text twice (e.g. "make my plain text resume look nice"). Helpers in `core/document.py`: `get_document_length()`, `get_text_cursor_at_range()`. System prompt updated to direct the model to use this flow.
 - **Calc chat/tools (DONE)**: Sidebar and menu Chat for Calc with CALC_TOOLS, get_calc_context_for_chat, and get_chat_system_prompt_for_document. See [Calc support from LibreCalc.md](Calc%20support%20from%20LibreCalc.md).
 - **Draw chat/tools (DONE)**: Sidebar and menu Chat for Draw with DRAW_TOOLS and execute_draw_tool.
+- **Impress chat/tools (DONE)**: Sidebar and menu Chat for Impress with DRAW_TOOLS (including slide management) and speaker notes support in context. See [IMPRESS_TOOLS.md](IMPRESS_TOOLS.md).
 
 ---
 

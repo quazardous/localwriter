@@ -255,9 +255,12 @@ def get_draw_context_for_chat(model, max_context=8000, ctx=None):
         bridge = DrawBridge(model)
         pages = bridge.get_pages()
         active_page = bridge.get_active_page()
+        
+        is_impress = model.supportsService("com.sun.star.presentation.PresentationDocument")
+        doc_type = "Impress Presentation" if is_impress else "Draw Document"
 
-        ctx_str = "Draw/Impress Document: %s\n" % (model.getURL() or "Untitled")
-        ctx_str += "Total Pages: %d\n" % pages.getCount()
+        ctx_str = "%s: %s\n" % (doc_type, model.getURL() or "Untitled")
+        ctx_str += "Total %s: %d\n" % ("Slides" if is_impress else "Pages", pages.getCount())
 
         # Get index of active page
         active_page_idx = -1
@@ -266,12 +269,12 @@ def get_draw_context_for_chat(model, max_context=8000, ctx=None):
                 active_page_idx = i
                 break
 
-        ctx_str += "Active Page Index: %d\n" % active_page_idx
+        ctx_str += "Active %s Index: %d\n" % ("Slide" if is_impress else "Page", active_page_idx)
 
         # Summarize shapes on active page
         if active_page:
             shapes = bridge.get_shapes(active_page)
-            ctx_str += "\nShapes on Page %d:\n" % active_page_idx
+            ctx_str += "\nShapes on %s %d:\n" % ("Slide" if is_impress else "Page", active_page_idx)
             for i, s in enumerate(shapes):
                 type_name = s.getShapeType().split(".")[-1]
                 pos = s.getPosition()
@@ -283,6 +286,20 @@ def get_draw_context_for_chat(model, max_context=8000, ctx=None):
                     if text:
                         ctx_str += " text: \"%s\"" % text[:200]
                 ctx_str += "\n"
+            
+            # Impress-specific: Speaker Notes
+            if is_impress and hasattr(active_page, "getNotesPage"):
+                try:
+                    notes_page = active_page.getNotesPage()
+                    notes_text = ""
+                    for i in range(notes_page.getCount()):
+                        shape = notes_page.getByIndex(i)
+                        if shape.getShapeType() == "com.sun.star.presentation.NotesShape":
+                            notes_text += shape.getString() + "\n"
+                    if notes_text.strip():
+                        ctx_str += "\nSpeaker Notes:\n%s\n" % notes_text.strip()
+                except Exception:
+                    pass
 
         return ctx_str
     except Exception as e:
