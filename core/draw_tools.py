@@ -91,6 +91,34 @@ DRAW_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_slide",
+            "description": "Inserts a new slide (page) at the specified index.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "description": "Index where to insert (end if omitted)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_slide",
+            "description": "Deletes the slide (page) at the specified index.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "description": "Index of slide to delete"},
+                },
+                "required": ["index"],
+            },
+        },
+    },
 ]
 
 from core.document_tools import IMAGE_TOOLS
@@ -230,6 +258,16 @@ def execute_draw_tool(tool_name, arguments, model, ctx, status_callback=None):
             shape = page.getByIndex(arguments["shape_index"])
             page.remove(shape)
             return json.dumps({"status": "ok", "message": "Shape deleted"})
+
+        elif tool_name == "add_slide":
+            idx = arguments.get("index")
+            bridge.create_slide(idx)
+            return json.dumps({"status": "ok", "message": "Slide added"})
+
+        elif tool_name == "delete_slide":
+            idx = arguments.get("index")
+            bridge.delete_slide(idx)
+            return json.dumps({"status": "ok", "message": "Slide deleted"})
 
         elif tool_name == "generate_image":
             # Delegate to existing implementation in document_tools which uses polymorphic image_tools

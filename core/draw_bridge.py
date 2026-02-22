@@ -48,3 +48,31 @@ class DrawBridge:
         for i in range(page.getCount()):
             shapes.append(page.getByIndex(i))
         return shapes
+
+    def create_slide(self, index=None):
+        """Creates a new slide (page) at the specified index."""
+        pages = self.get_pages()
+        if index is None:
+            index = pages.getCount()
+        return pages.insertNewByIndex(index)
+
+    def delete_slide(self, index):
+        """Deletes the slide at the specified index."""
+        pages = self.get_pages()
+        page = pages.getByIndex(index)
+        pages.remove(page)
+
+    def duplicate_slide(self, index):
+        """Duplicates the slide at the specified index."""
+        # Note: LO API for duplicating pages is a bit involved
+        # For now, we can create a new page and copy shapes
+        old_page = self.get_pages().getByIndex(index)
+        new_page = self.create_slide(index + 1)
+        
+        # Copy shapes
+        for i in range(old_page.getCount()):
+            shape = old_page.getByIndex(i)
+            # This is a shallow copy, might need more for complex shapes
+            # But simple add works for many
+            new_page.add(shape) 
+        return new_page
