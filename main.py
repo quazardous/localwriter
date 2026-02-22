@@ -64,9 +64,11 @@ def _start_mcp_timer(ctx):
         timer.IsRepeating = True
         timer.start()
         _mcp_timer = timer
-    except Exception:
+    except Exception as e:
         _mcp_timer = None
         _mcp_timer_listener = None
+        from core.logging import debug_log
+        debug_log("MCP timer failed to start: %s" % e, context="MCP")
 
 
 def _stop_mcp_timer():
