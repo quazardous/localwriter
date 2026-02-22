@@ -737,6 +737,7 @@ class LlmClient:
             "tool_calls": message.get("tool_calls"),
             "finish_reason": finish_reason,
             "images": images,
+            "usage": result.get("usage", {}),
         }
 
     def stream_request_with_tools(
@@ -791,6 +792,7 @@ class LlmClient:
             "content": content,
             "tool_calls": tool_calls,
             "finish_reason": last_finish_reason,
+            "usage": message_snapshot.get("usage", {}),
         }
 
     def chat_completion_sync(self, messages, max_tokens=512):
