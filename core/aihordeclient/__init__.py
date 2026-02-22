@@ -14,7 +14,7 @@
 # - Integrated with project core: uses core.api.sync_request, core.logging for debug/exceptions,
 #   and core.constants.USER_AGENT.
 # - Removed asyncio/abc dependencies: switched to synchronous patterns suitable for
-#   LibreOffice's threading model.
+#   LibreOffice's model which already handles network requests on another thread.
 # - Simplified error handling: centralized logic in _raise_horde_http_error for better UX.
 # - Removed upstream-specific helper classes: removed HordeClientSettings and
 #   ProcedureInformation, as config and logic are handled by LocalWriter's unified systems.
