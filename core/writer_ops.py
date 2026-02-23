@@ -1,11 +1,14 @@
-# core/writer_ops.py — Style, comment, track-changes, and table tool implementations.
-# Ported from libreoffice-mcp-extension/pythonpath/uno_bridge.py and adapted to
-# LocalWriter's function signatures: (model, ctx, args) -> JSON string.
-# model = already-resolved document; ctx = component context.
-
 import json
 
 from core.logging import debug_log
+from core.document import (
+    get_paragraph_ranges,
+    find_paragraph_for_range,
+    build_heading_tree,
+    ensure_heading_bookmarks,
+    resolve_locator,
+    get_document_length
+)
 
 
 # ---------------------------------------------------------------------------
@@ -16,33 +19,107 @@ def _err(message):
     return json.dumps({"status": "error", "message": message})
 
 
-def _get_paragraph_ranges(doc):
-    """Return list of top-level paragraph elements for anchor position lookup."""
-    text = doc.getText()
-    enum = text.createEnumeration()
-    ranges = []
-    while enum.hasMoreElements():
-        ranges.append(enum.nextElement())
-    return ranges
 
+# ---------------------------------------------------------------------------
+# Navigation & Structure tools
+# ---------------------------------------------------------------------------
 
-def _find_paragraph_for_range(match_range, para_ranges, text_obj=None):
-    """Return the paragraph index that contains match_range, or 0 on failure."""
+def tool_get_document_outline(model, ctx, args):
+    """Return a hierarchical heading tree (outline) of the document."""
     try:
-        if text_obj is None:
-            text_obj = match_range.getText()
-        match_start = match_range.getStart()
-        for i, para in enumerate(para_ranges):
-            try:
-                cmp_start = text_obj.compareRegionStarts(match_start, para.getStart())
-                cmp_end = text_obj.compareRegionStarts(match_start, para.getEnd())
-                if cmp_start <= 0 and cmp_end >= 0:
-                    return i
-            except Exception:
-                continue
-    except Exception:
-        pass
-    return 0
+        tree = build_heading_tree(model)
+        # Root node children are the top-level headings
+        return json.dumps({"status": "ok", "outline": tree["children"]})
+    except Exception as e:
+        return _err(str(e))
+
+
+def tool_get_heading_content(model, ctx, args):
+    """Return text and sub-headings for a specific heading locator."""
+    locator = args.get("locator", "")
+    if not locator:
+        return _err("locator is required (e.g. heading:1.2)")
+    try:
+        res = resolve_locator(model, locator)
+        para_idx = res.get("para_index", 0)
+        
+        # Build tree to find the node and its children
+        tree = build_heading_tree(model)
+        def find_node(node, p_idx):
+            if node.get("para_index") == p_idx:
+                return node
+            for child in node.get("children", []):
+                found = find_node(child, p_idx)
+                if found:
+                    return found
+            return None
+        
+        node = find_node(tree, para_idx)
+        if not node:
+            return _err(f"Heading at {locator} not found")
+            
+        # Get body text between this heading and the next heading
+        text_parts = []
+        ranges = get_paragraph_ranges(model)
+        for i in range(para_idx + 1, len(ranges)):
+            p = ranges[i]
+            if p.supportsService("com.sun.star.text.Paragraph"):
+                if p.getPropertyValue("OutlineLevel") > 0:
+                    break
+                text_parts.append(p.getString())
+            elif p.supportsService("com.sun.star.text.TextTable"):
+                break # Stop at tables for now like the extension does in some paths
+                
+        return json.dumps({
+            "status": "ok",
+            "locator": locator,
+            "text": "\n".join(text_parts),
+            "sub_headings": node.get("children", [])
+        })
+    except Exception as e:
+        return _err(str(e))
+
+
+def tool_read_paragraphs(model, ctx, args):
+    """Read a range of paragraphs by index."""
+    start = args.get("start_index", 0)
+    count = args.get("count", 10)
+    try:
+        ranges = get_paragraph_ranges(model)
+        end = min(start + count, len(ranges))
+        paras = []
+        for i in range(start, end):
+            p = ranges[i]
+            text = p.getString() if hasattr(p, "getString") else "[Object]"
+            paras.append({"index": i, "text": text})
+        return json.dumps({"status": "ok", "paragraphs": paras, "total": len(ranges)})
+    except Exception as e:
+        return _err(str(e))
+
+
+def tool_get_document_stats(model, ctx, args):
+    """Return document statistics (length, paragraphs, pages)."""
+    try:
+        length = get_document_length(model)
+        paras = len(get_paragraph_ranges(model))
+        pages = 0
+        try:
+            vc = model.getCurrentController().getViewCursor()
+            # Jump to end to get actual page count
+            old_pos = vc.getStart()
+            vc.gotoEnd(False)
+            pages = vc.getPage()
+            vc.gotoRange(old_pos, False)
+        except Exception:
+            pass
+        return json.dumps({
+            "status": "ok",
+            "character_count": length,
+            "paragraph_count": paras,
+            "page_count": pages
+        })
+    except Exception as e:
+        return _err(str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +209,7 @@ def tool_list_comments(model, ctx, args):
     try:
         fields = model.getTextFields()
         enum = fields.createEnumeration()
-        para_ranges = _get_paragraph_ranges(model)
+        para_ranges = get_paragraph_ranges(model)
         text_obj = model.getText()
         comments = []
         while enum.hasMoreElements():
@@ -171,7 +248,7 @@ def tool_list_comments(model, ctx, args):
             except Exception:
                 pass
             anchor = field.getAnchor()
-            para_idx = _find_paragraph_for_range(anchor, para_ranges, text_obj)
+            para_idx = find_paragraph_for_range(anchor, para_ranges, text_obj)
             anchor_preview = anchor.getString()[:80]
             entry = {
                 "author": author,
@@ -180,17 +257,46 @@ def tool_list_comments(model, ctx, args):
                 "resolved": resolved,
                 "paragraph_index": para_idx,
                 "anchor_preview": anchor_preview,
-                "is_reply": bool(parent_name),
+                "name": name,
+                "parent_name": parent_name
             }
-            if name:
-                entry["name"] = name
-            if parent_name:
-                entry["parent_name"] = parent_name
             comments.append(entry)
         return json.dumps({"status": "ok", "comments": comments,
                            "count": len(comments)})
     except Exception as e:
         debug_log("tool_list_comments error: %s" % e, context="Chat")
+        return _err(str(e))
+
+
+def tool_insert_at_paragraph(model, ctx, args):
+    """Insert text at a specific paragraph index."""
+    para_index = args.get("paragraph_index")
+    text_to_insert = args.get("text", "")
+    position = args.get("position", "before") # before, after, replace
+    
+    if para_index is None:
+        return _err("paragraph_index is required")
+        
+    try:
+        ranges = get_paragraph_ranges(model)
+        if para_index < 0 or para_index >= len(ranges):
+            return _err(f"Paragraph index {para_index} out of range (0..{len(ranges)-1})")
+            
+        target_para = ranges[para_index]
+        text = model.getText()
+        cursor = text.createTextCursorByRange(target_para.getStart())
+        
+        if position == "after":
+            cursor.gotoRange(target_para.getEnd(), False)
+            text.insertString(cursor, "\n" + text_to_insert, False)
+        elif position == "replace":
+            cursor.gotoRange(target_para.getEnd(), True)
+            cursor.setString(text_to_insert)
+        else: # before
+            text.insertString(cursor, text_to_insert + "\n", False)
+            
+        return json.dumps({"status": "ok", "message": f"Inserted text at paragraph {para_index}"})
+    except Exception as e:
         return _err(str(e))
 
 
@@ -434,6 +540,53 @@ WRITER_OPS_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_document_outline",
+            "description": "Get a hierarchical heading tree (outline) of the document.",
+            "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_heading_content",
+            "description": "Read text and sub-headings for a specific heading locator (e.g. 'heading:1.2').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "locator": {"type": "string", "description": "Heading locator, e.g. 'heading:1' or 'heading:2.1'."}
+                },
+                "required": ["locator"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_paragraphs",
+            "description": "Read a range of paragraphs by index. Useful for scanning text between headings.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_index": {"type": "integer", "description": "Starting paragraph index (0-based)."},
+                    "count": {"type": "integer", "description": "Number of paragraphs to read (default 10)."}
+                },
+                "required": ["start_index"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_document_stats",
+            "description": "Get document statistics: character count, paragraph count, and total pages.",
+            "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_styles",
             "description": (
                 "List available styles in the document. Call this before applying styles "
@@ -475,6 +628,27 @@ WRITER_OPS_TOOLS = [
                     },
                 },
                 "required": ["style_name"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "insert_at_paragraph",
+            "description": "Insert text at a specific paragraph index.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "paragraph_index": {"type": "integer", "description": "0-based paragraph index."},
+                    "text": {"type": "string", "description": "Text to insert."},
+                    "position": {
+                        "type": "string",
+                        "enum": ["before", "after", "replace"],
+                        "description": "Position relative to the target paragraph (default: 'before')."
+                    }
+                },
+                "required": ["paragraph_index", "text"],
                 "additionalProperties": False,
             },
         },

@@ -1,7 +1,31 @@
 """Document helpers for LocalWriter."""
+import time
 from core.calc_bridge import CalcBridge
 from core.calc_sheet_analyzer import SheetAnalyzer
 
+
+class DocumentCache:
+    """Cache for expensive UNO calls, tied to a document model."""
+    _instances = {}  # {id(model): cache}
+
+    def __init__(self):
+        self.length = None
+        self.para_ranges = None
+        self.page_cache = {}  # (search_key) -> page_number
+        self.last_invalidated = time.time()
+
+    @classmethod
+    def get(cls, model):
+        mid = id(model)
+        if mid not in cls._instances:
+            cls._instances[mid] = DocumentCache()
+        return cls._instances[mid]
+
+    @classmethod
+    def invalidate(cls, model):
+        mid = id(model)
+        if mid in cls._instances:
+            del cls._instances[mid]
 
 def is_writer(model):
     """Return True if model is a Writer document."""
@@ -76,12 +100,17 @@ _GO_RIGHT_CHUNK = 8192
 
 def get_document_length(model):
     """Return total character length of the document. Returns 0 on error."""
+    cache = DocumentCache.get(model)
+    if cache.length is not None:
+        return cache.length
     try:
         text = model.getText()
         cursor = text.createTextCursor()
         cursor.gotoStart(False)
         cursor.gotoEnd(True)
-        return len(cursor.getString())
+        length = len(cursor.getString())
+        cache.length = length
+        return length
     except Exception:
         return 0
 
@@ -323,3 +352,165 @@ def _inject_markers_into_excerpt(excerpt_text, excerpt_start, excerpt_end, sel_s
     after = excerpt_text[local_end:]
     out = prefix + before + "[SELECTION_START]" + between + "[SELECTION_END]" + after + suffix
     return out
+
+
+# ---------------------------------------------------------------------------
+# Navigation & Outline (Ported from extension)
+# ---------------------------------------------------------------------------
+
+import uuid
+
+def get_paragraph_ranges(model):
+    """Return list of top-level paragraph elements. Uses DocumentCache."""
+    cache = DocumentCache.get(model)
+    if cache.para_ranges is not None:
+        return cache.para_ranges
+    
+    text = model.getText()
+    enum = text.createEnumeration()
+    ranges = []
+    while enum.hasMoreElements():
+        ranges.append(enum.nextElement())
+    cache.para_ranges = ranges
+    return ranges
+
+
+def find_paragraph_for_range(match_range, para_ranges, text_obj=None):
+    """Return the 0-based paragraph index that contains match_range."""
+    try:
+        if text_obj is None:
+            text_obj = match_range.getText()
+        match_start = match_range.getStart()
+        for i, para in enumerate(para_ranges):
+            try:
+                # compareRegionStarts: 1 if first is after second, -1 if before, 0 if equal
+                cmp_start = text_obj.compareRegionStarts(match_start, para.getStart())
+                cmp_end = text_obj.compareRegionStarts(match_start, para.getEnd())
+                if cmp_start <= 0 and cmp_end >= 0:
+                    return i
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return 0
+
+
+def build_heading_tree(model):
+    """Build a hierarchical heading tree. Single pass enumeration."""
+    text = model.getText()
+    enum = text.createEnumeration()
+    root = {"level": 0, "text": "root", "para_index": -1, "children": [], "body_paragraphs": 0}
+    stack = [root]
+    para_index = 0
+
+    while enum.hasMoreElements():
+        element = enum.nextElement()
+        if element.supportsService("com.sun.star.text.Paragraph"):
+            outline_level = 0
+            try:
+                outline_level = element.getPropertyValue("OutlineLevel")
+            except Exception:
+                pass
+            
+            if outline_level > 0:
+                while len(stack) > 1 and stack[-1]["level"] >= outline_level:
+                    stack.pop()
+                node = {
+                    "level": outline_level,
+                    "text": element.getString(),
+                    "para_index": para_index,
+                    "children": [],
+                    "body_paragraphs": 0
+                }
+                stack[-1]["children"].append(node)
+                stack.append(node)
+            else:
+                stack[-1]["body_paragraphs"] += 1
+        elif element.supportsService("com.sun.star.text.TextTable"):
+            stack[-1]["body_paragraphs"] += 1
+        para_index += 1
+    return root
+
+
+def ensure_heading_bookmarks(model):
+    """Ensure every heading has an _mcp_ bookmark. Returns {para_index: bookmark_name}."""
+    cache = DocumentCache.get(model)
+    
+    text = model.getText()
+    para_ranges = get_paragraph_ranges(model)
+    
+    # 1. Map existing _mcp_ bookmarks
+    existing_map = {}
+    if hasattr(model, "getBookmarks"):
+        bookmarks = model.getBookmarks()
+        for name in bookmarks.getElementNames():
+            if name.startswith("_mcp_"):
+                bm = bookmarks.getByName(name)
+                idx = find_paragraph_for_range(bm.getAnchor(), para_ranges, text)
+                existing_map[idx] = name
+    
+    # 2. Scanthe document for headings
+    enum = text.createEnumeration()
+    para_index = 0
+    bookmark_map = {}
+    needs_bookmark = []
+    
+    while enum.hasMoreElements():
+        element = enum.nextElement()
+        if element.supportsService("com.sun.star.text.Paragraph"):
+            try:
+                if element.getPropertyValue("OutlineLevel") > 0:
+                    if para_index in existing_map:
+                        bookmark_map[para_index] = existing_map[para_index]
+                    else:
+                        needs_bookmark.append((para_index, element.getStart()))
+            except Exception:
+                pass
+        para_index += 1
+        
+    # 3. Add missing bookmarks
+    for idx, start_range in needs_bookmark:
+        name = f"_mcp_{uuid.uuid4().hex[:8]}"
+        bookmark = model.createInstance("com.sun.star.text.Bookmark")
+        bookmark.Name = name
+        cursor = text.createTextCursorByRange(start_range)
+        text.insertTextContent(cursor, bookmark, False)
+        bookmark_map[idx] = name
+        
+    return bookmark_map
+
+
+def resolve_locator(model, locator: str):
+    """Resolve a locator string to a paragraph index or other document position."""
+    loc_type, sep, loc_value = locator.partition(":")
+    if not sep:
+        return {"para_index": 0}
+        
+    if loc_type == "paragraph":
+        return {"para_index": int(loc_value)}
+        
+    if loc_type == "heading":
+        parts = []
+        try:
+            parts = [int(p) for p in loc_value.split(".")]
+        except: return {"para_index": 0}
+        
+        tree = build_heading_tree(model)
+        node = tree
+        for part in parts:
+            children = node.get("children", [])
+            if 1 <= part <= len(children):
+                node = children[part-1]
+            else:
+                break
+        return {"para_index": node["para_index"]}
+        
+    if loc_type == "bookmark":
+        if hasattr(model, "getBookmarks"):
+            bms = model.getBookmarks()
+            if bms.hasByName(loc_value):
+                anchor = bms.getByName(loc_value).getAnchor()
+                para_ranges = get_paragraph_ranges(model)
+                return {"para_index": find_paragraph_for_range(anchor, para_ranges, model.getText())}
+    
+    return {"para_index": 0}

@@ -33,7 +33,7 @@ localwriter/
 ├── core/                # Shared core logic
 │   ├── config.py        # get_config, set_config, get_api_config, add_config_listener, notify_config_changed (localwriter.json)
 │   ├── api.py           # LlmClient: streaming, chat, tool-calling, connection management
-│   ├── document.py      # get_full_document_text, get_document_end, get_selection_range, get_document_length, get_text_cursor_at_range, get_document_context_for_chat (Writer/Calc), get_calc_context_for_chat (Calc)
+│   ├── document.py      # get_full_document_text, get_document_end, get_selection_range, get_document_length, DocumentCache (caching), get_paragraph_ranges, build_heading_tree, ensure_heading_bookmarks, resolve_locator, get_document_context_for_chat (Writer/Calc), get_calc_context_for_chat (Calc)
 │   ├── logging.py       # init_logging, debug_log(msg, context), agent_log; single debug file + optional agent log
 │   ├── constants.py     # DEFAULT_CHAT_SYSTEM_PROMPT, DEFAULT_CALC_CHAT_SYSTEM_PROMPT, get_chat_system_prompt_for_document
 │   ├── uno_ui_helpers.py # get_optional, is_checkbox_control, get_checkbox_state, set_checkbox_state (shared dialog/panel helpers)
@@ -117,7 +117,7 @@ The sidebar and menu Chat work for **Writer and Calc** (same deck/UI; ContextLis
   - **Send/Stop button state (lifecycle-based)**: "AI is busy" is defined by the single run of `actionPerformed`: Send is disabled (Stop enabled) at the **start** of the run, and re-enabled (Stop disabled) **only** in the `finally` block when `_do_send()` has returned. No dependence on internal job_done or drain-loop state. `_set_button_states(send_enabled, stop_enabled)` uses per-control try/except with a simple `control.getModel().Enabled = val` check so a UNO failure on one control cannot leave Send stuck disabled. `SendButtonListener._send_busy` is set True at run start and False in finally for external checks. This prevents multiple concurrent requests.
 - **Implementation**: `chat_panel.py` (ChatPanelFactory, ChatPanelElement, ChatToolPanel); `ContainerWindowProvider` + `ChatPanelDialog.xdl`; `setVisible(True)` required after `createContainerWindow()`.
 - **Tool-calling**: `chat_panel.py` (and the menu path in `main.py`) detect document type using robust service-based identification (`supportsService`) in `core/document.py`. This ensures Writer, Calc, and Draw/Impress documents are never misidentified. **Gotcha**: `hasattr(model, "getDrawPages")` is `True` for Writer (drawing layer for shapes), so strict service checks are required.
-    - **Writer**: `com.sun.star.text.TextDocument`. `core/document_tools.py` exposes **WRITER_TOOLS** = `get_document_content`, `apply_document_content`, `find_text` (in `core/format_support.py`) + `list_styles`, `get_style_info`, `list_comments`, `add_comment`, `delete_comment`, `set_track_changes`, `get_tracked_changes`, `accept_all_changes`, `reject_all_changes`, `list_tables`, `read_table`, `write_table_cell` (in `core/writer_ops.py`) + `generate_image`, `edit_image`.
+    - **Writer**: `com.sun.star.text.TextDocument`. `core/document_tools.py` exposes **WRITER_TOOLS** = `get_document_content`, `apply_document_content`, `find_text` (in `core/format_support.py`) + `tool_get_document_outline`, `tool_get_heading_content`, `tool_read_paragraphs`, `tool_insert_at_paragraph`, `tool_get_document_stats`, `list_styles`, `get_style_info`, `list_comments`, `add_comment`, `delete_comment`, `set_track_changes`, `get_tracked_changes`, `accept_all_changes`, `reject_all_changes`, `list_tables`, `read_table`, `write_table_cell` (in `core/writer_ops.py`) + `generate_image`, `edit_image`.
     - **Calc**: `com.sun.star.sheet.SpreadsheetDocument`. `core/calc_tools.py` exposes **CALC_TOOLS** and `execute_calc_tool`; core logic in `core/calc_*.py`.
     - **Draw/Impress**: `com.sun.star.drawing.DrawingDocument` or `com.sun.star.presentation.PresentationDocument`. `core/draw_tools.py` exposes **DRAW_TOOLS** and `execute_draw_tool`. Includes slide/page management (`add_slide`, `delete_slide`) and speaker notes context.
 - **Menu fallback**: Menu item "Chat with Document" opens input dialog, streams response with no tool-calling. **Writer**: appends to document end. **Calc**: streams to "AI Response" sheet. Both sidebar and menu use the same robust document detection.
@@ -222,6 +222,23 @@ LocalWriter can generate and edit images inside Writer and Calc via tools expose
 ### Config keys (summary)
 
 - Image: `image_provider`, `image_model`, `image_model_lru`, `aihorde_api_key`, `image_width`, `image_height`, `image_cfg_scale`, `image_steps`, `image_nsfw`, `image_censor_nsfw`, `image_max_wait`, `image_auto_gallery`, `image_insert_frame`, `image_translate_prompt`, `image_translate_from`. Chat sidebar: `chat_direct_image` (bool) — "Use Image model" checkbox; when true, message goes directly to image tool. See [IMAGE_GENERATION.md](IMAGE_GENERATION.md) for full mapping and handover notes.
+
+---
+
+## 3e. Advanced Navigation & Caching (Writer)
+
+To improve UI responsiveness and AI navigation in complex documents, we ported performance optimizations from the `libreoffice-mcp-extension`:
+
+- **Document Metadata Cache**: `core.document.DocumentCache` provides a per-document singleton to cache expensive UNO calls:
+    - `length`: Total character count.
+    - `para_ranges`: Enumeration of all top-level paragraph containers.
+    - `page_cache`: Resolution of locators to page numbers.
+- **Cache Invalidation**: Automatically triggered in `execute_tool` (in `document_tools.py`) for any document-mutating operation (apply content, style, comments, etc.).
+- **Hierarchical Navigation**:
+    - `build_heading_tree()`: Single-pass scan of `OutlineLevel` to build a JSON tree of the document structure.
+    - `ensure_heading_bookmarks()`: Generates hidden, stable bookmarks (`_mcp_...`) for all headings, allowing the AI to reference sections even as text shifts.
+    - `resolve_locator()`: Resolves structured strings (e.g., `heading:1.2`, `paragraph:5`) to document positions.
+- **New Navigation Tools**: `get_document_outline` (full tree), `get_heading_content` (fetch section text), `read_paragraphs` (read by offset), and `insert_at_paragraph` (precise positioning).
 
 ---
 
@@ -420,16 +437,7 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 - **Icons**: `assets/` includes `running_16.png`, `running_26.png`, `starting_16.png`, `starting_26.png`, `stopped_16.png`, `stopped_26.png` (from libreoffice-mcp-extension).
 - See **`MCP_PROTOCOL.md`** for protocol details and architecture.
 
-### Document Tree Tool — Future (Session 2)
-- Port `get_document_tree()` from `libreoffice-mcp-extension/pythonpath/uno_bridge.py` (~300 lines including helpers: `_build_heading_tree`, `_ensure_heading_bookmarks`, `_apply_content_strategy`, `_get_body_preview`, `_annotate_pages`). Improves context quality for long documents.
-
-### Chat Sidebar Enhancement Roadmap
-
-- **Document context (DONE)**: Start + end excerpts and inline selection/cursor markers via `get_document_context_for_chat()`; see "Document context for chat" above and [Chat Sidebar Improvement Plan.md](Chat%20Sidebar%20Improvement%20Plan.md) for design decisions and current implementation.
-- **Range-based markdown replace (DONE)**: `get_markdown` returns `document_length` and supports scope `"range"` with `start`/`end`; `apply_markdown` supports target `"full"` (replace entire document) and target `"range"` with `start`/`end` (replace by character span). Enables "read once, replace with new markdown only" so the AI does not send document text twice (e.g. "make my plain text resume look nice"). Helpers in `core/document.py`: `get_document_length()`, `get_text_cursor_at_range()`. System prompt updated to direct the model to use this flow.
-- **Calc chat/tools (DONE)**: Sidebar and menu Chat for Calc with CALC_TOOLS, get_calc_context_for_chat, and get_chat_system_prompt_for_document. See [Calc support from LibreCalc.md](Calc%20support%20from%20LibreCalc.md).
-- **Draw chat/tools (DONE)**: Sidebar and menu Chat for Draw with DRAW_TOOLS and execute_draw_tool.
-- **Impress chat/tools (DONE)**: Sidebar and menu Chat for Impress with DRAW_TOOLS (including slide management) and speaker notes support in context. See [IMPRESS_TOOLS.md](IMPRESS_TOOLS.md).
+- **Document Tree & Navigation (DONE)**: Ported `build_heading_tree`, `ensure_heading_bookmarks`, and `resolve_locator` to `core/document.py`. New tools `get_document_outline` and `get_heading_content` provide structured access to long documents.
 
 ---
 

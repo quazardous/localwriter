@@ -7,13 +7,32 @@ import inspect
 
 from core.logging import agent_log
 from .format_support import FORMAT_TOOLS, tool_get_document_content, tool_apply_document_content, tool_find_text
-from .writer_ops import (
+from core.writer_ops import (
     WRITER_OPS_TOOLS,
-    tool_list_styles, tool_get_style_info,
-    tool_list_comments, tool_add_comment, tool_delete_comment,
-    tool_set_track_changes, tool_get_tracked_changes,
-    tool_accept_all_changes, tool_reject_all_changes,
-    tool_list_tables, tool_read_table, tool_write_table_cell,
+    tool_get_document_outline,
+    tool_get_heading_content,
+    tool_read_paragraphs,
+    tool_get_document_stats,
+    tool_list_styles,
+    tool_get_style_info,
+    tool_list_comments,
+    tool_insert_at_paragraph,
+    tool_add_comment,
+    tool_delete_comment,
+    tool_set_track_changes,
+    tool_get_tracked_changes,
+    tool_accept_all_changes,
+    tool_reject_all_changes,
+    tool_list_tables,
+    tool_read_table,
+    tool_write_table_cell
+)
+from core.document import (
+    get_document_length,
+    is_writer,
+    is_calc,
+    is_draw,
+    DocumentCache
 )
 
 
@@ -190,6 +209,11 @@ TOOL_DISPATCH = {
     "apply_document_content": tool_apply_document_content,
     "find_text": tool_find_text,
     # Styles
+    "get_document_outline": tool_get_document_outline,
+    "get_heading_content": tool_get_heading_content,
+    "read_paragraphs": tool_read_paragraphs,
+    "insert_at_paragraph": tool_insert_at_paragraph,
+    "get_document_stats": tool_get_document_stats,
     "list_styles": tool_list_styles,
     "get_style_info": tool_get_style_info,
     # Comments
@@ -224,6 +248,12 @@ def _truncate_for_log(obj, max_len=200):
 
 def execute_tool(tool_name, arguments, doc, ctx, status_callback=None):
     """Execute a tool by name. Returns JSON result string."""
+    # If the tool is a writer operation, it might mutate the document.
+    # Invalidate cache if it's not a 'get' or 'read' or 'list' tool.
+    is_mutation = not (tool_name.startswith("get_") or tool_name.startswith("read_") or tool_name.startswith("list_"))
+    if is_mutation:
+        DocumentCache.invalidate(doc)
+
     func = TOOL_DISPATCH.get(tool_name)
     if not func:
         return json.dumps({"status": "error", "message": "Unknown tool: %s" % tool_name})
