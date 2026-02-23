@@ -20,7 +20,7 @@ The MCP server is **implemented and opt-in** (default off). Summary:
 
 - **`core/mcp_thread.py`**: `_Future`, `execute_on_main_thread()`, `drain_mcp_queue()`. Work from HTTP handler threads is queued and executed on LibreOffice’s main thread.
 - **`core/mcp_server.py`**: HTTP server on localhost; GET `/health`, `/`, `/tools`, `/documents`; POST `/tools/{name}`. Port utilities: `_probe_health`, `_is_port_bound`, `_kill_zombies_on_port`.
-- **Idle-time draining**: **UNO Timer** in `main.py` (Path A). Timer fires every 100ms and calls `drain_mcp_queue()`. Option B (piggyback on the chat stream drain loop) was **not** used — it would only service MCP during active chat, which is inadequate for standalone MCP use.
+- **Idle-time draining**: **`AsyncCallback` thread** in `main.py`. A background Python thread loops and queues an `XCallback` invocation via `com.sun.star.awt.AsyncCallback` every 100ms, which safely executes `drain_mcp_queue()` on the main VCL thread. Option of piggybacking on the chat stream drain loop was **not** used — it would only service MCP during active chat, which is inadequate for standalone MCP use.
 - **Document targeting**: **`X-Document-URL`** HTTP header. The server resolves the target document by iterating `desktop.getComponents()` and matching `getURL()` to the header. If the header is absent, it falls back to the active document. `GET /documents` returns all open documents with URLs and types so clients can discover targets. This avoids races when multiple documents or users are involved; “active document only” was not used.
 - **Config**: `mcp_enabled` (default false), `mcp_port` (default 8765). Documented in `core/config.py`.
 - **Settings**: MCP section on **Page 1** of the Settings dialog (no separate tab): “Enable MCP Server” checkbox, Port field, “Localhost only, no auth.” label. Dialog layout was compacted so short fields share rows and the OK button sits at the bottom with minimal gap.
@@ -189,7 +189,10 @@ External AI client (Claude Desktop, Cursor, etc.)
         |
         | put (func, args, future) on _mcp_queue; future.result(timeout=30)  <-- blocks HTTP thread
         v
-  UNO Timer (fires every 100ms on main thread)
+  AsyncCallback Thread (loops every 100ms)
+  Adds XCallback to LibreOffice main thread message queue
+        |
+  Main UI Thread (VCL event loop)
   drain_mcp_queue()
         |
         | _resolve_document(ctx, X-Document-URL) -> doc; execute_tool(tool_name, args, doc, ctx)
@@ -198,10 +201,16 @@ External AI client (Claude Desktop, Cursor, etc.)
   HTTP thread unblocks, returns JSON to client
 ```
 
-The key insight: **UNO Timers fire on the main thread**. LibreOffice's
-`com.sun.star.util.XTimer` is available in the main extension context (not in the sidebar, but
-`main.py` has full access). A timer that fires every 100ms is imperceptible to the user and
-provides safe UNO access for the HTTP server.
+The key insight: **`com.sun.star.awt.AsyncCallback` safely executes code on the main UI thread**. 
+By having a background Python thread repeatedly schedule an `XCallback`, we guarantee that `drain_mcp_queue()` is invoked on the correct VCL thread without locking up the UI or hitting OS-level thread-safety violations.
+
+#### Why not a UNO Timer, Direct Dispatch, or UI Hacks?
+*(Preserved from previous implementation documents)*
+- **UNO Timer**: Using `com.sun.star.util.XTimerListener` fails to initialize. The LibreOffice system Python environment where the extension runs lacks the `com` package, and `uno.getTypeByName` fails to recognize the type.
+- **Direct Dispatch**: Calling `DispatchHelper.executeDispatch` directly from the background thread causes a fatal "Operation not supported on this operating system" exception because GUI methods must strictly execute on the originating VCL thread.
+- **UI Hacks**: We previously attempted to drain the MCP queue during active chat stream loops or sidebar layout recalculations (e.g., `getHeightForWidth`). However, this meant the MCP server would hang and time out whenever the user was idle.
+
+`AsyncCallback` provides the only robust, thread-safe, and idle-friendly mechanism for this environment.
 
 ---
 
@@ -256,20 +265,15 @@ def drain_mcp_queue(max_per_tick=5):
             future.set_exception(e)
 ```
 
-### Idle-Time Draining (implemented: UNO Timer)
+### Idle-Time Draining (implemented: AsyncCallback)
 
 The existing drain loop in `run_stream_drain_loop` only runs **during an active chat send**.
 Between user interactions, the main thread is in LibreOffice’s VCL event loop, so MCP requests
 would never be serviced if we only drained there.
 
-**Implemented: Option A — UNO Timer.** A timer in `main.py` (100ms, repeating) calls
-`drain_mcp_queue()` on the main thread. The listener class and `XTimerListener` import are
-defined inside `_start_mcp_timer()` so the module can load without UNO (e.g. for registry
-writing). See `main.py` for the exact code.
+**Implemented: AsyncCallback Thread.** A background thread in `main.py` loops (100ms, repeating) and schedules `drain_mcp_queue()` on the main thread using `com.sun.star.awt.AsyncCallback`. The listener class and `XCallback` import are defined inside `_start_mcp_timer()` so the module can load without UNO (e.g. for registry writing). See `main.py` for the exact code.
 
-**Option B (piggyback on chat drain loop) was not used.** Servicing MCP only during active
-chat would break standalone use (e.g. external client with no sidebar chat). So we use the
-UNO Timer only.
+**Piggybacking on the chat drain loop was not used.** Servicing MCP only during active chat would break standalone use (e.g. external client with no sidebar chat). So we use the AsyncCallback thread only.
 
 ### Reference: `core/mcp_server.py` (implemented)
 
