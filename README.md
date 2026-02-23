@@ -2,10 +2,6 @@
 
 A LibreOffice extension (Python + UNO) that adds generative AI editing to Writer, Calc, and Draw.
 
-Consider donating to support development: [ko-fi.com/johnbalis](https://ko-fi.com/johnbalis)
-
-
-
 ## Features
 
 LocalWriter provides powerful AI-driven capabilities integrated directly into your LibreOffice suite:
