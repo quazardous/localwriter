@@ -152,7 +152,7 @@ The sidebar and menu Chat work for **Writer and Calc** (same deck/UI; ContextLis
 See [CHAT_SIDEBAR_IMPLEMENTATION.md](CHAT_SIDEBAR_IMPLEMENTATION.md) for implementation details.
 
 - **Streaming I/O**: pure Python queue + main-thread drain
-  All streaming paths (sidebar tool-calling, sidebar simple stream, Writer Extend/Edit/menu Chat, Calc) use the same pattern so the UI stays responsive without relying on UNO Timer/listeners:
+  All streaming paths (sidebar tool-calling, sidebar simple stream, Writer Extend/Edit/menu Chat, Calc) use the same pattern so the UI stays responsive without relying on UNO Timers/listeners:
   - **Worker thread**: Runs blocking API/streaming (e.g. `stream_completion`, `stream_request_with_tools`), puts items on a **`queue.Queue`** (`("chunk", text)`, `("thinking", text)`, `("stream_done", ...)`, `("error", e)`, `("stopped",)`).
   - **Main thread**: After starting the worker, runs a **drain loop**: `q.get(timeout=0.1)` → process item (append text, update status, call on_done/on_error) → **`toolkit.processEventsToIdle()`**. Repeats until job_done.
   - **Connection Keep-Alive**: `LlmClient` uses `http.client.HTTPConnection` (or `HTTPSConnection`) for persistent connections. The client instance is cached in `chat_panel.py` (sidebar), `main.py` (MainJob), and `prompt_function.py` (Calc =PROMPT()) to reuse connections across multiple requests, significantly improving performance for multi-turn chat and cell recalculations.
@@ -414,7 +414,7 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 ### MCP Server (external AI client access) — DONE
 - **`core/mcp_thread.py`**: `_Future`, `execute_on_main_thread`, `drain_mcp_queue` — work is queued from HTTP handler threads and drained on the main thread.
 - **`core/mcp_server.py`**: `MCPHttpServer` and `MCPHandler`; GET `/health`, `/tools`, `/`, `/documents`; POST `/tools/{name}`. **Document targeting**: `X-Document-URL` header; server resolves document by iterating `desktop.getComponents()` and matching `getURL()`. Falls back to active document if header absent. Port utilities: `_probe_health`, `_is_port_bound`, `_kill_zombies_on_port` (Windows).
-- **Idle-time draining**: UNO Timer in `main.py` (Path A): `com.sun.star.util.Timer`, 100ms repeating, calls `drain_mcp_queue()` so MCP requests are serviced even when no chat is active.
+- **Idle-time draining**: **AsyncCallback thread** in `main.py` (Path A). A background Python thread schedules `XCallback` via `com.sun.star.awt.AsyncCallback` every 100ms, which safely executes `drain_mcp_queue()` on the main VCL thread. Option B (piggyback on the chat stream drain loop) was **not** used — it would only service MCP during active chat, which is inadequate for standalone MCP use.
 - **Config**: `mcp_enabled` (default false), `mcp_port` (default 8765). Settings Page 1 has an MCP section (below fixedline): Enable MCP Server checkbox, Port field, "Localhost only, no auth." label. No separate tab.
 - **Menu**: "Toggle MCP Server" and "MCP Server Status" under LocalWriter. Status dialog shows RUNNING/STOPPED, port, URL, and health check. Auto-start: when user saves Settings with MCP enabled, server (and timer) start if not already running.
 - **Icons**: `assets/` includes `running_16.png`, `running_26.png`, `starting_16.png`, `starting_26.png`, `stopped_16.png`, `stopped_26.png` (from libreoffice-mcp-extension).
