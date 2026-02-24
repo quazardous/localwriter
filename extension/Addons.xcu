@@ -32,17 +32,6 @@
               <value>_self</value>
             </prop>
           </node>
-            <node oor:name="M3" oor:op="replace">
-            <prop oor:name="Title">
-              <value xml:lang="en-US">Settings</value>
-            </prop>
-            <prop oor:name="URL">
-              <value>service:org.extension.localwriter.Main?settings</value>
-            </prop>
-            <prop oor:name="Target" oor:type="xs:string">
-              <value>_self</value>
-            </prop>
-          </node>
           <node oor:name="M3b" oor:op="replace">
             <prop oor:name="Title">
               <value xml:lang="en-US">Toggle MCP Server</value>
@@ -128,6 +117,22 @@
             </prop>
             <prop oor:name="URL">
               <value>service:org.extension.localwriter.Main?EvaluationDashboard</value>
+            </prop>
+            <prop oor:name="Target" oor:type="xs:string">
+              <value>_self</value>
+            </prop>
+          </node>
+          <node oor:name="M_Sep1" oor:op="replace">
+            <prop oor:name="URL">
+              <value>private:separator</value>
+            </prop>
+          </node>
+          <node oor:name="M_About" oor:op="replace">
+            <prop oor:name="Title">
+              <value xml:lang="en-US">About LocalWriter</value>
+            </prop>
+            <prop oor:name="URL">
+              <value>service:org.extension.localwriter.Main?About</value>
             </prop>
             <prop oor:name="Target" oor:type="xs:string">
               <value>_self</value>

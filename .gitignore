@@ -30,6 +30,11 @@ log.txt
 
 # POC / scratch
 poc/
+poc-ext/
+
+# Vendored pip dependencies (installed by make vendor)
+vendor/
+plugin/lib/snowballstemmer/
 
 # Vendor or external components
 libre_calc_ai*/

@@ -25,7 +25,7 @@ for arg in "$@"; do
 done
 
 LOG_FILE="$HOME/soffice-debug.log"
-PLUGIN_LOG="$HOME/log.txt"
+PLUGIN_LOG="$HOME/localwriter.log"
 
 if $FULL; then
     export SAL_LOG="+INFO+WARN+ERROR"

@@ -1,0 +1,19 @@
+name: tunnel
+description: Tunnel providers for exposing MCP externally
+requires: [config, events, http_routes]
+provides_services: [tunnel_manager]
+
+config:
+  auto_start:
+    type: boolean
+    default: false
+    widget: checkbox
+    label: Auto Start Tunnel
+    public: true
+
+  provider:
+    type: string
+    default: ""
+    widget: select
+    label: Tunnel Provider
+    options_provider: "plugin.modules.tunnel:get_provider_options"

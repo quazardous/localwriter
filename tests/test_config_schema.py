@@ -15,7 +15,7 @@ SAMPLE_CONFIG = {
     },
     "port": {
         "type": "int",
-        "default": 8765,
+        "default": 8766,
         "min": 1024,
         "max": 65535,
         "widget": "number",
@@ -35,7 +35,7 @@ class TestGenerateXcs:
     def test_basic_structure(self):
         xcs = generate_xcs("mcp", SAMPLE_CONFIG)
         assert "<?xml version=" in xcs
-        assert 'oor:name="Mcp"' in xcs
+        assert 'oor:name="mcp"' in xcs
         assert 'oor:package="org.localwriter.mcp"' in xcs
         assert "<oor:component-schema" in xcs
         assert "<component>" in xcs
@@ -68,7 +68,7 @@ class TestGenerateXcu:
     def test_basic_structure(self):
         xcu = generate_xcu("mcp", SAMPLE_CONFIG)
         assert "<?xml version=" in xcu
-        assert 'oor:name="Mcp"' in xcu
+        assert 'oor:name="mcp"' in xcu
         assert 'oor:package="org.localwriter.mcp"' in xcu
         assert "<oor:component-data" in xcu
 
@@ -78,7 +78,7 @@ class TestGenerateXcu:
 
     def test_int_default(self):
         xcu = generate_xcu("mcp", SAMPLE_CONFIG)
-        assert 'xsi:type="xs:int">8765</value>' in xcu
+        assert 'xsi:type="xs:int">8766</value>' in xcu
 
     def test_string_default_xml_escaped(self):
         xcu = generate_xcu("mcp", SAMPLE_CONFIG)

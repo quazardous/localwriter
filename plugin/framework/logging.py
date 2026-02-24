@@ -1,15 +1,66 @@
-"""File logging for LocalWriter.
+"""Logging for LocalWriter.
 
-Provides debug_log, agent_log, exception hooks and a hang-detection watchdog.
-Paths are set once via init_logging(ctx).
+Two systems:
+1. Standard ``logging`` — setup_logging() configures the ``localwriter`` logger
+   hierarchy with a FileHandler to ~/localwriter.log.  All modules that call
+   ``logging.getLogger("localwriter.xxx")`` inherit this handler automatically.
+
+2. Legacy file-based debug_log / agent_log / watchdog used by aihordeclient.
+   Kept for backward compatibility.
 """
 
+import logging
 import os
 import sys
 import json
 import time
 import traceback
 import threading
+
+# ── Standard logging setup ─────────────────────────────────────────────
+
+LOG_PATH = os.path.join(os.path.expanduser("~"), "localwriter.log")
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
+
+_setup_done = False
+
+
+def setup_logging(level="DEBUG"):
+    """Configure the ``localwriter`` logger hierarchy.
+
+    Forces a FileHandler on the ``localwriter`` logger (not root),
+    so it works regardless of root logger state set by other extensions.
+    Truncates the log file on startup (mode ``"w"``) for clean sessions.
+
+    No-op if the logger already has handlers (e.g. set up inline by main.py).
+    """
+    global _setup_done
+    if _setup_done:
+        return
+    _setup_done = True
+
+    logger = logging.getLogger("localwriter")
+    if logger.handlers:
+        return
+
+    logger.propagate = False
+
+    handler = logging.FileHandler(LOG_PATH, mode="w", encoding="utf-8")
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logger.addHandler(handler)
+
+    numeric = getattr(logging, level.upper(), logging.DEBUG)
+    logger.setLevel(numeric)
+
+
+def set_log_level(level):
+    """Change the ``localwriter`` logger level at runtime."""
+    logger = logging.getLogger("localwriter")
+    numeric = getattr(logging, level.upper(), logging.DEBUG)
+    logger.setLevel(numeric)
+
+
+# ── Legacy file-based logging (aihordeclient) ──────────────────────────
 
 _debug_log_path = None
 _agent_log_path = None

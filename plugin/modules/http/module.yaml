@@ -1,0 +1,51 @@
+name: http
+description: HTTP server for extension endpoints
+requires: [config, events]
+provides_services: [http_routes]
+
+config:
+  enabled:
+    type: boolean
+    default: true
+    widget: checkbox
+    label: Enable HTTP Server
+    public: true
+
+  port:
+    type: int
+    default: 8766
+    min: 1024
+    max: 65535
+    widget: number
+    label: Server Port
+    public: true
+
+  host:
+    type: string
+    default: localhost
+    widget: text
+    label: Bind Address
+    public: true
+
+  use_ssl:
+    type: boolean
+    default: false
+    widget: checkbox
+    label: Enable HTTPS
+    public: true
+
+  ssl_cert:
+    type: string
+    default: ""
+    widget: file
+    label: SSL Certificate
+    helper: "Optional. Leave empty to use auto-generated self-signed certificate."
+    file_filter: "PEM files (*.pem)|*.pem|All files (*.*)|*.*"
+
+  ssl_key:
+    type: string
+    default: ""
+    widget: file
+    label: SSL Private Key
+    helper: "Optional. Leave empty to use auto-generated self-signed key."
+    file_filter: "PEM files (*.pem)|*.pem"

@@ -1,11 +1,16 @@
 """DocumentService — UNO document helpers and caching."""
 
 import logging
+import re
 import time
 
 from plugin.framework.service_base import ServiceBase
+from plugin.framework.uno_context import get_ctx
 
 log = logging.getLogger("localwriter.document")
+
+# Yield-to-GUI counter (module-level, shared across all calls)
+_yield_counter = 0
 
 
 class DocumentCache:
@@ -41,12 +46,12 @@ class DocumentService(ServiceBase):
     name = "document"
 
     def __init__(self):
-        self._ctx = None
         self._desktop = None
         self._events = None
 
     def initialize(self, ctx):
-        self._ctx = ctx
+        # ctx is no longer stored — we use get_ctx() for fresh context
+        pass
 
     def set_events(self, events):
         self._events = events
@@ -54,11 +59,13 @@ class DocumentService(ServiceBase):
     # ── Desktop / active document ─────────────────────────────────────
 
     def _get_desktop(self):
-        if self._desktop is None and self._ctx:
-            sm = self._ctx.getServiceManager()
-            self._desktop = sm.createInstanceWithContext(
-                "com.sun.star.frame.Desktop", self._ctx
-            )
+        if self._desktop is None:
+            ctx = get_ctx()
+            if ctx:
+                sm = ctx.getServiceManager()
+                self._desktop = sm.createInstanceWithContext(
+                    "com.sun.star.frame.Desktop", ctx
+                )
         return self._desktop
 
     def get_active_document(self):
@@ -114,6 +121,8 @@ class DocumentService(ServiceBase):
     def invalidate_cache(self, model):
         if model is not None:
             DocumentCache.invalidate(model)
+            if self._events:
+                self._events.emit("document:cache_invalidated", doc=model)
 
     # ── Writer helpers ────────────────────────────────────────────────
 
@@ -204,3 +213,215 @@ class DocumentService(ServiceBase):
             return ranges
         except Exception:
             return []
+
+    def find_paragraph_for_range(self, match_range, para_ranges, text_obj=None):
+        """Find which paragraph index a text range belongs to."""
+        try:
+            if text_obj is None:
+                text_obj = match_range.getText()
+            match_start = match_range.getStart()
+            for i, para in enumerate(para_ranges):
+                try:
+                    para_start = para.getStart()
+                    para_end = para.getEnd()
+                    cmp_start = text_obj.compareRegionStarts(
+                        match_start, para_start)
+                    cmp_end = text_obj.compareRegionStarts(
+                        match_start, para_end)
+                    if cmp_start <= 0 and cmp_end >= 0:
+                        return i
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return -1
+
+    def find_paragraph_element(self, model, para_index):
+        """Find a paragraph element by index. Returns (element, max_index)."""
+        doc_text = model.getText()
+        enum = doc_text.createEnumeration()
+        idx = 0
+        while enum.hasMoreElements():
+            element = enum.nextElement()
+            if idx == para_index:
+                return element, idx
+            idx += 1
+        return None, idx
+
+    def annotate_pages(self, nodes, model):
+        """Recursively add 'page' field to heading tree nodes.
+
+        Uses lockControllers + cursor save/restore to prevent
+        visible viewport jumping while resolving page numbers.
+        """
+        try:
+            controller = model.getCurrentController()
+            vc = controller.getViewCursor()
+            saved = model.getText().createTextCursorByRange(vc.getStart())
+            model.lockControllers()
+            try:
+                self._annotate_pages_inner(nodes, model)
+            finally:
+                vc.gotoRange(saved, False)
+                model.unlockControllers()
+        except Exception:
+            pass
+
+    def _annotate_pages_inner(self, nodes, model):
+        for node in nodes:
+            try:
+                pi = node.get("para_index")
+                if pi is not None:
+                    node["page"] = self.get_page_for_paragraph(model, pi)
+            except Exception:
+                pass
+            if "children" in node:
+                self._annotate_pages_inner(node["children"], model)
+
+    # ── Locator resolution ─────────────────────────────────────────
+
+    def resolve_locator(self, model, locator):
+        """Parse 'type:value' locator and resolve to document position.
+
+        Returns dict with at least ``para_index``.
+        Simple locators handled here; Writer-specific ones are
+        delegated to writer_tree service (from writer_nav module).
+        """
+        loc_type, sep, loc_value = locator.partition(":")
+        if not sep:
+            raise ValueError(
+                "Invalid locator format: '%s'. Expected 'type:value'."
+                % locator)
+
+        if loc_type == "paragraph":
+            return {"para_index": int(loc_value)}
+
+        if loc_type == "first":
+            return {"para_index": 0}
+
+        if loc_type == "last":
+            para_ranges = self.get_paragraph_ranges(model)
+            return {"para_index": max(0, len(para_ranges) - 1)}
+
+        if loc_type == "cursor":
+            try:
+                controller = model.getCurrentController()
+                vc = controller.getViewCursor()
+                text_obj = model.getText()
+                para_ranges = self.get_paragraph_ranges(model)
+                idx = self.find_paragraph_for_range(
+                    vc.getStart(), para_ranges, text_obj)
+                return {"para_index": max(0, idx)}
+            except Exception as e:
+                raise ValueError("Cannot resolve cursor locator: %s" % e)
+
+        if loc_type == "regex":
+            return self._resolve_regex_locator(model, loc_value)
+
+        # Writer-specific: delegate to writer_tree service
+        if loc_type in ("bookmark", "page", "section",
+                        "heading", "heading_text"):
+            from plugin.main import get_services
+            svc = get_services().get("writer_tree")
+            if svc is None:
+                raise ValueError(
+                    "writer_nav module not loaded for locator '%s'" % loc_type)
+            return svc.resolve_writer_locator(model, loc_type, loc_value)
+
+        raise ValueError("Unknown locator type: '%s'" % loc_type)
+
+    def _resolve_regex_locator(self, model, pattern):
+        """Resolve regex:/<pattern>/ to the first matching paragraph."""
+        # Strip leading/trailing slashes if present
+        if pattern.startswith("/") and pattern.endswith("/"):
+            pattern = pattern[1:-1]
+        try:
+            regex = re.compile(pattern, re.IGNORECASE)
+        except re.error as e:
+            raise ValueError("Invalid regex pattern: %s" % e)
+        para_ranges = self.get_paragraph_ranges(model)
+        for i, para in enumerate(para_ranges):
+            try:
+                text = para.getString()
+                if regex.search(text):
+                    return {"para_index": i}
+            except Exception:
+                continue
+        raise ValueError("No paragraph matches regex: %s" % pattern)
+
+    # ── Page helpers ───────────────────────────────────────────────
+
+    def get_page_for_paragraph(self, model, para_index):
+        """Return page number for a paragraph by index.
+
+        Uses lockControllers + cursor save/restore to prevent
+        visible viewport jumping.
+        """
+        try:
+            text = model.getText()
+            controller = model.getCurrentController()
+            vc = controller.getViewCursor()
+            saved = text.createTextCursorByRange(vc.getStart())
+            model.lockControllers()
+            try:
+                cursor = text.createTextCursor()
+                cursor.gotoStart(False)
+                for _ in range(para_index):
+                    if not cursor.gotoNextParagraph(False):
+                        break
+                vc.gotoRange(cursor, False)
+                page = vc.getPage()
+            finally:
+                vc.gotoRange(saved, False)
+                model.unlockControllers()
+            return page
+        except Exception:
+            return 1
+
+    def get_page_count(self, model):
+        """Return page count of a Writer document."""
+        try:
+            text = model.getText()
+            controller = model.getCurrentController()
+            vc = controller.getViewCursor()
+            saved = text.createTextCursorByRange(vc.getStart())
+            model.lockControllers()
+            try:
+                vc.jumpToLastPage()
+                count = vc.getPage()
+            finally:
+                vc.gotoRange(saved, False)
+                model.unlockControllers()
+            return count
+        except Exception:
+            return 0
+
+    def doc_key(self, model):
+        """Stable key for a document (URL or id)."""
+        try:
+            return model.getURL() or str(id(model))
+        except Exception:
+            return str(id(model))
+
+    # ── GUI yield ──────────────────────────────────────────────────
+
+    _yield_counter = 0
+
+    def yield_to_gui(self, every=50):
+        """Process pending VCL events to keep GUI responsive.
+
+        Call inside tight loops. Actual reschedule fires every *every* calls.
+        """
+        DocumentService._yield_counter += 1
+        if DocumentService._yield_counter % every != 0:
+            return
+        try:
+            ctx = get_ctx()
+            if ctx:
+                sm = ctx.getServiceManager()
+                tk = sm.createInstanceWithContext(
+                    "com.sun.star.awt.Toolkit", ctx)
+                if hasattr(tk, "processEventsToIdle"):
+                    tk.processEventsToIdle()
+        except Exception:
+            pass

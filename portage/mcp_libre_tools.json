@@ -1,0 +1,1788 @@
+{
+  "add_ai_summary": {
+    "name": "add_ai_summary",
+    "description": "Add an AI annotation/summary to a heading. The summary is stored as a Writer annotation with Author='MCP-AI'. It will be shown when using content_strategy='ai_summary_first'.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "description": "Summary text to attach"
+        },
+        "locator": {
+          "type": "string",
+          "description": "Unified locator (e.g. 'paragraph:5', 'heading:2.1')"
+        },
+        "para_index": {
+          "type": "integer",
+          "description": "Paragraph index of the heading (legacy)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "summary"
+      ]
+    }
+  },
+  "get_ai_summaries": {
+    "name": "get_ai_summaries",
+    "description": "List all AI annotations in a document.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "remove_ai_summary": {
+    "name": "remove_ai_summary",
+    "description": "Remove an AI annotation from a heading.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "locator": {
+          "type": "string",
+          "description": "Unified locator (e.g. 'paragraph:5')"
+        },
+        "para_index": {
+          "type": "integer",
+          "description": "Paragraph index of the heading (legacy)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "execute_batch": {
+    "name": "execute_batch",
+    "description": "Execute multiple tool calls in a single request (one human approval). Operations run sequentially with batch mode (caches/indexing deferred to end). Stops on first error by default. Checks for human stop signals between operations. BATCH VARIABLES: $last = paragraph_index from previous step (works for BOTH insert AND edit ops like set_paragraph_text), $last+N / $last-N = offset, $last.bookmark = _mcp_ bookmark from previous step (available after insert ops or edit of bookmarked paragraphs), $step.N = paragraph_index from step N, $step.N.bookmark = bookmark from step N. Variables resolve to integers in numeric fields, strings in text fields (e.g. locator: 'paragraph:$last+1'). LOCATORS: Use 'heading_text:Some Title' for resilient addressing by heading text (survives bookmark loss). Use 'bookmark:_mcp_xxx' for precise addressing (call get_document_tree first to refresh). Use 'paragraph:N' for absolute positioning. When Record Changes is active, edits are attributed to 'MCP' author. revision_comment adds a note visible in Manage Track Changes. Cannot call execute_batch recursively.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string",
+                "description": "Tool name to execute"
+              },
+              "args": {
+                "type": "object",
+                "description": "Tool arguments. Use $last, $last+1, $step.N for paragraph chaining."
+              },
+              "revision_comment": {
+                "type": "string",
+                "description": "Comment attached to tracked changes created by this operation (visible in Manage Track Changes dialog). Only effective when Record Changes is on."
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "description": "List of {tool, args} to execute sequentially"
+        },
+        "stop_on_error": {
+          "type": "boolean",
+          "description": "Halt on first failed operation (default: true)"
+        },
+        "check_conditions": {
+          "type": "boolean",
+          "description": "Check human stop conditions between ops (default: true)"
+        },
+        "follow": {
+          "type": "string",
+          "description": "Scroll the view to follow edits. 'off' = no scroll (default), 'each' = scroll after every operation, 'end' = scroll after the last operation only"
+        },
+        "revision_comment": {
+          "type": "string",
+          "description": "Default revision comment for all operations. Per-operation revision_comment overrides this. Only effective when Record Changes is on."
+        }
+      },
+      "required": [
+        "operations"
+      ]
+    }
+  },
+  "check_stop_conditions": {
+    "name": "check_stop_conditions",
+    "description": "Check if human stop signals are present in the document. Scans for STOP/CANCEL comments and checks workflow dashboard phase. Call between tool calls to respect human control. Returns should_stop=true if the agent should halt.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Document path (optional, uses active document)"
+        }
+      }
+    }
+  },
+  "read_cells": {
+    "name": "read_cells",
+    "description": "Read cell values from a Calc spreadsheet. Prefix range with sheet name and dot for a specific sheet (e.g. 'Sheet1.A1:D10').",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "range_str": {
+          "type": "string",
+          "description": "Cell range (e.g. 'A1:D10', 'B3'). Prefix with sheet name for a specific sheet (e.g. 'Sheet1.A1:D10')."
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the spreadsheet (optional)"
+        }
+      },
+      "required": [
+        "range_str"
+      ]
+    }
+  },
+  "write_cell": {
+    "name": "write_cell",
+    "description": "Write a value to a Calc spreadsheet cell. Numbers are auto-detected.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "cell": {
+          "type": "string",
+          "description": "Cell address (e.g. 'B3'). Prefix with sheet name for a specific sheet (e.g. 'Sheet1.B3')."
+        },
+        "value": {
+          "type": "string",
+          "description": "Value to write (numbers are auto-detected)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the spreadsheet (optional)"
+        }
+      },
+      "required": [
+        "cell",
+        "value"
+      ]
+    }
+  },
+  "list_sheets": {
+    "name": "list_sheets",
+    "description": "List all sheets in a Calc spreadsheet.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the spreadsheet (optional)"
+        }
+      }
+    }
+  },
+  "get_sheet_info": {
+    "name": "get_sheet_info",
+    "description": "Get info about a spreadsheet sheet (used range, dimensions).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sheet_name": {
+          "type": "string",
+          "description": "Sheet name (optional, defaults to active sheet)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the spreadsheet (optional)"
+        }
+      }
+    }
+  },
+  "list_comments": {
+    "name": "list_comments",
+    "description": "List comments in the document. Use author_filter to see only a specific agent's comments (e.g. 'ChatGPT', 'Claude'). Each comment includes author, content, resolved status, and paragraph index. Multi-agent: each AI should use its own author name.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "author_filter": {
+          "type": "string",
+          "description": "Filter by author name (e.g. 'ChatGPT', 'Claude'). Omit to list all comments."
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "add_comment": {
+    "name": "add_comment",
+    "description": "Add a comment at a paragraph. Use your AI name as author (e.g. 'ChatGPT', 'Claude') for multi-agent collaboration. Other agents can filter comments by author.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "description": "Comment text"
+        },
+        "author": {
+          "type": "string",
+          "description": "Your AI agent name (e.g. 'ChatGPT', 'Claude'). Use a consistent name for filtering."
+        },
+        "locator": {
+          "type": "string",
+          "description": "Unified locator (e.g. 'paragraph:5', 'bookmark:_mcp_x')"
+        },
+        "paragraph_index": {
+          "type": "integer",
+          "description": "Paragraph index (legacy)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "content"
+      ]
+    }
+  },
+  "resolve_comment": {
+    "name": "resolve_comment",
+    "description": "Resolve a comment with an optional reason. Adds a reply with the resolution text, then marks as resolved. Use list_document_comments to find comment names.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "comment_name": {
+          "type": "string",
+          "description": "Name/ID of the comment to resolve"
+        },
+        "resolution": {
+          "type": "string",
+          "description": "Reason for resolution (e.g. 'Done: updated age to 14')"
+        },
+        "author": {
+          "type": "string",
+          "description": "Author of the resolution (default: AI Agent)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "comment_name"
+      ]
+    }
+  },
+  "scan_tasks": {
+    "name": "scan_tasks",
+    "description": "Scan comments for actionable task prefixes: TODO-AI, FIX, QUESTION, VALIDATION, NOTE. Returns unresolved tasks with locators \u2014 use this to find what needs attention without reading the document body. Multi-agent: each AI leaves prefixed comments, others pick them up.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "unresolved_only": {
+          "type": "boolean",
+          "description": "Only return unresolved tasks (default: true)"
+        },
+        "prefix_filter": {
+          "type": "string",
+          "enum": [
+            "TODO-AI",
+            "FIX",
+            "QUESTION",
+            "VALIDATION",
+            "NOTE"
+          ],
+          "description": "Only return tasks with this prefix"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "get_workflow_status": {
+    "name": "get_workflow_status",
+    "description": "Read the master workflow dashboard comment (author: MCP-WORKFLOW). Returns key-value pairs like Phase, Images status, Annexes, etc. Use set_workflow_status to create or update.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "set_workflow_status": {
+    "name": "set_workflow_status",
+    "description": "Create or update the master workflow dashboard comment. Content should be key: value lines, e.g.:\\n  Phase: R\u00e9daction\\n  Images: 3/10 ins\u00e9r\u00e9es\\n  Annexes: En attente\\nThe dashboard is a single comment at the start of the document authored by MCP-WORKFLOW. All agents can read/update it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "description": "Dashboard content as key: value lines"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "content"
+      ]
+    }
+  },
+  "delete_comment": {
+    "name": "delete_comment",
+    "description": "Delete comments by name or author. Use author='MCP-BATCH' to clean up batch stop comments. Use author='MCP-WORKFLOW' to clean up workflow comments.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "comment_name": {
+          "type": "string",
+          "description": "Name/ID of the comment to delete"
+        },
+        "author": {
+          "type": "string",
+          "description": "Delete ALL comments by this author (e.g. 'MCP-BATCH', 'MCP-WORKFLOW')"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "document_health_check": {
+    "name": "document_health_check",
+    "description": "Run diagnostics on a document: detect empty headings, broken bookmarks, orphan images, inconsistent heading levels, and large unstructured sections. Returns issues sorted by severity.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "create_document": {
+    "name": "create_document",
+    "description": "Create a new LibreOffice document.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "doc_type": {
+          "type": "string",
+          "enum": [
+            "writer",
+            "calc",
+            "impress",
+            "draw"
+          ],
+          "description": "Type of document to create (default: writer)"
+        },
+        "content": {
+          "type": "string",
+          "description": "Initial content for the document (for writer docs)"
+        }
+      }
+    }
+  },
+  "open_document": {
+    "name": "open_document",
+    "description": "Open a document in LibreOffice GUI for live viewing.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Path to the document to open"
+        },
+        "force": {
+          "type": "boolean",
+          "description": "Force open even if a document with the same name is already open (default: False)"
+        }
+      },
+      "required": [
+        "file_path"
+      ]
+    }
+  },
+  "close_document": {
+    "name": "close_document",
+    "description": "Close a document by file path (no save).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute file path"
+        }
+      },
+      "required": [
+        "file_path"
+      ]
+    }
+  },
+  "list_open_documents": {
+    "name": "list_open_documents",
+    "description": "List all currently open documents in LibreOffice.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "save_document": {
+    "name": "save_document",
+    "description": "Save the currently active document to its current location.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "save_document_as": {
+    "name": "save_document_as",
+    "description": "Save/duplicate a document under a new name.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target_path": {
+          "type": "string",
+          "description": "New file path to save the copy to"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Source document (optional, uses active doc)"
+        }
+      },
+      "required": [
+        "target_path"
+      ]
+    }
+  },
+  "get_recent_documents": {
+    "name": "get_recent_documents",
+    "description": "Get the list of recently opened documents from LO history. Returns file paths and titles of recently opened documents.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "max_count": {
+          "type": "integer",
+          "description": "Maximum number of documents to return (default: 20)"
+        }
+      }
+    }
+  },
+  "insert_at_paragraph": {
+    "name": "insert_at_paragraph",
+    "description": "Insert text before or after a specific paragraph. Preserves all existing formatting. Use locator for unified addressing (e.g. 'paragraph:5', 'bookmark:_mcp_x').",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Text to insert"
+        },
+        "locator": {
+          "type": "string",
+          "description": "Locator: 'paragraph:N', 'bookmark:_mcp_x', 'heading_text:Title'"
+        },
+        "paragraph_index": {
+          "type": "integer",
+          "description": "Target paragraph index (legacy)"
+        },
+        "position": {
+          "type": "string",
+          "enum": [
+            "before",
+            "after"
+          ],
+          "description": "'before' or 'after' (default: after)"
+        },
+        "style": {
+          "type": "string",
+          "description": "Paragraph style for the new paragraph (e.g. 'Text Body', 'Heading 1'). If omitted, inherits from adjacent paragraph."
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    }
+  },
+  "insert_paragraphs_batch": {
+    "name": "insert_paragraphs_batch",
+    "description": "Insert multiple paragraphs in one call. Each item in paragraphs is {\"text\": \"...\", \"style\": \"...\"}. Style is optional. All paragraphs are inserted in a single UNO transaction.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "paragraphs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "style": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ]
+          },
+          "description": "List of {text, style?} objects to insert"
+        },
+        "locator": {
+          "type": "string",
+          "description": "Locator: 'paragraph:N', 'bookmark:_mcp_x', 'heading_text:Title'"
+        },
+        "paragraph_index": {
+          "type": "integer",
+          "description": "Target paragraph index (legacy)"
+        },
+        "position": {
+          "type": "string",
+          "enum": [
+            "before",
+            "after"
+          ],
+          "description": "'before' or 'after' (default: after)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "paragraphs"
+      ]
+    }
+  },
+  "delete_paragraph": {
+    "name": "delete_paragraph",
+    "description": "Delete a paragraph from the document.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "locator": {
+          "type": "string",
+          "description": "Locator: 'paragraph:N', 'bookmark:_mcp_x', 'heading_text:Title'"
+        },
+        "paragraph_index": {
+          "type": "integer",
+          "description": "Paragraph index (legacy)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "set_paragraph_text": {
+    "name": "set_paragraph_text",
+    "description": "Replace the entire text of a paragraph (preserves style). Returns paragraph_index and bookmark (if heading) for use with batch $last / $last.bookmark variables.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "New text content for the paragraph"
+        },
+        "locator": {
+          "type": "string",
+          "description": "Locator: 'paragraph:N', 'bookmark:_mcp_x', 'heading_text:Title'"
+        },
+        "paragraph_index": {
+          "type": "integer",
+          "description": "Paragraph index (legacy)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    }
+  },
+  "set_paragraph_style": {
+    "name": "set_paragraph_style",
+    "description": "Set the paragraph style (e.g. 'Heading 1', 'Text Body', 'List Bullet').",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "style_name": {
+          "type": "string",
+          "description": "Name of the paragraph style to apply"
+        },
+        "locator": {
+          "type": "string",
+          "description": "Locator: 'paragraph:N', 'bookmark:_mcp_x', 'heading_text:Title'"
+        },
+        "paragraph_index": {
+          "type": "integer",
+          "description": "Paragraph index (legacy)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "style_name"
+      ]
+    }
+  },
+  "duplicate_paragraph": {
+    "name": "duplicate_paragraph",
+    "description": "Duplicate a paragraph (with its style) after itself. Use count > 1 to duplicate a block (e.g. heading + body paragraphs).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "locator": {
+          "type": "string",
+          "description": "Locator: 'paragraph:N', 'bookmark:_mcp_x', 'heading_text:Title'"
+        },
+        "paragraph_index": {
+          "type": "integer",
+          "description": "Paragraph index (legacy)"
+        },
+        "count": {
+          "type": "integer",
+          "description": "Number of consecutive paragraphs to duplicate (default: 1)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "clone_heading_block": {
+    "name": "clone_heading_block",
+    "description": "Clone an entire heading block (heading + all sub-headings + body). The clone is inserted right after the original block. Use bookmark locator: 'bookmark:_mcp_abc123'. Useful for yearly duplication, template blocks, annex generation.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "locator": {
+          "type": "string",
+          "description": "Bookmark of the heading to clone (e.g. 'bookmark:_mcp_abc123')"
+        },
+        "paragraph_index": {
+          "type": "integer",
+          "description": "Paragraph index of the heading (legacy)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "list_text_frames": {
+    "name": "list_text_frames",
+    "description": "List all text frames in the document. Returns name, dimensions, anchor type, orientation, paragraph_index, and contained images for each frame.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "get_text_frame_info": {
+    "name": "get_text_frame_info",
+    "description": "Get detailed info about a specific text frame. Returns size, position, anchor type, orientation, wrap mode, paragraph_index, contained text (caption), and contained images.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "frame_name": {
+          "type": "string",
+          "description": "Name of the text frame (use list_document_frames)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "frame_name"
+      ]
+    }
+  },
+  "set_text_frame_properties": {
+    "name": "set_text_frame_properties",
+    "description": "Modify text frame properties (size, position, wrap, anchor).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "frame_name": {
+          "type": "string",
+          "description": "Name of the frame (use list_document_frames to find)"
+        },
+        "width_mm": {
+          "type": "integer",
+          "description": "New width in millimeters"
+        },
+        "height_mm": {
+          "type": "integer",
+          "description": "New height in millimeters"
+        },
+        "anchor_type": {
+          "type": "integer",
+          "description": "0=AT_PARAGRAPH, 1=AS_CHARACTER, 2=AT_PAGE, 4=AT_CHARACTER"
+        },
+        "hori_orient": {
+          "type": "integer",
+          "description": "0=NONE, 1=RIGHT, 2=CENTER, 3=LEFT"
+        },
+        "vert_orient": {
+          "type": "integer",
+          "description": "0=NONE, 1=TOP, 2=CENTER, 3=BOTTOM"
+        },
+        "hori_pos_mm": {
+          "type": "integer",
+          "description": "Horizontal position in mm (when hori_orient=NONE)"
+        },
+        "vert_pos_mm": {
+          "type": "integer",
+          "description": "Vertical position in mm (when vert_orient=NONE)"
+        },
+        "wrap": {
+          "type": "integer",
+          "description": "0=NONE, 1=COLUMN, 2=PARALLEL, 3=DYNAMIC, 4=THROUGH"
+        },
+        "paragraph_index": {
+          "type": "integer",
+          "description": "Move anchor to this paragraph index"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "frame_name"
+      ]
+    }
+  },
+  "list_images": {
+    "name": "list_images",
+    "description": "List all images/graphic objects in the document. Returns name, dimensions, title, and description for each image.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "get_image_info": {
+    "name": "get_image_info",
+    "description": "Get detailed info about a specific image. Returns URL, dimensions, anchor type, orientation, and paragraph index.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "image_name": {
+          "type": "string",
+          "description": "Name of the image/graphic object"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "image_name"
+      ]
+    }
+  },
+  "set_image_properties": {
+    "name": "set_image_properties",
+    "description": "Resize, reposition, crop, or update caption/alt-text for an image.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "image_name": {
+          "type": "string",
+          "description": "Name of the image (use list_document_images to find)"
+        },
+        "width_mm": {
+          "type": "integer",
+          "description": "New width in millimeters"
+        },
+        "height_mm": {
+          "type": "integer",
+          "description": "New height in millimeters"
+        },
+        "title": {
+          "type": "string",
+          "description": "Image title / caption text"
+        },
+        "description": {
+          "type": "string",
+          "description": "Alt-text for accessibility"
+        },
+        "anchor_type": {
+          "type": "integer",
+          "description": "0=AT_PARAGRAPH, 1=AS_CHARACTER, 2=AT_PAGE, 4=AT_CHARACTER"
+        },
+        "hori_orient": {
+          "type": "integer",
+          "description": "0=NONE, 1=RIGHT, 2=CENTER, 3=LEFT"
+        },
+        "vert_orient": {
+          "type": "integer",
+          "description": "0=NONE, 1=TOP, 2=CENTER, 3=BOTTOM"
+        },
+        "hori_orient_relation": {
+          "type": "integer",
+          "description": "0=PARAGRAPH, 1=FRAME, 2=PAGE..."
+        },
+        "vert_orient_relation": {
+          "type": "integer",
+          "description": "0=PARAGRAPH, 1=FRAME, 2=PAGE..."
+        },
+        "crop_top_mm": {
+          "type": "integer",
+          "description": "Crop from top in mm"
+        },
+        "crop_bottom_mm": {
+          "type": "integer",
+          "description": "Crop from bottom in mm"
+        },
+        "crop_left_mm": {
+          "type": "integer",
+          "description": "Crop from left in mm"
+        },
+        "crop_right_mm": {
+          "type": "integer",
+          "description": "Crop from right in mm"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "image_name"
+      ]
+    }
+  },
+  "download_image": {
+    "name": "download_image",
+    "description": "Download an image from a URL to local cache. Returns the local file path for use with insert_image or replace_image. Cached: same URL returns instantly on repeat calls. Use force=true to re-download. Retries up to 3 times on failure. SSL verification disabled by default for academic/intranet sites.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "HTTP/HTTPS URL of the image to download"
+        },
+        "verify_ssl": {
+          "type": "boolean",
+          "description": "Verify SSL certificates (default: false \u2014 accepts self-signed certs)"
+        },
+        "force": {
+          "type": "boolean",
+          "description": "Force re-download even if cached (default: false)"
+        }
+      },
+      "required": [
+        "url"
+      ]
+    }
+  },
+  "insert_image": {
+    "name": "insert_image",
+    "description": "Insert an image from a local file path or URL into the document. Supports http/https URLs (auto-downloaded with cache and retry). Tip: use download_image first to pre-cache, then pass the local path here. By default the image is wrapped in a text frame (caption frame). Set with_frame=False for standalone image.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "image_path": {
+          "type": "string",
+          "description": "Absolute path to the image file on disk, or an HTTP/HTTPS URL"
+        },
+        "locator": {
+          "type": "string",
+          "description": "Unified locator for insertion point (e.g. 'paragraph:5')"
+        },
+        "paragraph_index": {
+          "type": "integer",
+          "description": "Paragraph index to insert after (legacy)"
+        },
+        "caption": {
+          "type": "string",
+          "description": "Caption text below the image (optional)"
+        },
+        "with_frame": {
+          "type": "boolean",
+          "description": "Wrap in a text frame (default: True)"
+        },
+        "width_mm": {
+          "type": "integer",
+          "description": "Width in mm (default: 80)"
+        },
+        "height_mm": {
+          "type": "integer",
+          "description": "Height in mm (default: 80)"
+        },
+        "verify_ssl": {
+          "type": "boolean",
+          "description": "Verify SSL certificates when downloading from URLs (default: false \u2014 accepts self-signed certs for tunnels/intranets)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "image_path"
+      ]
+    }
+  },
+  "delete_image": {
+    "name": "delete_image",
+    "description": "Delete an image from the document. If the image is inside a text frame and remove_frame=True (default), the entire frame (image + caption) is removed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "image_name": {
+          "type": "string",
+          "description": "Name of the image (use list_document_images to find)"
+        },
+        "remove_frame": {
+          "type": "boolean",
+          "description": "Also remove parent frame (default: True)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "image_name"
+      ]
+    }
+  },
+  "replace_image": {
+    "name": "replace_image",
+    "description": "Replace an image's source file, keeping its frame and position. The image stays in its current frame with the same anchor, orientation, and caption. Only the graphic source changes. Supports http/https URLs (image is downloaded automatically).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "image_name": {
+          "type": "string",
+          "description": "Name of the image to replace"
+        },
+        "new_image_path": {
+          "type": "string",
+          "description": "Absolute path to the new image file on disk, or an HTTP/HTTPS URL"
+        },
+        "width_mm": {
+          "type": "integer",
+          "description": "New width in mm (optional, keeps current if omitted)"
+        },
+        "height_mm": {
+          "type": "integer",
+          "description": "New height in mm (optional, keeps current if omitted)"
+        },
+        "verify_ssl": {
+          "type": "boolean",
+          "description": "Verify SSL certificates when downloading from URLs (default: false \u2014 accepts self-signed certs for tunnels/intranets)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "image_name",
+        "new_image_path"
+      ]
+    }
+  },
+  "list_slides": {
+    "name": "list_slides",
+    "description": "List all slides in an Impress presentation. Returns slide count, names, layout info, and first-shape title.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the presentation (optional)"
+        }
+      }
+    }
+  },
+  "read_slide_text": {
+    "name": "read_slide_text",
+    "description": "Get all text from a presentation slide and its notes page.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "slide_index": {
+          "type": "integer",
+          "description": "Zero-based slide index"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the presentation (optional)"
+        }
+      },
+      "required": [
+        "slide_index"
+      ]
+    }
+  },
+  "get_presentation_info": {
+    "name": "get_presentation_info",
+    "description": "Get presentation metadata: slide count, dimensions, master pages.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the presentation (optional)"
+        }
+      }
+    }
+  },
+  "get_document_properties": {
+    "name": "get_document_properties",
+    "description": "Read document metadata (title, author, subject, keywords, dates).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "set_document_properties": {
+    "name": "set_document_properties",
+    "description": "Update document metadata (title, author, subject, etc.).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Document title"
+        },
+        "author": {
+          "type": "string",
+          "description": "Document author"
+        },
+        "subject": {
+          "type": "string",
+          "description": "Document subject"
+        },
+        "description": {
+          "type": "string",
+          "description": "Document description"
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of keywords"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "get_document_tree": {
+    "name": "get_document_tree",
+    "description": "ESSENTIAL FIRST CALL. Returns the heading tree with stable bookmark IDs (_mcp_*) for each heading. Use bookmarks as locators in all other tools (e.g. 'bookmark:_mcp_abc123'). Bookmarks survive edits \u2014 paragraph indexes shift, bookmarks don't. Start with depth=1, then drill down with get_heading_children.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "content_strategy": {
+          "type": "string",
+          "enum": [
+            "none",
+            "first_lines",
+            "ai_summary_first",
+            "full"
+          ],
+          "description": "What to show for body text (default: first_lines)"
+        },
+        "depth": {
+          "type": "integer",
+          "description": "Heading levels to return (default: 1)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "get_heading_children": {
+    "name": "get_heading_children",
+    "description": "Drill down into a heading to see its sub-headings and content. Use the bookmark from get_document_tree as locator: 'bookmark:_mcp_abc123'. Returns child headings with their own bookmarks for further navigation. Never scan paragraphs manually.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "locator": {
+          "type": "string",
+          "description": "Unified locator string (preferred)"
+        },
+        "heading_para_index": {
+          "type": "integer",
+          "description": "Paragraph index of the parent heading (legacy)"
+        },
+        "heading_bookmark": {
+          "type": "string",
+          "description": "Bookmark name (legacy)"
+        },
+        "content_strategy": {
+          "type": "string",
+          "enum": [
+            "none",
+            "first_lines",
+            "ai_summary_first",
+            "full"
+          ],
+          "description": "none, first_lines, ai_summary_first, full"
+        },
+        "depth": {
+          "type": "integer",
+          "description": "Sub-levels to include (default: 1)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "read_paragraphs": {
+    "name": "read_paragraphs",
+    "description": "Read paragraphs starting from a bookmark or position. Best used with bookmark locators: 'bookmark:_mcp_abc123'. Also supports 'paragraph:N', 'page:N', 'section:Name'. Use count to limit (default 10). Never read the whole document.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "locator": {
+          "type": "string",
+          "description": "Unified locator string (e.g. 'paragraph:0', 'page:2')"
+        },
+        "start_index": {
+          "type": "integer",
+          "description": "Zero-based index of first paragraph (legacy)"
+        },
+        "count": {
+          "type": "integer",
+          "description": "Number of paragraphs to read (default: 10)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "get_paragraph_count": {
+    "name": "get_paragraph_count",
+    "description": "Get total paragraph count of a document.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "get_page_count": {
+    "name": "get_page_count",
+    "description": "Get the page count of a document.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "goto_page": {
+    "name": "goto_page",
+    "description": "Scroll the LibreOffice view to a specific page. Use this to visually navigate to a page so the user can see it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "page": {
+          "type": "integer",
+          "description": "Page number (1-based)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "page"
+      ]
+    }
+  },
+  "get_page_objects": {
+    "name": "get_page_objects",
+    "description": "Get images and tables on a page. Pass page number directly, OR a locator/paragraph_index to resolve the page automatically. Use this to find objects near a paragraph or comment.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "page": {
+          "type": "integer",
+          "description": "Page number (1-based)"
+        },
+        "locator": {
+          "type": "string",
+          "description": "Locator to resolve page from (e.g. 'paragraph:89')"
+        },
+        "paragraph_index": {
+          "type": "integer",
+          "description": "Paragraph index to resolve page from"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "set_document_protection": {
+    "name": "set_document_protection",
+    "description": "Lock or unlock the document for human editing. When locked (enabled=True), the document UI becomes read-only. All MCP/UNO calls still work normally through the protection. No password, just a boolean toggle.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "True to lock (human can't edit), False to unlock"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "enabled"
+      ]
+    }
+  },
+  "navigate_heading": {
+    "name": "navigate_heading",
+    "description": "Navigate locally between headings from any position. Directions: next, previous, parent, first_child, next_sibling, previous_sibling. Uses the cached heading tree \u2014 O(1) after first call. When on body text, 'previous' returns the owning heading, 'next' returns the heading after the current section. Use bookmark locators for best performance.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "locator": {
+          "type": "string",
+          "description": "Starting position: 'bookmark:_mcp_xxx', 'paragraph:42', etc."
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "next",
+            "previous",
+            "parent",
+            "first_child",
+            "next_sibling",
+            "previous_sibling"
+          ],
+          "description": "Navigation direction relative to current heading context."
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "locator",
+        "direction"
+      ]
+    }
+  },
+  "get_surroundings": {
+    "name": "get_surroundings",
+    "description": "Discover what's near a position: images, tables, frames, comments, headings, and paragraph text within a radius. Returns parent heading chain for instant context. Use 'include' to skip expensive categories. Ideal after receiving a TODO comment \u2014 instantly see nearby images, tables, and section context.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "locator": {
+          "type": "string",
+          "description": "Center position: 'bookmark:_mcp_xxx', 'paragraph:42', etc."
+        },
+        "radius": {
+          "type": "integer",
+          "description": "Paragraphs to scan in each direction (default: 10, max: 50)"
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "paragraphs",
+              "images",
+              "tables",
+              "frames",
+              "comments",
+              "headings"
+            ]
+          },
+          "description": "Object types to include (default: all). Use ['headings','comments'] for fast context-only queries."
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "locator"
+      ]
+    }
+  },
+  "search_in_document": {
+    "name": "search_in_document",
+    "description": "Search for text in a document with paragraph context. Uses LibreOffice native search. Returns matches with surrounding paragraphs for context, without loading the entire document.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Search string or regex"
+        },
+        "regex": {
+          "type": "boolean",
+          "description": "Use regular expression (default: False)"
+        },
+        "case_sensitive": {
+          "type": "boolean",
+          "description": "Case-sensitive search (default: False)"
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Max results to return (default: 20)"
+        },
+        "context_paragraphs": {
+          "type": "integer",
+          "description": "Paragraphs of context around each match (default: 1)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  },
+  "replace_in_document": {
+    "name": "replace_in_document",
+    "description": "Find and replace text preserving all formatting.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "search": {
+          "type": "string",
+          "description": "Text to find"
+        },
+        "replace": {
+          "type": "string",
+          "description": "Replacement text"
+        },
+        "regex": {
+          "type": "boolean",
+          "description": "Use regular expression (default: False)"
+        },
+        "case_sensitive": {
+          "type": "boolean",
+          "description": "Case-sensitive matching (default: False)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "search",
+        "replace"
+      ]
+    }
+  },
+  "search_boolean": {
+    "name": "search_boolean",
+    "description": "Boolean full-text search with stemming (Snowball). Language auto-detected from document locale. Supports AND, OR, NOT, NEAR/N operators. Stemming handles singular/plural and word forms (enfants=enfant, protection=protections). Results include page numbers, paragraph context, and nearest heading. Use around_page + page_radius to restrict results near a specific page.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Boolean query. Examples: 'enfant AND protection', 'juge OR tribunal', 'enfant NOT maltraitance', 'enfant NEAR/3 protection', 'enfants protection' (implicit AND)"
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Max results to return (default: 20)"
+        },
+        "context_paragraphs": {
+          "type": "integer",
+          "description": "Paragraphs of context around each match (default: 1)"
+        },
+        "around_page": {
+          "type": "integer",
+          "description": "Restrict results to pages near this page (optional)"
+        },
+        "page_radius": {
+          "type": "integer",
+          "description": "Page radius for around_page filter (default: 1, meaning +/-1 page)"
+        },
+        "include_pages": {
+          "type": "boolean",
+          "description": "Add page numbers to results. Costs ~30s on first call (cached after). Automatic when around_page is set. (default: false)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  "get_index_stats": {
+    "name": "get_index_stats",
+    "description": "Get full-text index statistics: paragraph count, unique stems, detected language, top 20 most frequent stems. Builds the index if not cached.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "list_sections": {
+    "name": "list_sections",
+    "description": "List all named text sections in a document.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "read_section": {
+    "name": "read_section",
+    "description": "Read the content of a named text section.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "section_name": {
+          "type": "string",
+          "description": "Name of the section"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "section_name"
+      ]
+    }
+  },
+  "list_bookmarks": {
+    "name": "list_bookmarks",
+    "description": "List all bookmarks (_mcp_* = auto-generated heading anchors). Bookmarks are stable IDs that survive edits. Use 'bookmark:NAME' as locator in any tool. Prefer get_document_tree which includes bookmarks in context.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "resolve_bookmark": {
+    "name": "resolve_bookmark",
+    "description": "Resolve a bookmark to its current paragraph index and heading text. Use when you have a bookmark ID from a previous call and need the current position. Most tools accept 'bookmark:NAME' directly as locator \u2014 use resolve_bookmark only when you need the raw index.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "bookmark_name": {
+          "type": "string",
+          "description": "Bookmark name (e.g. _mcp_a1b2c3d4)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "bookmark_name"
+      ]
+    }
+  },
+  "refresh_indexes": {
+    "name": "refresh_indexes",
+    "description": "Refresh all document indexes (Table of Contents, alphabetical, etc.). Call this after modifying headings or text referenced by indexes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "update_fields": {
+    "name": "update_fields",
+    "description": "Refresh all text fields (dates, page numbers, cross-references).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "list_styles": {
+    "name": "list_styles",
+    "description": "List available styles in a family. Use this to discover which styles exist before applying them. Filter by is_in_use to see what the document actually uses.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "family": {
+          "type": "string",
+          "description": "ParagraphStyles, CharacterStyles, PageStyles, FrameStyles, NumberingStyles (default: ParagraphStyles)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "get_style_info": {
+    "name": "get_style_info",
+    "description": "Get detailed properties of a style (font, size, margins, etc.).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "style_name": {
+          "type": "string",
+          "description": "Name of the style"
+        },
+        "family": {
+          "type": "string",
+          "description": "Style family (default: ParagraphStyles)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "style_name"
+      ]
+    }
+  },
+  "list_tables": {
+    "name": "list_tables",
+    "description": "List all text tables in a Writer document. Returns table name, row count, and column count for each table.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "read_table": {
+    "name": "read_table",
+    "description": "Read all cell contents from a Writer table. Returns a 2D array of cell values.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "table_name": {
+          "type": "string",
+          "description": "Name of the table (use list_document_tables to find)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "table_name"
+      ]
+    }
+  },
+  "write_table_cell": {
+    "name": "write_table_cell",
+    "description": "Write to a cell in a Writer table. Numbers are auto-detected. Use cell addresses like A1, B3, etc.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "table_name": {
+          "type": "string",
+          "description": "Name of the table"
+        },
+        "cell": {
+          "type": "string",
+          "description": "Cell address (e.g. 'A1', 'B3')"
+        },
+        "value": {
+          "type": "string",
+          "description": "Value to write"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "table_name",
+        "cell",
+        "value"
+      ]
+    }
+  },
+  "create_table": {
+    "name": "create_table",
+    "description": "Create a new table at a paragraph position. The table is inserted after the target paragraph.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "integer",
+          "description": "Number of rows"
+        },
+        "cols": {
+          "type": "integer",
+          "description": "Number of columns"
+        },
+        "locator": {
+          "type": "string",
+          "description": "Unified locator for insertion point"
+        },
+        "paragraph_index": {
+          "type": "integer",
+          "description": "Paragraph index (legacy)"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "rows",
+        "cols"
+      ]
+    }
+  },
+  "set_track_changes": {
+    "name": "set_track_changes",
+    "description": "Enable or disable change tracking (record changes). Enable before making edits so the human can review diffs. Disable after changes are accepted.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "True to enable tracking, False to disable"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      },
+      "required": [
+        "enabled"
+      ]
+    }
+  },
+  "get_tracked_changes": {
+    "name": "get_tracked_changes",
+    "description": "List all tracked changes (redlines) in the document. Returns change type, author, date, and comment for each redline.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "accept_all_changes": {
+    "name": "accept_all_changes",
+    "description": "Accept all tracked changes in the document.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  },
+  "reject_all_changes": {
+    "name": "reject_all_changes",
+    "description": "Reject all tracked changes in the document.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute path to the document (optional)"
+        }
+      }
+    }
+  }
+}

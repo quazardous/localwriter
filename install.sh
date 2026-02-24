@@ -107,6 +107,28 @@ fi
 
 echo ""
 
+# ── Vendored dependencies ──────────────────────────────────────────
+
+if [[ -f requirements-vendor.txt ]]; then
+    if $CHECK_ONLY; then
+        if [[ -d vendor ]]; then
+            info "vendor/ directory exists"
+        else
+            warn "vendor/ not populated (run: make vendor)"
+        fi
+    else
+        echo "Installing vendored dependencies..."
+        if command -v uv &>/dev/null; then
+            uv pip install --target vendor -r requirements-vendor.txt
+        else
+            $PYTHON -m pip install --target vendor -r requirements-vendor.txt
+        fi
+        info "Vendored dependencies installed"
+    fi
+fi
+
+echo ""
+
 if $CHECK_ONLY; then
     echo "Environment check complete."
 else

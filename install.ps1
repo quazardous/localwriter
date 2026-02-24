@@ -101,6 +101,22 @@ if (Get-Command openssl -ErrorAction SilentlyContinue) {
     Write-Warn "openssl not found (optional, needed for MCP HTTPS)"
 }
 
+# -- Vendored dependencies ---------------------------------------------
+
+if (Test-Path "requirements-vendor.txt") {
+    if ($Check) {
+        if (Test-Path "vendor") {
+            Write-Ok "vendor/ directory exists"
+        } else {
+            Write-Warn "vendor/ not populated (run: make vendor)"
+        }
+    } else {
+        Write-Host "Installing vendored dependencies..."
+        & $python -m pip install --target vendor -r requirements-vendor.txt
+        Write-Ok "Vendored dependencies installed"
+    }
+}
+
 Write-Host ""
 
 if ($Check) {

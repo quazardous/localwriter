@@ -22,7 +22,7 @@ The MCP server is **implemented and opt-in** (default off). Summary:
 - **`core/mcp_server.py`**: HTTP server on localhost; GET `/health`, `/`, `/tools`, `/documents`; POST `/tools/{name}`. Port utilities: `_probe_health`, `_is_port_bound`, `_kill_zombies_on_port`.
 - **Idle-time draining**: **`AsyncCallback` thread** in `main.py`. A background Python thread loops and queues an `XCallback` invocation via `com.sun.star.awt.AsyncCallback` every 100ms, which safely executes `drain_mcp_queue()` on the main VCL thread. Option of piggybacking on the chat stream drain loop was **not** used — it would only service MCP during active chat, which is inadequate for standalone MCP use.
 - **Document targeting**: **`X-Document-URL`** HTTP header. The server resolves the target document by iterating `desktop.getComponents()` and matching `getURL()` to the header. If the header is absent, it falls back to the active document. `GET /documents` returns all open documents with URLs and types so clients can discover targets. This avoids races when multiple documents or users are involved; “active document only” was not used.
-- **Config**: `mcp_enabled` (default false), `mcp_port` (default 8765). Documented in `core/config.py`.
+- **Config**: `mcp_enabled` (default false), `mcp_port` (default 8766). Documented in `core/config.py`.
 - **Settings**: MCP section on **Page 1** of the Settings dialog (no separate tab): “Enable MCP Server” checkbox, Port field, “Localhost only, no auth.” label. Dialog layout was compacted so short fields share rows and the OK button sits at the bottom with minimal gap.
 - **Menu**: “Toggle MCP Server” and “MCP Server Status” under LocalWriter. Status dialog shows RUNNING/STOPPED, port, URL, and health check.
 - **Auto-start**: When the user saves Settings with MCP enabled, the server (and timer) start if not already running.
@@ -138,13 +138,13 @@ def main():
         req = json.loads(line)
         method = req.get("method")
         if method == "tools/list":
-            r = requests.get("http://localhost:8765/tools")
+            r = requests.get("http://localhost:8766/tools")
             tools = r.json()["tools"]
             reply = {"id": req["id"], "result": {"tools": tools}}
         elif method == "tools/call":
             name = req["params"]["name"]
             args = req["params"].get("arguments", {})
-            r = requests.post(f"http://localhost:8765/tools/{name}", json=args)
+            r = requests.post(f"http://localhost:8766/tools/{name}", json=args)
             reply = {"id": req["id"], "result": {"content": [{"type": "text", "text": json.dumps(r.json())}]}}
         else:
             reply = {"id": req["id"], "result": {}}

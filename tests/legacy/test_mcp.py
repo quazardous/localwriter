@@ -35,7 +35,7 @@ def check_endpoint(name, url, method="GET", data=None):
         print(f"Unexpected error: {e}")
 
 if __name__ == "__main__":
-    BASE_URL = "http://127.0.0.1:8765"
+    BASE_URL = "http://127.0.0.1:8766"
     print("Testing LocalWriter MCP Server...")
     
     # 1. Test Health

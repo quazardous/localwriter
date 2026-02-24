@@ -16,7 +16,7 @@ import logging
 import queue
 import threading
 
-log = logging.getLogger("localwriter.mcp.thread")
+log = logging.getLogger("localwriter.framework.main_thread")
 
 
 class _WorkItem:
@@ -114,10 +114,15 @@ def _poke_vcl():
 def execute_on_main_thread(fn, *args, timeout=30.0, **kwargs):
     """Execute fn(*args, **kwargs) on the LibreOffice main (VCL) thread.
 
-    Blocks the calling thread up to *timeout* seconds.
+    If already on the main thread, calls directly (avoids deadlock).
+    Otherwise blocks the calling thread up to *timeout* seconds.
     Raises TimeoutError if the main thread doesn't process the item in time.
     Re-raises any exception thrown by *fn*.
     """
+    # Already on main thread — call directly to avoid deadlock
+    if threading.current_thread() is threading.main_thread():
+        return fn(*args, **kwargs)
+
     svc = _get_async_callback()
 
     if svc is None:

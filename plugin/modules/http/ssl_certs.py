@@ -5,7 +5,7 @@ import os
 import ssl
 import subprocess
 
-log = logging.getLogger("localwriter.mcp.ssl")
+log = logging.getLogger("localwriter.http.ssl")
 
 
 def get_cert_dir():

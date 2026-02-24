@@ -1,4 +1,8 @@
-"""MCP JSON-RPC server module."""
+"""MCP JSON-RPC protocol module.
+
+Registers MCP routes with the shared HTTP server.
+No server management — that's the http module's job.
+"""
 
 import logging
 
@@ -8,17 +12,16 @@ log = logging.getLogger("localwriter.mcp")
 
 
 class MCPModule(ModuleBase):
-    """Exposes tools via an MCP HTTP server."""
+    """Exposes tools via MCP JSON-RPC routes on the shared HTTP server."""
 
     def initialize(self, services):
         self._services = services
-        self._server = None
+        self._protocol = None
+        self._routes_registered = False
 
-        # Auto-start if enabled
         if services.config.proxy_for(self.name).get("enabled"):
-            self._start_server(services)
+            self._register_routes(services)
 
-        # Listen for config changes to start/stop dynamically
         if hasattr(services, "events"):
             services.events.subscribe("config:changed", self._on_config_changed)
 
@@ -28,38 +31,51 @@ class MCPModule(ModuleBase):
             return
         cfg = self._services.config.proxy_for(self.name)
         enabled = cfg.get("enabled")
-        if enabled and not self._server:
-            self._start_server(self._services)
-        elif not enabled and self._server:
-            self._stop_server()
+        if enabled and not self._routes_registered:
+            self._register_routes(self._services)
+        elif not enabled and self._routes_registered:
+            self._unregister_routes(self._services)
 
-    def _start_server(self, services):
-        from plugin.modules.mcp.server import MCPServer
-        from plugin.version import EXTENSION_VERSION
+    def _register_routes(self, services):
+        from plugin.modules.mcp.protocol import MCPProtocolHandler
 
-        cfg = services.config.proxy_for(self.name)
-        tool_registry = services.tools
-        event_bus = getattr(services, "events", None)
+        self._protocol = MCPProtocolHandler(services)
+        routes = services.http_routes
+        p = self._protocol
 
-        self._server = MCPServer(
-            tool_registry=tool_registry,
-            service_registry=services,
-            event_bus=event_bus,
-            port=cfg.get("port") or 8765,
-            host=cfg.get("host") or "localhost",
-            use_ssl=cfg.get("use_ssl") or False,
-            version=EXTENSION_VERSION,
-        )
-        try:
-            self._server.start()
-        except Exception:
-            log.exception("Failed to start MCP server")
-            self._server = None
+        # MCP streamable-http (raw — JSON-RPC + custom headers + SSE)
+        routes.add("POST", "/mcp", p.handle_mcp_post, raw=True)
+        routes.add("GET", "/mcp", p.handle_mcp_sse, raw=True)
+        routes.add("DELETE", "/mcp", p.handle_mcp_delete, raw=True)
 
-    def _stop_server(self):
-        if self._server:
-            self._server.stop()
-            self._server = None
+        # Legacy SSE transport (raw — streaming)
+        routes.add("POST", "/sse", p.handle_sse_post, raw=True)
+        routes.add("POST", "/messages", p.handle_sse_post, raw=True)
+        routes.add("GET", "/sse", p.handle_sse_stream, raw=True)
+
+        # Debug (simple — returns dict, server handles JSON)
+        routes.add("GET", "/debug", p.handle_debug_info)
+        # Debug POST (raw — complex response handling)
+        routes.add("POST", "/debug", p.handle_debug_post, raw=True)
+
+        self._routes_registered = True
+        log.info("MCP routes registered")
+
+    def _unregister_routes(self, services):
+        routes = services.http_routes
+        for method, path in [
+            ("POST", "/mcp"), ("GET", "/mcp"), ("DELETE", "/mcp"),
+            ("POST", "/sse"), ("POST", "/messages"), ("GET", "/sse"),
+            ("GET", "/debug"), ("POST", "/debug"),
+        ]:
+            routes.remove(method, path)
+        self._routes_registered = False
+        self._protocol = None
+        log.info("MCP routes unregistered")
 
     def shutdown(self):
-        self._stop_server()
+        if self._routes_registered:
+            try:
+                self._unregister_routes(self._services)
+            except Exception:
+                log.exception("Error unregistering MCP routes")

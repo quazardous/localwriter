@@ -56,18 +56,18 @@ def _to_xml_string(root):
 
 def generate_xcs(module_name, config_fields):
     """Generate XCS (schema) XML for a module's config fields."""
-    group = module_name.capitalize()
-    package = f"org.localwriter.{module_name}"
+    safe = module_name.replace(".", "_")
+    package = f"org.localwriter.{safe}"
 
     root = ET.Element(_qn("oor", "component-schema"), {
-        _qn("oor", "name"): group,
+        _qn("oor", "name"): safe,
         _qn("oor", "package"): package,
     })
     # Force xmlns:xs declaration (used in oor:type attribute values)
     root.set("xmlns:xs", _NS["xs"])
 
     component = ET.SubElement(root, "component")
-    grp = ET.SubElement(component, "group", {_qn("oor", "name"): group})
+    grp = ET.SubElement(component, "group", {_qn("oor", "name"): safe})
 
     for field_name, schema in config_fields.items():
         xcs_type = _XCS_TYPE_MAP.get(schema["type"], "xs:string")
@@ -86,15 +86,15 @@ def generate_xcs(module_name, config_fields):
 
 def generate_xcu(module_name, config_fields):
     """Generate XCU (defaults) XML for a module's config fields."""
-    group = module_name.capitalize()
-    package = f"org.localwriter.{module_name}"
+    safe = module_name.replace(".", "_")
+    package = f"org.localwriter.{safe}"
 
     root = ET.Element(_qn("oor", "component-data"), {
-        _qn("oor", "name"): group,
+        _qn("oor", "name"): safe,
         _qn("oor", "package"): package,
     })
 
-    node = ET.SubElement(root, "node", {_qn("oor", "name"): group})
+    node = ET.SubElement(root, "node", {_qn("oor", "name"): safe})
 
     for field_name, schema in config_fields.items():
         xcu_type = _XCS_TYPE_MAP.get(schema["type"], "xs:string")

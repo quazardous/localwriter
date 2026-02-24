@@ -1,0 +1,17 @@
+name: tunnel.cloudflare
+description: Cloudflare tunnel provider
+requires: [tunnel_manager]
+
+config:
+  tunnel_name:
+    type: string
+    default: ""
+    widget: text
+    label: Tunnel Name
+
+  public_url:
+    type: string
+    default: ""
+    widget: text
+    label: Public URL
+    helper: "The public URL assigned by Cloudflare"

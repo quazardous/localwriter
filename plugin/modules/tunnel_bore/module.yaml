@@ -1,0 +1,11 @@
+name: tunnel.bore
+description: Bore tunnel provider
+requires: [tunnel_manager]
+
+config:
+  server:
+    type: string
+    default: bore.pub
+    widget: text
+    label: Bore Server
+    helper: "The bore server address (default: bore.pub)"

@@ -16,18 +16,33 @@ import sys
 import threading
 
 # ── File logger (debug even when LO console is hidden) ──────────────────────
+# Set up on the 'localwriter' logger (not root) so it works regardless of
+# root logger state configured by other extensions (e.g. mcp-libre).
+# Cannot import from plugin.framework here — sys.path isn't set up yet.
 
 _log_path = os.path.join(os.path.expanduser("~"), "localwriter.log")
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    handlers=[
-        logging.FileHandler(_log_path, mode="w", encoding="utf-8"),
-    ],
-)
+_logger = logging.getLogger("localwriter")
+_logger.handlers.clear()
+_logger.propagate = False
+_handler = logging.FileHandler(_log_path, mode="w", encoding="utf-8")
+_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s — %(message)s"))
+_logger.addHandler(_handler)
+_logger.setLevel(logging.DEBUG)
 
 log = logging.getLogger("localwriter.main")
-log.info("=== main.py loaded ===")
+
+_version = "?"
+try:
+    _vf = os.path.join(os.path.dirname(__file__), "version.py")
+    with open(_vf) as _f:
+        for _line in _f:
+            if _line.startswith("EXTENSION_VERSION"):
+                _version = _line.split("=", 1)[1].strip().strip("\"'")
+                break
+except Exception:
+    pass
+log.info("=== LocalWriter %s — main.py loaded ===", _version)
 
 # Extension identifier (matches description.xml)
 EXTENSION_ID = "org.extension.localwriter"
@@ -145,7 +160,8 @@ def _topo_sort(modules):
 def _import_module_class(module_manifest):
     """Import and return the ModuleBase subclass for a module."""
     name = module_manifest["name"]
-    package = "plugin.modules.%s" % name
+    # Directory convention: dots in name map to underscores
+    package = "plugin.modules.%s" % name.replace(".", "_")
     try:
         import importlib
         mod = importlib.import_module(package)
@@ -193,6 +209,10 @@ def bootstrap(ctx=None):
 
         if ctx:
             _ensure_extension_on_path(ctx)
+            # Store fallback ctx for environments where uno module
+            # is not importable (shouldn't happen in LO, but safe)
+            from plugin.framework.uno_context import set_fallback_ctx
+            set_fallback_ctx(ctx)
 
         from plugin.framework.service_registry import ServiceRegistry
         from plugin.framework.tool_registry import ToolRegistry
@@ -208,8 +228,13 @@ def bootstrap(ctx=None):
 
         manifest_dict = {m["name"]: m for m in manifests}
 
+        # ── Phase 1: initialize modules ──────────────────────────────
+        log.info("── Phase 1: initialize ─────────────────────────────")
+
         for manifest in manifests:
             name = manifest["name"]
+            if name == "main":
+                continue  # framework-level config, not a loadable module
             cls = _import_module_class(manifest)
             if cls is None:
                 log.warning("Skipping module with no class: %s", name)
@@ -227,23 +252,29 @@ def bootstrap(ctx=None):
 
             _modules.append(instance)
 
-            # After core registers config service, initialize it with ctx
-            # and load all config defaults so subsequent modules can read
-            # their config during init
+            # After core registers config service, load all config defaults
+            # so subsequent modules can read their config during init
             if name == "core":
                 config_svc = _services.get("config")
                 if config_svc:
-                    if ctx:
-                        config_svc.initialize(ctx)
                     config_svc.set_manifest(manifest_dict)
                     log.info("Config defaults loaded for %d modules",
                              len(manifest_dict))
+                    # Apply configured log level
+                    from plugin.framework.logging import set_log_level
+                    level = config_svc.proxy_for("core").get(
+                        "log_level", "DEBUG")
+                    set_log_level(level)
+                    log.info("Log level set to %s", level)
 
             # Auto-discover tools from this module's tools/ subpackage
+            # Directory convention: dots in name map to underscores
+            # e.g. "tunnel.bore" -> modules/tunnel_bore/tools
+            dir_name = name.replace(".", "_")
             tools_dir = os.path.join(
-                os.path.dirname(__file__), "modules", name, "tools")
+                os.path.dirname(__file__), "modules", dir_name, "tools")
             if os.path.isdir(tools_dir):
-                tools_pkg = "plugin.modules.%s.tools" % name
+                tools_pkg = "plugin.modules.%s.tools" % dir_name
                 _tools.discover(tools_dir, tools_pkg)
 
         # Wire event bus into config service
@@ -255,6 +286,49 @@ def bootstrap(ctx=None):
         # Initialize services that need a UNO context
         if ctx:
             _services.initialize_all(ctx)
+
+        log.info("── Phase 1 complete: %d modules initialized ────────",
+                 len(_modules))
+
+        # Emit modules:initialized event
+        events_svc = _services.get("events")
+        if events_svc:
+            events_svc.emit("modules:initialized",
+                            modules=[m.name for m in _modules])
+
+        # ── Phase 2a: start modules on VCL main thread ────────────────
+        log.info("── Phase 2a: start (main thread) ────────────────────")
+
+        from plugin.framework.main_thread import execute_on_main_thread
+
+        for mod in _modules:
+            try:
+                execute_on_main_thread(mod.start, _services)
+                log.info("Module started: %s", mod.name)
+            except Exception:
+                log.exception("Failed to start module: %s", mod.name)
+
+        log.info("── Phase 2a complete: %d modules started ────────────",
+                 len(_modules))
+
+        # ── Phase 2b: start_background on Job thread ─────────────────
+        log.info("── Phase 2b: start_background (job thread) ──────────")
+
+        for mod in _modules:
+            try:
+                mod.start_background(_services)
+                log.info("Module background started: %s", mod.name)
+            except Exception:
+                log.exception("Failed to background-start module: %s",
+                              mod.name)
+
+        log.info("── Phase 2b complete: %d modules background started ─",
+                 len(_modules))
+
+        # Emit modules:started event
+        if events_svc:
+            events_svc.emit("modules:started",
+                            modules=[m.name for m in _modules])
 
         _initialized = True
         log.info("Framework bootstrap complete: %d modules, %d tools",
@@ -316,53 +390,75 @@ try:
                     self._toggle_mcp()
                 elif command == "stop_mcp":
                     self._stop_mcp()
-                elif command == "settings":
-                    self._show_settings()
                 elif command == "MCPStatus":
                     self._mcp_status()
+                elif command == "About":
+                    self._about()
                 else:
                     log.info("MainJob.trigger unhandled: %s", command)
+                    self._msgbox("Not implemented: %s" % command)
             except Exception:
                 log.exception("MainJob.trigger FAILED")
+                self._msgbox("Error: %s" % command)
 
-        # ── MCP helpers ──────────────────────────────────────────────
+        # ── UI helpers ─────────────────────────────────────────────
 
-        def _get_mcp_module(self):
+        def _msgbox(self, message, title="LocalWriter"):
+            """Show a simple message box."""
+            from plugin.framework.dialogs import msgbox
+            msgbox(self.ctx, title, str(message))
+
+        def _about(self):
+            """Show the About dialog."""
+            from plugin.framework.dialogs import about_dialog
+            about_dialog(self.ctx)
+
+        # ── HTTP / MCP helpers ───────────────────────────────────────
+
+        def _get_module(self, name):
             for mod in _modules:
-                if mod.name == "mcp":
+                if mod.name == name:
                     return mod
             return None
 
         def _toggle_mcp(self):
-            mcp = self._get_mcp_module()
-            if mcp is None:
-                log.error("MCP module not found")
+            http_mod = self._get_module("http")
+            if http_mod is None:
+                self._msgbox("HTTP module not found")
                 return
-            if mcp._server and mcp._server.is_running():
-                log.info("Stopping MCP server via toggle")
-                mcp._stop_server()
+            if http_mod._server and http_mod._server.is_running():
+                log.info("Stopping HTTP server via toggle")
+                http_mod._stop_server()
+                self._msgbox("HTTP server stopped")
             else:
-                log.info("Starting MCP server via toggle")
-                mcp._start_server(get_services())
+                log.info("Starting HTTP server via toggle")
+                http_mod._start_server(get_services())
+                if http_mod._server and http_mod._server.is_running():
+                    status = http_mod._server.get_status()
+                    self._msgbox("HTTP server started\n%s" % status.get("url", ""))
+                else:
+                    self._msgbox("HTTP server failed to start\nCheck ~/localwriter.log")
 
         def _stop_mcp(self):
-            mcp = self._get_mcp_module()
-            if mcp:
-                mcp._stop_server()
+            http_mod = self._get_module("http")
+            if http_mod:
+                http_mod._stop_server()
+                self._msgbox("HTTP server stopped")
 
         def _mcp_status(self):
-            mcp = self._get_mcp_module()
-            if mcp and mcp._server:
-                status = mcp._server.get_status()
-                log.info("MCP status: %s", status)
+            http_mod = self._get_module("http")
+            if http_mod and http_mod._server:
+                status = http_mod._server.get_status()
+                running = status.get("running", False)
+                url = status.get("url", "?")
+                routes = status.get("routes", 0)
+                if running:
+                    msg = "HTTP server running\nURL: %s\nRoutes: %d" % (url, routes)
+                else:
+                    msg = "HTTP server not running"
+                self._msgbox(msg)
             else:
-                log.info("MCP server is not running")
-
-        def _show_settings(self):
-            from plugin.modules.core.settings_dialog import show_settings
-            from plugin._manifest import MODULES
-            config_svc = get_services().config
-            show_settings(self.ctx, config_svc, MODULES)
+                self._msgbox("HTTP server is not running")
 
     # Register with LibreOffice
     g_ImplementationHelper = unohelper.ImplementationHelper()

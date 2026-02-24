@@ -1,0 +1,9 @@
+name: main
+description: LocalWriter global settings
+
+config:
+  debug:
+    type: boolean
+    default: false
+    widget: checkbox
+    label: Debug Mode

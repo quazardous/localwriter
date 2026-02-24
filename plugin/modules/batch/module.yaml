@@ -1,0 +1,3 @@
+name: batch
+description: Batch tool execution with variable chaining
+requires: [document, config, events]

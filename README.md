@@ -121,7 +121,7 @@ Configure your endpoint, model, and behavior in **LocalWriter > Settings**. The 
 *   **Additional Instructions**: A shared system prompt for all features with history support.
 *   **API Key**: Required for cloud providers.
 *   **Connection Keep-Alive**: Automatically enabled to reduce latency.
-*   **MCP Server**: Opt-in; when enabled, an HTTP server runs on the configured port (default 8765) for external AI clients. Use **Toggle MCP Server** and **MCP Server Status** from the menu.
+*   **MCP Server**: Opt-in; when enabled, an HTTP server runs on the configured port (default 8766) for external AI clients. Use **Toggle MCP Server** and **MCP Server Status** from the menu.
 
 For detailed configuration examples, see [CONFIG_EXAMPLES.md](CONFIG_EXAMPLES.md).
 

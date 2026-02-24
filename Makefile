@@ -3,8 +3,7 @@
 # Cross-platform: detects Windows vs Linux/macOS and calls .ps1 or .sh scripts.
 #
 # Build:
-#   make build                     Build .oxt (default: all modules)
-#   make build MODULES="core mcp"  Build with specific modules
+#   make build                     Build .oxt (all modules auto-discovered)
 #   make xcu                       Generate XCS/XCU from Python config schemas
 #   make clean                     Remove build artifacts
 #
@@ -29,7 +28,6 @@
 #   make help                      Show this help
 
 EXTENSION_NAME = localwriter
-MODULES ?= core writer calc draw openai_compat ollama horde chatbot mcp
 
 # ── OS detection ─────────────────────────────────────────────────────────────
 
@@ -51,13 +49,13 @@ endif
 
 # ── Phony targets ────────────────────────────────────────────────────────────
 
-.PHONY: help build manifest xcu clean \
+.PHONY: help build repack repack-cycle manifest xcu clean \
         install install-force uninstall cache \
         dev-deploy dev-deploy-remove \
         lo-start lo-start-full lo-kill lo-restart \
         clean-cache nuke-cache nuke-cache-force unbundle \
         log log-tail lo-log test check-ext cycle \
-        set-config
+        set-config vendor
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 
@@ -67,8 +65,7 @@ help:
 	@echo "================================="
 	@echo ""
 	@echo "Build:"
-	@echo "  make build                  Build .oxt (modules: $(MODULES))"
-	@echo "  make build MODULES=\"core mcp\"  Build specific modules"
+	@echo "  make build                  Build .oxt (all modules)"
 	@echo "  make xcu                    Generate XCS/XCU from config schemas"
 	@echo "  make clean                  Remove build artifacts"
 	@echo ""
@@ -95,14 +92,35 @@ help:
 
 # ── Build ────────────────────────────────────────────────────────────────────
 
-build: manifest
-	@echo "Building $(EXTENSION_NAME).oxt (modules: $(MODULES))..."
-	$(PYTHON) $(SCRIPTS)/build_oxt.py --modules $(MODULES) --output build/$(EXTENSION_NAME).oxt
+vendor:
+	uv pip install --target vendor -r requirements-vendor.txt
+
+build: vendor manifest
+	@echo "Building $(EXTENSION_NAME).oxt..."
+	$(PYTHON) $(SCRIPTS)/build_oxt.py --output build/$(EXTENSION_NAME).oxt
+	@echo "Done: build/$(EXTENSION_NAME).oxt  (bundle in build/bundle/)"
+
+repack:
+	@echo "Re-packing from build/bundle/..."
+	$(PYTHON) $(SCRIPTS)/build_oxt.py --repack --output build/$(EXTENSION_NAME).oxt
 	@echo "Done: build/$(EXTENSION_NAME).oxt"
+
+repack-cycle: repack
+	$(MAKE) lo-kill
+	@sleep 3
+	@rm -f $(HOME)/.config/libreoffice/4/.lock $(HOME)/.config/libreoffice/4/user/.lock
+	-unopkg remove org.extension.localwriter 2>/dev/null; sleep 1
+	unopkg add build/$(EXTENSION_NAME).oxt
+	@rm -f $(HOME)/localwriter.log
+	@sleep 1
+	$(MAKE) lo-start
+	@echo "Waiting for LO to load..."
+	@sleep 12
+	@$(MAKE) log
 
 manifest:
 	@echo "Generating manifest and XCS/XCU..."
-	$(PYTHON) $(SCRIPTS)/generate_manifest.py --modules $(MODULES)
+	$(PYTHON) $(SCRIPTS)/generate_manifest.py
 
 xcu: manifest
 
@@ -119,13 +137,13 @@ endif
 # ── Install ──────────────────────────────────────────────────────────────────
 
 install: build
-	$(RUN_SH) $(SCRIPTS)/install-plugin$(EXT) --build-only=false --modules "$(MODULES)"
+	$(RUN_SH) $(SCRIPTS)/install-plugin$(EXT) --build-only=false
 
 install-force: build
 ifeq ($(OS),Windows_NT)
-	$(RUN_SH) $(SCRIPTS)/install-plugin$(EXT) -Force -Modules "$(MODULES)"
+	$(RUN_SH) $(SCRIPTS)/install-plugin$(EXT) -Force
 else
-	$(RUN_SH) $(SCRIPTS)/install-plugin$(EXT) --force --modules "$(MODULES)"
+	$(RUN_SH) $(SCRIPTS)/install-plugin$(EXT) --force
 endif
 
 uninstall:
@@ -245,13 +263,14 @@ set-config:
 	 for m in MODULES for k,v in m.get('config',{}).items()]"
 
 poc-build:
-	cd poc && zip -r ../build/poc.oxt . -x '*.pyc' '__pycache__/*'
-	@echo "Built build/poc.oxt"
+	@$(MKDIR) build
+	cd poc-ext && zip -r ../build/poc-ext.oxt . -x '*.pyc' '__pycache__/*'
+	@echo "Built build/poc-ext.oxt"
 
 poc-install: poc-build
 	-unopkg remove org.extension.poc 2>/dev/null
 	sleep 2
-	unopkg add build/poc.oxt
+	unopkg add build/poc-ext.oxt
 	@echo "POC installed"
 
 poc-uninstall:
@@ -261,6 +280,15 @@ poc-uninstall:
 poc-log:
 	@cat $(HOME)/poc-ext.log 2>/dev/null || echo "No poc-ext.log"
 
-poc-cycle: poc-install lo-restart
+poc-log-tail:
+	@tail -f $(HOME)/poc-ext.log
+
+poc-cycle: poc-install
+	$(MAKE) lo-kill
+	@sleep 3
+	@rm -f $(HOME)/.config/libreoffice/4/.lock $(HOME)/.config/libreoffice/4/user/.lock
+	@rm -f $(HOME)/poc-ext.log
+	$(MAKE) lo-start
+	@echo "Waiting for LO..."
 	@sleep 10
 	@$(MAKE) poc-log

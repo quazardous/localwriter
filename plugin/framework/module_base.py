@@ -17,15 +17,41 @@ class ModuleBase(ABC):
     name: str = None
 
     def initialize(self, services):
-        """Called after all services are registered.
+        """Phase 1: Called in dependency order during bootstrap.
 
-        Use this to wire event subscriptions, create internal objects,
-        and register service providers (for backend modules).
+        Use this to register services, wire event subscriptions, and
+        create internal objects. All core services are available.
 
         Args:
             services: ServiceRegistry with attribute access to all
                       registered services (services.config, services.events …).
         """
 
+    def start(self, services):
+        """Phase 2a: Called on the VCL main thread after ALL modules
+        have initialized.
+
+        Safe for UNO operations: document listeners, UI setup, toolkit
+        calls. Dispatched via execute_on_main_thread (blocking).
+        Called in dependency order.
+
+        Args:
+            services: ServiceRegistry with attribute access to all
+                      registered services.
+        """
+
+    def start_background(self, services):
+        """Phase 2b: Called on the Job thread after all start() complete.
+
+        Launch background tasks: HTTP servers, LLM connections, polling.
+        Called in dependency order.
+
+        Args:
+            services: ServiceRegistry with attribute access to all
+                      registered services.
+        """
+
     def shutdown(self):
-        """Called on extension unload. Override to clean up resources."""
+        """Stop background tasks, close connections.
+
+        Called in reverse dependency order on extension unload."""

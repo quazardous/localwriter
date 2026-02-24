@@ -1,7 +1,9 @@
-"""ConfigService — namespaced config with access control.
+"""ConfigService — namespaced config via LO's native configuration registry.
 
-Reads/writes localwriter.json in LibreOffice's user config directory.
-Each module gets a ModuleConfigProxy that enforces namespace rules:
+Uses the XCS/XCU schema files generated at build time.  Each module's config
+lives in the LO registry under ``/org.localwriter.<module>.<Group>/<Group>``.
+
+Access control:
   - Read own keys: always OK
   - Read other module's public keys: OK
   - Read other module's private keys: ConfigAccessError
@@ -9,15 +11,13 @@ Each module gets a ModuleConfigProxy that enforces namespace rules:
   - Write other module's keys: ConfigAccessError
 """
 
-import json
 import logging
 import os
 
 from plugin.framework.service_base import ServiceBase
+from plugin.framework.uno_context import get_ctx
 
 log = logging.getLogger("localwriter.config")
-
-CONFIG_FILENAME = "localwriter.json"
 
 
 class ConfigAccessError(Exception):
@@ -28,15 +28,13 @@ class ConfigService(ServiceBase):
     name = "config"
 
     def __init__(self):
-        self._ctx = None
-        self._config_path = None
-        self._defaults = {}  # "module.key" -> default_value
-        self._manifest = {}  # "module.key" -> field schema
-        self._events = None  # EventBus, set after init
+        self._defaults = {}   # "module.key" -> default_value
+        self._manifest = {}   # "module.key" -> field schema
+        self._events = None   # EventBus, set after init
 
     def initialize(self, ctx):
-        self._ctx = ctx
-        self._config_path = self._resolve_config_path(ctx)
+        # ctx is no longer stored — we use get_ctx() for fresh context
+        pass
 
     def set_events(self, events):
         """Wire the event bus (called during bootstrap after events service)."""
@@ -46,15 +44,16 @@ class ConfigService(ServiceBase):
         """Load config schemas from the merged manifest.
 
         Args:
-            manifest: dict from _manifest.py MODULES.
+            manifest: dict of {module_name: module_dict} from _manifest.py.
         """
+        self._module_names = set(manifest.keys())
+
         for mod_name, mod_data in manifest.items():
             for field_name, schema in mod_data.get("config", {}).items():
                 full_key = f"{mod_name}.{field_name}"
                 self._defaults[full_key] = schema.get("default")
                 self._manifest[full_key] = schema
 
-        # Apply overrides from env var LOCALWRITER_SET_CONFIG
         self._apply_env_overrides()
 
     def register_default(self, key, default):
@@ -64,58 +63,88 @@ class ConfigService(ServiceBase):
     # ── Read/Write ────────────────────────────────────────────────────
 
     def get(self, key, caller_module=None):
-        """Get a config value. Returns default if not set.
-
-        Args:
-            key:           Full key "module.field" or short key "field"
-                           (when called via ModuleConfigProxy).
-            caller_module: Name of the calling module (for access control).
-        """
+        """Get a config value from the LO registry, fallback to defaults."""
         self._check_read_access(key, caller_module)
-        data = self._read_file()
-        if key in data:
-            return data[key]
+        val = self._registry_read(key)
+        if val is not None:
+            return val
         return self._defaults.get(key)
 
     def get_dict(self):
-        """Return the full config as a dict (no access control)."""
-        return self._read_file()
+        """Return all config values as a flat dict (no access control)."""
+        result = dict(self._defaults)
+        for key in self._defaults:
+            val = self._registry_read(key)
+            if val is not None:
+                result[key] = val
+        return result
 
     def set(self, key, value, caller_module=None):
-        """Set a config value and emit config:changed event.
-
-        Args:
-            key:           Full key "module.field".
-            value:         New value.
-            caller_module: Name of the calling module (for access control).
-        """
+        """Set a config value in the LO registry and emit config:changed."""
         self._check_write_access(key, caller_module)
-        data = self._read_file()
-        old_value = data.get(key, self._defaults.get(key))
-        data[key] = value
-        self._write_file(data)
+        old_value = self.get(key)
+        self._registry_write(key, value)
 
         if self._events and value != old_value:
             self._events.emit(
                 "config:changed", key=key, value=value, old_value=old_value
             )
 
+    def set_batch(self, changes, old_values=None):
+        """Write all values and emit a config:changed event.
+
+        Args:
+            changes: dict of {full_key: new_value}.
+            old_values: optional dict of {full_key: old_value} for diff detection.
+                        If not provided, no diff filtering is done.
+
+        Always writes all values (LO registry requires explicit commit).
+        Emits ``config:changed`` with diffs if old_values provided.
+        """
+        # Group by nodepath for batch commit
+        by_node = {}
+        for key, new_value in changes.items():
+            nodepath, field_name = self._registry_nodepath(key)
+            by_node.setdefault(nodepath, []).append(
+                (field_name, key, new_value))
+
+        for nodepath, fields in by_node.items():
+            self._registry_write_node(nodepath, fields)
+
+        # Compute diffs for event
+        diffs = []
+        if old_values:
+            for key, new_value in changes.items():
+                old_value = old_values.get(key)
+                if new_value != old_value:
+                    diffs.append({
+                        "key": key,
+                        "value": new_value,
+                        "old_value": old_value,
+                    })
+
+        if diffs:
+            if self._events:
+                self._events.emit("config:changed", changes=diffs)
+            log.info("Config batch: %d change(s)", len(diffs))
+
+        return diffs
+
     def remove(self, key, caller_module=None):
-        """Remove a config key."""
+        """Reset a config key to its default by writing the default value."""
         self._check_write_access(key, caller_module)
-        data = self._read_file()
-        if key in data:
-            del data[key]
-            self._write_file(data)
+        default = self._defaults.get(key)
+        if default is not None:
+            self._registry_write(key, default)
 
     # ── Access control ────────────────────────────────────────────────
 
     def _check_read_access(self, key, caller_module):
         if caller_module is None:
-            return  # No caller tracking = no restriction
+            return
         if "." not in key:
-            return  # Short key = own module
-        module = key.split(".", 1)[0]
+            return
+        module, _ = self._parse_key(key)
         if module == caller_module:
             return
         schema = self._manifest.get(key, {})
@@ -129,7 +158,7 @@ class ConfigService(ServiceBase):
             return
         if "." not in key:
             return
-        module = key.split(".", 1)[0]
+        module, _ = self._parse_key(key)
         if module != caller_module:
             raise ConfigAccessError(
                 f"Module '{caller_module}' cannot write to '{key}'"
@@ -142,13 +171,12 @@ class ConfigService(ServiceBase):
 
         Format: "key=value,key=value,..."
         Values are coerced to the type declared in the module schema.
-        Overrides are persisted to the config file.
+        Overrides are written to the LO registry.
         """
         raw = os.environ.get("LOCALWRITER_SET_CONFIG", "").strip()
         if not raw:
             return
 
-        data = self._read_file()
         count = 0
         for pair in raw.split(","):
             pair = pair.strip()
@@ -159,13 +187,12 @@ class ConfigService(ServiceBase):
             raw_value = raw_value.strip()
 
             value = self._coerce_value(key, raw_value)
-            data[key] = value
+            self._registry_write(key, value)
             count += 1
             log.info("Config override: %s = %r", key, value)
 
         if count:
-            self._write_file(data)
-            log.info("Persisted %d config override(s) from LOCALWRITER_SET_CONFIG",
+            log.info("Applied %d config override(s) from LOCALWRITER_SET_CONFIG",
                      count)
 
     def _coerce_value(self, key, raw):
@@ -187,41 +214,108 @@ class ConfigService(ServiceBase):
                 return raw
         return raw
 
-    # ── File I/O ──────────────────────────────────────────────────────
+    # ── Key parsing ────────────────────────────────────────────────────
 
-    def _resolve_config_path(self, ctx):
+    def _parse_key(self, key):
+        """Split a full key into (module_name, field_name).
+
+        Uses longest-prefix match against known module names so that
+        "tunnel.ngrok.authtoken" correctly splits to ("tunnel.ngrok", "authtoken").
+        Falls back to simple first-dot split if no module names are known.
+        """
+        if hasattr(self, "_module_names") and self._module_names:
+            # Try longest match first
+            parts = key.split(".")
+            for i in range(len(parts) - 1, 0, -1):
+                candidate = ".".join(parts[:i])
+                if candidate in self._module_names:
+                    return candidate, ".".join(parts[i:])
+        # Fallback: simple split
+        return key.split(".", 1)
+
+    # ── LO Registry I/O ──────────────────────────────────────────────
+
+    def _registry_nodepath(self, key):
+        """Convert "module.field" to (nodepath, field_name) for LO registry."""
+        module_name, field_name = self._parse_key(key)
+        safe = module_name.replace(".", "_")
+        nodepath = f"/org.localwriter.{safe}.{safe}/{safe}"
+        return nodepath, field_name
+
+    def _registry_read(self, key):
+        """Read a single value from the LO configuration registry."""
+        ctx = get_ctx()
+        if not ctx or "." not in key:
+            return None
         try:
-            import uno
-            sm = ctx.getServiceManager()
-            path_settings = sm.createInstanceWithContext(
-                "com.sun.star.util.PathSettings", ctx
-            )
-            user_config = getattr(path_settings, "UserConfig", "")
-            if user_config and str(user_config).startswith("file://"):
-                user_config = str(uno.fileUrlToSystemPath(user_config))
-            return os.path.join(user_config, CONFIG_FILENAME)
+            from com.sun.star.beans import PropertyValue
+            nodepath, field_name = self._registry_nodepath(key)
+            provider = ctx.ServiceManager.createInstanceWithContext(
+                "com.sun.star.configuration.ConfigurationProvider", ctx)
+            args = (PropertyValue("nodepath", 0, nodepath, 0),)
+            access = provider.createInstanceWithArguments(
+                "com.sun.star.configuration.ConfigurationAccess", args)
+            val = access.getPropertyValue(field_name)
+            schema = self._manifest.get(key, {})
+            result = self._coerce_registry_value(val, schema)
+            log.debug("Registry read: %s = %r (path=%s)", key, result, nodepath)
+            return result
         except Exception:
-            log.warning("Could not resolve LO config path, using fallback")
-            return os.path.join(os.path.expanduser("~"), ".config", CONFIG_FILENAME)
+            log.debug("Registry read failed: %s (path=%s/%s)",
+                      key, *self._registry_nodepath(key))
+            return None
 
-    def _read_file(self):
-        if not self._config_path or not os.path.exists(self._config_path):
-            return {}
-        try:
-            with open(self._config_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (IOError, json.JSONDecodeError):
-            return {}
-
-    def _write_file(self, data):
-        if not self._config_path:
+    def _registry_write(self, key, value):
+        """Write a single value to the LO configuration registry."""
+        ctx = get_ctx()
+        if not ctx or "." not in key:
             return
         try:
-            os.makedirs(os.path.dirname(self._config_path), exist_ok=True)
-            with open(self._config_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
-        except IOError:
-            log.exception("Error writing config to %s", self._config_path)
+            nodepath, field_name = self._registry_nodepath(key)
+            self._registry_write_node(nodepath, [(field_name, key, value)])
+        except Exception:
+            log.exception("Failed to write registry: %s = %r", key, value)
+
+    def _registry_write_node(self, nodepath, fields):
+        """Write multiple fields to a single registry node with one commit.
+
+        Args:
+            nodepath: LO registry node path
+            fields: list of (field_name, full_key, value) tuples
+        """
+        ctx = get_ctx()
+        if not ctx:
+            return
+        try:
+            from com.sun.star.beans import PropertyValue
+            provider = ctx.ServiceManager.createInstanceWithContext(
+                "com.sun.star.configuration.ConfigurationProvider", ctx)
+            args = (PropertyValue("nodepath", 0, nodepath, 0),)
+            update = provider.createInstanceWithArguments(
+                "com.sun.star.configuration.ConfigurationUpdateAccess", args)
+            for field_name, full_key, value in fields:
+                update.setPropertyValue(field_name, value)
+                log.debug("Registry set: %s = %r (path=%s)", full_key, value, nodepath)
+            update.commitChanges()
+            log.debug("Registry commit: %s (%d fields)", nodepath, len(fields))
+        except Exception:
+            log.exception("Failed to write registry node: %s", nodepath)
+
+    def _coerce_registry_value(self, val, schema):
+        """Coerce LO registry value to the expected Python type."""
+        if val is None:
+            return None
+        declared_type = schema.get("type", "string")
+        try:
+            if declared_type == "boolean":
+                return bool(val)
+            if declared_type == "int":
+                return int(val)
+            if declared_type == "float":
+                return float(val)
+            return str(val)
+        except (ValueError, TypeError):
+            return val
 
     # ── Module proxy factory ──────────────────────────────────────────
 
@@ -234,7 +328,7 @@ class ModuleConfigProxy:
     """Scoped config access for a single module.
 
     When ``get("port")`` is called (no dot), it auto-prefixes with the
-    module name → ``"mcp.port"``.
+    module name -> ``"mcp.port"``.
 
     Cross-module reads require the full key: ``get("openai_compat.endpoint")``.
     """
