@@ -14,16 +14,26 @@ class ListComments(ToolBase):
     name = "list_comments"
     description = (
         "List all comments/annotations in the document, including "
-        "author, content, date, resolved status, and anchor preview."
+        "author, content, date, resolved status, and anchor preview. "
+        "Use author_filter to see only a specific agent's comments."
     )
     parameters = {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "author_filter": {
+                "type": "string",
+                "description": (
+                    "Filter by author name (e.g. 'Claude', 'AI'). "
+                    "Case-insensitive substring match. Omit for all."
+                ),
+            },
+        },
         "required": [],
     }
     doc_types = ["writer"]
 
     def execute(self, ctx, **kwargs):
+        author_filter = kwargs.get("author_filter")
         doc = ctx.doc
         doc_svc = ctx.services.document
         para_ranges = doc_svc.get_paragraph_ranges(doc)
@@ -41,18 +51,28 @@ class ListComments(ToolBase):
                 continue
 
             entry = _read_annotation(field, para_ranges, text_obj)
+
+            if author_filter:
+                af = author_filter.lower()
+                if af not in entry.get("author", "").lower():
+                    continue
+
             comments.append(entry)
 
-        return {"status": "ok", "comments": comments, "count": len(comments)}
+        result = {"status": "ok", "comments": comments, "count": len(comments)}
+        if author_filter:
+            result["filtered_by"] = author_filter
+        return result
 
 
 class AddComment(ToolBase):
-    """Add a comment anchored to text matching *search_text*."""
+    """Add a comment anchored to a paragraph."""
 
     name = "add_comment"
     description = (
-        "Add a comment/annotation anchored to the paragraph "
-        "containing search_text."
+        "Add a comment/annotation. Anchor via search_text, locator, "
+        "or paragraph_index. Use your AI name as author for multi-agent "
+        "collaboration."
     )
     parameters = {
         "type": "object",
@@ -65,57 +85,91 @@ class AddComment(ToolBase):
                 "type": "string",
                 "description": "Anchor the comment to text containing this string.",
             },
+            "locator": {
+                "type": "string",
+                "description": (
+                    "Locator: 'paragraph:N', 'bookmark:_mcp_x', "
+                    "'heading_text:Title', etc."
+                ),
+            },
+            "paragraph_index": {
+                "type": "integer",
+                "description": "Paragraph index to anchor to (0-based).",
+            },
             "author": {
                 "type": "string",
                 "description": "Author name shown on the comment. Default: AI.",
             },
         },
-        "required": ["content", "search_text"],
+        "required": ["content"],
     }
     doc_types = ["writer"]
     is_mutation = True
 
     def execute(self, ctx, **kwargs):
         content = kwargs.get("content", "")
-        search_text = kwargs.get("search_text", "")
+        search_text = kwargs.get("search_text")
+        locator = kwargs.get("locator")
+        para_index = kwargs.get("paragraph_index")
         author = kwargs.get("author", "AI")
 
         if not content:
             return {"status": "error", "message": "content is required."}
-        if not search_text:
-            return {"status": "error", "message": "search_text is required."}
 
         doc = ctx.doc
         doc_text = doc.getText()
 
-        sd = doc.createSearchDescriptor()
-        sd.SearchString = search_text
-        sd.SearchRegularExpression = False
-        found = doc.findFirst(sd)
-        if found is None:
-            return {
-                "status": "not_found",
-                "message": "Text '%s' not found." % search_text,
-            }
+        # Determine anchor position
+        anchor_range = None
+
+        if search_text:
+            sd = doc.createSearchDescriptor()
+            sd.SearchString = search_text
+            sd.SearchRegularExpression = False
+            found = doc.findFirst(sd)
+            if found is None:
+                return {
+                    "status": "not_found",
+                    "message": "Text '%s' not found." % search_text,
+                }
+            anchor_range = found.getStart()
+        elif locator is not None or para_index is not None:
+            if locator is not None and para_index is None:
+                doc_svc = ctx.services.document
+                resolved = doc_svc.resolve_locator(doc, locator)
+                para_index = resolved.get("para_index")
+            if para_index is not None:
+                doc_svc = ctx.services.document
+                para_ranges = doc_svc.get_paragraph_ranges(doc)
+                if 0 <= para_index < len(para_ranges):
+                    anchor_range = para_ranges[para_index].getStart()
+                else:
+                    return {"status": "error",
+                            "message": "Paragraph %d out of range." % para_index}
+        else:
+            return {"status": "error",
+                    "message": "Provide search_text, locator, or paragraph_index."}
 
         annotation = doc.createInstance(
             "com.sun.star.text.textfield.Annotation"
         )
         annotation.setPropertyValue("Author", author)
         annotation.setPropertyValue("Content", content)
-        cursor = doc_text.createTextCursorByRange(found.getStart())
+        cursor = doc_text.createTextCursorByRange(anchor_range)
         doc_text.insertTextContent(cursor, annotation, False)
 
         return {"status": "ok", "message": "Comment added.", "author": author}
 
 
 class DeleteComment(ToolBase):
-    """Delete a comment and its replies by comment name."""
+    """Delete comments by name or author."""
 
     name = "delete_comment"
     description = (
-        "Delete a comment and all its replies by the comment's "
-        "name (from list_comments)."
+        "Delete comments by name or author. "
+        "Use comment_name to delete a specific comment and its replies. "
+        "Use author to delete ALL comments by that author "
+        "(e.g. 'MCP-BATCH', 'MCP-WORKFLOW')."
     )
     parameters = {
         "type": "object",
@@ -124,16 +178,26 @@ class DeleteComment(ToolBase):
                 "type": "string",
                 "description": "The 'name' field returned by list_comments.",
             },
+            "author": {
+                "type": "string",
+                "description": (
+                    "Delete ALL comments by this author "
+                    "(e.g. 'MCP-BATCH', 'MCP-WORKFLOW')."
+                ),
+            },
         },
-        "required": ["comment_name"],
+        "required": [],
     }
     doc_types = ["writer"]
     is_mutation = True
 
     def execute(self, ctx, **kwargs):
-        comment_name = kwargs.get("comment_name", "")
-        if not comment_name:
-            return {"status": "error", "message": "comment_name is required."}
+        comment_name = kwargs.get("comment_name")
+        author = kwargs.get("author")
+
+        if not comment_name and not author:
+            return {"status": "error",
+                    "message": "Provide comment_name or author."}
 
         doc = ctx.doc
         text_obj = doc.getText()
@@ -150,9 +214,14 @@ class DeleteComment(ToolBase):
             try:
                 name = field.getPropertyValue("Name")
                 parent = field.getPropertyValue("ParentName")
+                field_author = field.getPropertyValue("Author")
             except Exception:
                 continue
-            if name == comment_name or parent == comment_name:
+
+            if comment_name and (name == comment_name
+                                 or parent == comment_name):
+                to_delete.append(field)
+            elif author and field_author == author:
                 to_delete.append(field)
 
         for field in to_delete:
@@ -161,7 +230,6 @@ class DeleteComment(ToolBase):
         return {
             "status": "ok",
             "deleted": len(to_delete),
-            "comment_name": comment_name,
         }
 
 

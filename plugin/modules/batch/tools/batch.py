@@ -108,6 +108,21 @@ class ExecuteBatch(ToolBase):
                     "'end' = scroll after the last operation only"
                 ),
             },
+            "check_conditions": {
+                "type": "boolean",
+                "description": (
+                    "Check for stop signals (STOP/CANCEL comments, "
+                    "workflow pause) between operations. "
+                    "Default: false."
+                ),
+            },
+            "revision_comment": {
+                "type": "string",
+                "description": (
+                    "Add a comment summarizing the batch at the end. "
+                    "Anchored to the first paragraph affected."
+                ),
+            },
         },
         "required": ["operations"],
     }
@@ -117,6 +132,8 @@ class ExecuteBatch(ToolBase):
         operations = kwargs["operations"]
         stop_on_error = kwargs.get("stop_on_error", True)
         follow = kwargs.get("follow", "off")
+        check_conditions = kwargs.get("check_conditions", False)
+        revision_comment = kwargs.get("revision_comment")
 
         if not operations:
             return {"status": "error", "error": "No operations provided"}
@@ -216,6 +233,17 @@ class ExecuteBatch(ToolBase):
                     stop_reason = "Tool '%s' failed" % tool_name
                     break
 
+                # Check stop conditions between operations
+                if (check_conditions and i < len(operations) - 1
+                        and tool_reg.get("check_stop_conditions")):
+                    cond = tool_reg.execute(
+                        "check_stop_conditions", ctx)
+                    if (isinstance(cond, dict)
+                            and cond.get("should_stop")):
+                        stopped = True
+                        stop_reason = "Stop signal detected"
+                        break
+
                 # Brief pause between operations
                 if i < len(operations) - 1:
                     time.sleep(0.01)
@@ -231,6 +259,10 @@ class ExecuteBatch(ToolBase):
         if follow == "end" and last_result and not stopped:
             _follow_result(ctx, last_result)
 
+        # Add revision comment if requested
+        if revision_comment and results:
+            _add_revision_comment(ctx, revision_comment, batch_vars)
+
         all_ok = all(r["success"] for r in results) and not stopped
         resp = {
             "status": "ok" if all_ok else "error",
@@ -244,3 +276,32 @@ class ExecuteBatch(ToolBase):
         if stop_reason:
             resp["stop_reason"] = stop_reason
         return resp
+
+
+def _add_revision_comment(ctx, comment_text, batch_vars):
+    """Add a revision comment anchored to the first affected paragraph."""
+    try:
+        doc = ctx.doc
+        doc_text = doc.getText()
+
+        # Anchor to the first paragraph referenced by batch vars
+        para_idx = batch_vars.get("$step.1")
+        if para_idx is not None and isinstance(para_idx, int):
+            doc_svc = ctx.services.document
+            para_ranges = doc_svc.get_paragraph_ranges(doc)
+            if 0 <= para_idx < len(para_ranges):
+                anchor = para_ranges[para_idx].getStart()
+            else:
+                anchor = doc_text.getStart()
+        else:
+            anchor = doc_text.getStart()
+
+        annotation = doc.createInstance(
+            "com.sun.star.text.textfield.Annotation"
+        )
+        annotation.setPropertyValue("Author", "MCP-BATCH")
+        annotation.setPropertyValue("Content", comment_text)
+        cursor = doc_text.createTextCursorByRange(anchor)
+        doc_text.insertTextContent(cursor, annotation, False)
+    except Exception:
+        pass  # best-effort

@@ -313,7 +313,7 @@ class ReadParagraphs(ToolBase):
 
     name = "read_paragraphs"
     description = (
-        "Read a range of paragraphs by index. "
+        "Read a range of paragraphs by index or locator. "
         "Useful for scanning text between headings."
     )
     parameters = {
@@ -323,18 +323,33 @@ class ReadParagraphs(ToolBase):
                 "type": "integer",
                 "description": "Starting paragraph index (0-based).",
             },
+            "locator": {
+                "type": "string",
+                "description": (
+                    "Locator for start position: 'paragraph:N', "
+                    "'bookmark:_mcp_x', 'heading_text:Title', etc. "
+                    "Overrides start_index."
+                ),
+            },
             "count": {
                 "type": "integer",
                 "description": "Number of paragraphs to read (default 10).",
             },
         },
-        "required": ["start_index"],
+        "required": [],
     }
     doc_types = ["writer"]
 
     def execute(self, ctx, **kwargs):
         start = kwargs.get("start_index", 0)
+        locator = kwargs.get("locator")
         count = kwargs.get("count", 10)
+
+        if locator is not None:
+            doc_svc = ctx.services.document
+            resolved = doc_svc.resolve_locator(ctx.doc, locator)
+            start = resolved.get("para_index", start)
+
         doc_svc = ctx.services.document
         para_ranges = doc_svc.get_paragraph_ranges(ctx.doc)
         end = min(start + count, len(para_ranges))
@@ -360,7 +375,7 @@ class InsertAtParagraph(ToolBase):
     """Insert text at a specific paragraph index."""
 
     name = "insert_at_paragraph"
-    description = "Insert text at a specific paragraph index."
+    description = "Insert text at a specific paragraph index or locator."
     parameters = {
         "type": "object",
         "properties": {
@@ -368,9 +383,23 @@ class InsertAtParagraph(ToolBase):
                 "type": "integer",
                 "description": "0-based paragraph index.",
             },
+            "locator": {
+                "type": "string",
+                "description": (
+                    "Locator: 'paragraph:N', 'bookmark:_mcp_x', "
+                    "'heading_text:Title', etc. Overrides paragraph_index."
+                ),
+            },
             "text": {
                 "type": "string",
                 "description": "Text to insert.",
+            },
+            "style": {
+                "type": "string",
+                "description": (
+                    "Paragraph style to apply to the inserted text "
+                    "(e.g. 'Heading 1', 'Text Body')."
+                ),
             },
             "position": {
                 "type": "string",
@@ -378,18 +407,19 @@ class InsertAtParagraph(ToolBase):
                 "description": "Position relative to the target paragraph (default: 'before').",
             },
         },
-        "required": ["paragraph_index", "text"],
+        "required": ["text"],
     }
     doc_types = ["writer"]
     is_mutation = True
 
     def execute(self, ctx, **kwargs):
-        para_index = kwargs.get("paragraph_index")
+        para_index = _resolve_para_index(ctx, kwargs)
         text_to_insert = kwargs.get("text", "")
+        style = kwargs.get("style")
         position = kwargs.get("position", "before")
 
         if para_index is None:
-            return {"status": "error", "message": "paragraph_index is required."}
+            return {"status": "error", "message": "Provide locator or paragraph_index."}
 
         doc_svc = ctx.services.document
         para_ranges = doc_svc.get_paragraph_ranges(ctx.doc)
@@ -413,6 +443,13 @@ class InsertAtParagraph(ToolBase):
             cursor.setString(text_to_insert)
         else:  # before
             text.insertString(cursor, text_to_insert + "\n", False)
+
+        # Apply style if requested
+        if style:
+            resolved_style = _resolve_style_name(ctx.doc, style)
+            cursor.gotoStartOfParagraph(False)
+            cursor.gotoEndOfParagraph(True)
+            cursor.setPropertyValue("ParaStyleName", resolved_style)
 
         return {
             "status": "ok",

@@ -46,6 +46,30 @@ class GetDocumentInfo(ToolBase):
             info["author"] = props.Author or None
             info["subject"] = props.Subject or None
             info["description"] = props.Description or None
+
+            # Keywords
+            try:
+                kw = props.Keywords
+                info["keywords"] = list(kw) if kw else []
+            except Exception:
+                info["keywords"] = []
+
+            # Dates
+            try:
+                cdt = props.CreationDate
+                info["creation_date"] = "%04d-%02d-%02d %02d:%02d" % (
+                    cdt.Year, cdt.Month, cdt.Day, cdt.Hours, cdt.Minutes
+                )
+            except Exception:
+                info["creation_date"] = None
+            try:
+                mdt = props.ModificationDate
+                info["modification_date"] = "%04d-%02d-%02d %02d:%02d" % (
+                    mdt.Year, mdt.Month, mdt.Day, mdt.Hours, mdt.Minutes
+                )
+            except Exception:
+                info["modification_date"] = None
+
         except Exception:
             if url:
                 info["title"] = url.rsplit("/", 1)[-1]
