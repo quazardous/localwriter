@@ -1,4 +1,5 @@
-"""Structural tools: list_sections, goto_page, get_page_objects, refresh_indexes."""
+"""Structural tools: list_sections, goto_page, get_page_objects, refresh_indexes,
+read_section, resolve_bookmark, update_fields."""
 
 from plugin.framework.tool_base import ToolBase
 
@@ -177,5 +178,187 @@ class RefreshIndexes(ToolBase):
                 name = idx.getName() if hasattr(idx, "getName") else "index_%d" % i
                 refreshed.append(name)
             return {"status": "ok", "refreshed": refreshed, "count": count}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+
+class ReadSection(ToolBase):
+    """Read the content of a named text section."""
+
+    name = "read_section"
+    description = (
+        "Read the text content of a named section. "
+        "Returns the full text within the section boundaries."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "section_name": {
+                "type": "string",
+                "description": "Name of the section to read.",
+            },
+        },
+        "required": ["section_name"],
+    }
+    doc_types = ["writer"]
+
+    def execute(self, ctx, **kwargs):
+        section_name = kwargs.get("section_name", "")
+        if not section_name:
+            return {"status": "error", "message": "section_name is required."}
+
+        doc = ctx.doc
+        if not hasattr(doc, "getTextSections"):
+            return {"status": "error", "message": "Document does not support sections."}
+
+        try:
+            sections = doc.getTextSections()
+            if not sections.hasByName(section_name):
+                available = list(sections.getElementNames())
+                return {
+                    "status": "error",
+                    "message": "Section '%s' not found." % section_name,
+                    "available": available,
+                }
+
+            section = sections.getByName(section_name)
+            anchor = section.getAnchor()
+
+            # Extract paragraphs within the section
+            enum = anchor.createEnumeration()
+            paragraphs = []
+            while enum.hasMoreElements():
+                para = enum.nextElement()
+                if para.supportsService("com.sun.star.text.Paragraph"):
+                    paragraphs.append(para.getString())
+                else:
+                    paragraphs.append("[Table]")
+
+            content = "\n".join(paragraphs)
+            return {
+                "status": "ok",
+                "section_name": section_name,
+                "paragraphs": paragraphs,
+                "content": content,
+                "length": len(content),
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+
+class ResolveBookmark(ToolBase):
+    """Resolve a bookmark to its paragraph index and heading text."""
+
+    name = "resolve_bookmark"
+    description = (
+        "Resolve a bookmark to its current paragraph index and text. "
+        "Most tools accept 'bookmark:NAME' as locator directly -- use "
+        "resolve_bookmark only when you need the raw paragraph index."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "bookmark_name": {
+                "type": "string",
+                "description": "Bookmark name (e.g. _mcp_a1b2c3d4).",
+            },
+        },
+        "required": ["bookmark_name"],
+    }
+    doc_types = ["writer"]
+
+    def execute(self, ctx, **kwargs):
+        bookmark_name = kwargs.get("bookmark_name", "")
+        if not bookmark_name:
+            return {"status": "error", "message": "bookmark_name is required."}
+
+        doc = ctx.doc
+        if not hasattr(doc, "getBookmarks"):
+            return {"status": "error", "message": "Document does not support bookmarks."}
+
+        try:
+            bookmarks = doc.getBookmarks()
+            if not bookmarks.hasByName(bookmark_name):
+                hint = "Bookmark '%s' not found." % bookmark_name
+                if bookmark_name.startswith("_mcp_"):
+                    hint += (
+                        " It may have been deleted or the document changed. "
+                        "Use heading_text:<text> locator for resilient "
+                        "heading addressing, or call get_document_tree "
+                        "to refresh bookmarks."
+                    )
+                    existing = [
+                        n for n in bookmarks.getElementNames()
+                        if n.startswith("_mcp_")
+                    ]
+                    if existing:
+                        hint += " Existing bookmarks: %s" % ", ".join(existing[:10])
+                return {"status": "error", "message": hint}
+
+            bm = bookmarks.getByName(bookmark_name)
+            anchor = bm.getAnchor()
+
+            # Find paragraph index
+            doc_svc = ctx.services.document
+            para_ranges = doc_svc.get_paragraph_ranges(doc)
+            text_obj = doc.getText()
+            para_idx = doc_svc.find_paragraph_for_range(
+                anchor, para_ranges, text_obj
+            )
+
+            result = {
+                "status": "ok",
+                "bookmark": bookmark_name,
+                "paragraph_index": para_idx,
+            }
+
+            # Get heading text if available
+            if 0 <= para_idx < len(para_ranges):
+                element = para_ranges[para_idx]
+                if element.supportsService("com.sun.star.text.Paragraph"):
+                    try:
+                        result["text"] = element.getString()
+                        result["outline_level"] = element.getPropertyValue(
+                            "OutlineLevel"
+                        )
+                    except Exception:
+                        pass
+
+            return result
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+
+class UpdateFields(ToolBase):
+    """Refresh all text fields in the document."""
+
+    name = "update_fields"
+    description = (
+        "Refresh all text fields (dates, page numbers, cross-references). "
+        "Call after changes that affect computed fields."
+    )
+    parameters = {"type": "object", "properties": {}, "required": []}
+    doc_types = ["writer"]
+    is_mutation = True
+
+    def execute(self, ctx, **kwargs):
+        doc = ctx.doc
+        if not hasattr(doc, "getTextFields"):
+            return {
+                "status": "error",
+                "message": "Document does not support text fields.",
+            }
+        try:
+            fields = doc.getTextFields()
+            fields.refresh()
+
+            # Count the fields
+            enum = fields.createEnumeration()
+            count = 0
+            while enum.hasMoreElements():
+                enum.nextElement()
+                count += 1
+
+            return {"status": "ok", "fields_refreshed": count}
         except Exception as e:
             return {"status": "error", "error": str(e)}

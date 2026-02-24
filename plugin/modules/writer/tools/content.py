@@ -421,8 +421,544 @@ class InsertAtParagraph(ToolBase):
 
 
 # ------------------------------------------------------------------
+# SetParagraphText
+# ------------------------------------------------------------------
+
+class SetParagraphText(ToolBase):
+    """Replace the entire text of a paragraph, preserving its style."""
+
+    name = "set_paragraph_text"
+    description = (
+        "Replace the entire text of a paragraph (preserves style). "
+        "Returns paragraph_index and bookmark (if heading) for stable "
+        "addressing."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "locator": {
+                "type": "string",
+                "description": (
+                    "Locator: 'paragraph:N', 'bookmark:_mcp_x', "
+                    "'heading_text:Title', etc."
+                ),
+            },
+            "paragraph_index": {
+                "type": "integer",
+                "description": "Target paragraph index (0-based).",
+            },
+            "text": {
+                "type": "string",
+                "description": "New text content for the paragraph.",
+            },
+        },
+        "required": ["text"],
+    }
+    doc_types = ["writer"]
+    is_mutation = True
+
+    def execute(self, ctx, **kwargs):
+        text = kwargs.get("text", "")
+        para_index = _resolve_para_index(ctx, kwargs)
+        if para_index is None:
+            return {"status": "error",
+                    "message": "Provide locator or paragraph_index."}
+
+        doc_svc = ctx.services.document
+        target, _ = doc_svc.find_paragraph_element(ctx.doc, para_index)
+        if target is None:
+            return {"status": "error",
+                    "message": "Paragraph %d not found." % para_index}
+
+        old_text = target.getString()
+        target.setString(text)
+
+        result = {
+            "status": "ok",
+            "paragraph_index": para_index,
+            "old_length": len(old_text),
+            "new_length": len(text),
+        }
+
+        # Include bookmark if available (for heading paragraphs)
+        bm_svc = ctx.services.get("writer_bookmarks")
+        if bm_svc:
+            bm_map = bm_svc.get_mcp_bookmark_map(ctx.doc)
+            if para_index in bm_map:
+                result["bookmark"] = bm_map[para_index]
+
+        return result
+
+
+# ------------------------------------------------------------------
+# SetParagraphStyle
+# ------------------------------------------------------------------
+
+class SetParagraphStyle(ToolBase):
+    """Change the paragraph style of a paragraph."""
+
+    name = "set_paragraph_style"
+    description = (
+        "Set the paragraph style (e.g. 'Heading 1', 'Text Body', "
+        "'List Bullet')."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "locator": {
+                "type": "string",
+                "description": (
+                    "Locator: 'paragraph:N', 'bookmark:_mcp_x', "
+                    "'heading_text:Title', etc."
+                ),
+            },
+            "paragraph_index": {
+                "type": "integer",
+                "description": "Target paragraph index (0-based).",
+            },
+            "style": {
+                "type": "string",
+                "description": "Name of the paragraph style to apply.",
+            },
+        },
+        "required": ["style"],
+    }
+    doc_types = ["writer"]
+    is_mutation = True
+
+    def execute(self, ctx, **kwargs):
+        style = kwargs.get("style", "")
+        para_index = _resolve_para_index(ctx, kwargs)
+        if para_index is None:
+            return {"status": "error",
+                    "message": "Provide locator or paragraph_index."}
+
+        doc_svc = ctx.services.document
+        target, _ = doc_svc.find_paragraph_element(ctx.doc, para_index)
+        if target is None:
+            return {"status": "error",
+                    "message": "Paragraph %d not found." % para_index}
+
+        resolved_style = _resolve_style_name(ctx.doc, style)
+        old_style = target.getPropertyValue("ParaStyleName")
+        target.setPropertyValue("ParaStyleName", resolved_style)
+
+        result = {
+            "status": "ok",
+            "paragraph_index": para_index,
+            "old_style": old_style,
+            "new_style": resolved_style,
+        }
+
+        bm_svc = ctx.services.get("writer_bookmarks")
+        if bm_svc:
+            bm_map = bm_svc.get_mcp_bookmark_map(ctx.doc)
+            if para_index in bm_map:
+                result["bookmark"] = bm_map[para_index]
+
+        return result
+
+
+# ------------------------------------------------------------------
+# DeleteParagraph
+# ------------------------------------------------------------------
+
+class DeleteParagraph(ToolBase):
+    """Delete a paragraph from the document."""
+
+    name = "delete_paragraph"
+    description = "Delete a paragraph from the document."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "locator": {
+                "type": "string",
+                "description": (
+                    "Locator: 'paragraph:N', 'bookmark:_mcp_x', "
+                    "'heading_text:Title', etc."
+                ),
+            },
+            "paragraph_index": {
+                "type": "integer",
+                "description": "Target paragraph index (0-based).",
+            },
+        },
+    }
+    doc_types = ["writer"]
+    is_mutation = True
+
+    def execute(self, ctx, **kwargs):
+        para_index = _resolve_para_index(ctx, kwargs)
+        if para_index is None:
+            return {"status": "error",
+                    "message": "Provide locator or paragraph_index."}
+
+        doc_text = ctx.doc.getText()
+        enum = doc_text.createEnumeration()
+        idx = 0
+        target = None
+        while enum.hasMoreElements():
+            element = enum.nextElement()
+            if idx == para_index:
+                target = element
+                break
+            idx += 1
+
+        if target is None:
+            return {"status": "error",
+                    "message": "Paragraph %d not found." % para_index}
+
+        cursor = doc_text.createTextCursorByRange(target)
+        cursor.gotoStartOfParagraph(False)
+        cursor.gotoEndOfParagraph(True)
+        # Extend selection to include the paragraph break
+        if enum.hasMoreElements():
+            cursor.goRight(1, True)
+        cursor.setString("")
+
+        return {
+            "status": "ok",
+            "message": "Deleted paragraph %d." % para_index,
+        }
+
+
+# ------------------------------------------------------------------
+# DuplicateParagraph
+# ------------------------------------------------------------------
+
+class DuplicateParagraph(ToolBase):
+    """Duplicate a paragraph (with its style) after itself."""
+
+    name = "duplicate_paragraph"
+    description = (
+        "Duplicate a paragraph (with its style) after itself. "
+        "Use count > 1 to duplicate multiple consecutive paragraphs."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "locator": {
+                "type": "string",
+                "description": (
+                    "Locator: 'paragraph:N', 'bookmark:_mcp_x', "
+                    "'heading_text:Title', etc."
+                ),
+            },
+            "paragraph_index": {
+                "type": "integer",
+                "description": "Target paragraph index (0-based).",
+            },
+            "count": {
+                "type": "integer",
+                "description": (
+                    "Number of consecutive paragraphs to duplicate "
+                    "(default: 1)."
+                ),
+            },
+        },
+    }
+    doc_types = ["writer"]
+    is_mutation = True
+
+    def execute(self, ctx, **kwargs):
+        from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
+
+        para_index = _resolve_para_index(ctx, kwargs)
+        if para_index is None:
+            return {"status": "error",
+                    "message": "Provide locator or paragraph_index."}
+
+        count = kwargs.get("count", 1)
+        if count < 1:
+            return {"status": "error", "message": "count must be >= 1."}
+
+        doc_text = ctx.doc.getText()
+        enum = doc_text.createEnumeration()
+        elements = []
+        idx = 0
+        while enum.hasMoreElements():
+            el = enum.nextElement()
+            if para_index <= idx < para_index + count:
+                elements.append(el)
+            if idx >= para_index + count - 1:
+                break
+            idx += 1
+
+        if not elements:
+            return {"status": "error",
+                    "message": "Paragraph %d not found." % para_index}
+
+        last = elements[-1]
+        cursor = doc_text.createTextCursorByRange(last)
+        cursor.gotoEndOfParagraph(False)
+
+        for el in elements:
+            txt = el.getString()
+            sty = el.getPropertyValue("ParaStyleName")
+            doc_text.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
+            doc_text.insertString(cursor, txt, False)
+            cursor.gotoStartOfParagraph(False)
+            cursor.gotoEndOfParagraph(True)
+            cursor.setPropertyValue("ParaStyleName", sty)
+            cursor.gotoEndOfParagraph(False)
+
+        return {
+            "status": "ok",
+            "message": "Duplicated %d paragraph(s) at %d."
+                       % (count, para_index),
+            "duplicated_count": count,
+        }
+
+
+# ------------------------------------------------------------------
+# CloneHeadingBlock
+# ------------------------------------------------------------------
+
+class CloneHeadingBlock(ToolBase):
+    """Clone an entire heading block (heading + all sub-headings + body)."""
+
+    name = "clone_heading_block"
+    description = (
+        "Clone an entire heading block (heading + all sub-headings + body). "
+        "The clone is inserted right after the original block."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "locator": {
+                "type": "string",
+                "description": (
+                    "Locator of the heading to clone "
+                    "(e.g. 'bookmark:_mcp_abc123', "
+                    "'heading_text:Introduction')."
+                ),
+            },
+            "paragraph_index": {
+                "type": "integer",
+                "description": "Paragraph index of the heading (0-based).",
+            },
+        },
+    }
+    doc_types = ["writer"]
+    is_mutation = True
+
+    def execute(self, ctx, **kwargs):
+        from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
+
+        para_index = _resolve_para_index(ctx, kwargs)
+        if para_index is None:
+            return {"status": "error",
+                    "message": "Provide locator or paragraph_index."}
+
+        # Use writer_tree service to find the heading node and block size
+        tree_svc = ctx.services.get("writer_tree")
+        if tree_svc is None:
+            return {"status": "error",
+                    "message": "writer_nav module not loaded; "
+                               "cannot resolve heading block."}
+
+        tree = tree_svc.build_heading_tree(ctx.doc)
+        node = tree_svc._find_node_by_para_index(tree, para_index)
+        if node is None:
+            return {"status": "error",
+                    "message": "No heading found at paragraph %d."
+                               % para_index}
+
+        # Total paragraphs in the block: heading + body + all children
+        total = 1 + tree_svc._count_all_children(node)
+
+        # Collect elements for the block
+        doc_text = ctx.doc.getText()
+        enum = doc_text.createEnumeration()
+        elements = []
+        idx = 0
+        while enum.hasMoreElements():
+            el = enum.nextElement()
+            if para_index <= idx < para_index + total:
+                elements.append(el)
+            if idx >= para_index + total - 1:
+                break
+            idx += 1
+
+        if not elements:
+            return {"status": "error",
+                    "message": "Could not collect heading block paragraphs."}
+
+        # Insert duplicates after the last element of the block
+        last = elements[-1]
+        cursor = doc_text.createTextCursorByRange(last)
+        cursor.gotoEndOfParagraph(False)
+
+        for el in elements:
+            txt = el.getString()
+            sty = el.getPropertyValue("ParaStyleName")
+            doc_text.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
+            doc_text.insertString(cursor, txt, False)
+            cursor.gotoStartOfParagraph(False)
+            cursor.gotoEndOfParagraph(True)
+            cursor.setPropertyValue("ParaStyleName", sty)
+            cursor.gotoEndOfParagraph(False)
+
+        return {
+            "status": "ok",
+            "message": "Cloned heading block '%s' (%d paragraphs)."
+                       % (node.get("text", ""), total),
+            "heading_text": node.get("text", ""),
+            "block_size": total,
+        }
+
+
+# ------------------------------------------------------------------
+# InsertParagraphsBatch
+# ------------------------------------------------------------------
+
+class InsertParagraphsBatch(ToolBase):
+    """Insert multiple paragraphs in one call."""
+
+    name = "insert_paragraphs_batch"
+    description = (
+        "Insert multiple paragraphs in a single operation. "
+        "Each item in paragraphs is {\"text\": \"...\", \"style\": \"...\"}. "
+        "Style is optional."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "locator": {
+                "type": "string",
+                "description": (
+                    "Locator: 'paragraph:N', 'bookmark:_mcp_x', "
+                    "'heading_text:Title', etc."
+                ),
+            },
+            "paragraph_index": {
+                "type": "integer",
+                "description": "Target paragraph index (0-based).",
+            },
+            "paragraphs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "style": {"type": "string"},
+                    },
+                    "required": ["text"],
+                },
+                "description": "List of {text, style?} objects to insert.",
+            },
+            "position": {
+                "type": "string",
+                "enum": ["before", "after"],
+                "description": "'before' or 'after' (default: after).",
+            },
+        },
+        "required": ["paragraphs"],
+    }
+    doc_types = ["writer"]
+    is_mutation = True
+
+    def execute(self, ctx, **kwargs):
+        from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
+
+        paragraphs = kwargs.get("paragraphs")
+        if not paragraphs:
+            return {"status": "error", "message": "Empty paragraphs list."}
+
+        position = kwargs.get("position", "after")
+        para_index = _resolve_para_index(ctx, kwargs)
+        if para_index is None:
+            return {"status": "error",
+                    "message": "Provide locator or paragraph_index."}
+
+        doc_svc = ctx.services.document
+        target, _ = doc_svc.find_paragraph_element(ctx.doc, para_index)
+        if target is None:
+            return {"status": "error",
+                    "message": "Paragraph %d not found." % para_index}
+
+        doc_text = ctx.doc.getText()
+        cursor = doc_text.createTextCursorByRange(target)
+
+        if position == "before":
+            cursor.gotoStartOfParagraph(False)
+            for item in paragraphs:
+                txt = item.get("text", "")
+                sty = item.get("style")
+                if sty:
+                    sty = _resolve_style_name(ctx.doc, sty)
+                doc_text.insertString(cursor, txt, False)
+                doc_text.insertControlCharacter(
+                    cursor, PARAGRAPH_BREAK, False)
+                if sty:
+                    cursor.gotoPreviousParagraph(False)
+                    cursor.gotoStartOfParagraph(False)
+                    cursor.gotoEndOfParagraph(True)
+                    cursor.setPropertyValue("ParaStyleName", sty)
+                    cursor.gotoNextParagraph(False)
+        elif position == "after":
+            cursor.gotoEndOfParagraph(False)
+            for item in paragraphs:
+                txt = item.get("text", "")
+                sty = item.get("style")
+                if sty:
+                    sty = _resolve_style_name(ctx.doc, sty)
+                doc_text.insertControlCharacter(
+                    cursor, PARAGRAPH_BREAK, False)
+                doc_text.insertString(cursor, txt, False)
+                if sty:
+                    cursor.gotoStartOfParagraph(False)
+                    cursor.gotoEndOfParagraph(True)
+                    cursor.setPropertyValue("ParaStyleName", sty)
+                    cursor.gotoEndOfParagraph(False)
+        else:
+            return {"status": "error",
+                    "message": "Invalid position: %s" % position}
+
+        n = len(paragraphs)
+        return {
+            "status": "ok",
+            "message": "Inserted %d paragraph(s) %s paragraph %d."
+                       % (n, position, para_index),
+            "count": n,
+        }
+
+
+# ------------------------------------------------------------------
 # Internal helpers
 # ------------------------------------------------------------------
+
+def _resolve_para_index(ctx, kwargs):
+    """Resolve locator or paragraph_index from tool kwargs.
+
+    Returns an integer paragraph index, or None if neither is provided.
+    """
+    locator = kwargs.get("locator")
+    para_index = kwargs.get("paragraph_index")
+
+    if locator is not None and para_index is None:
+        doc_svc = ctx.services.document
+        resolved = doc_svc.resolve_locator(ctx.doc, locator)
+        para_index = resolved.get("para_index")
+
+    return para_index
+
+
+def _resolve_style_name(doc, style_name):
+    """Resolve a style name case-insensitively against the document styles."""
+    try:
+        families = doc.getStyleFamilies()
+        para_styles = families.getByName("ParagraphStyles")
+        if para_styles.hasByName(style_name):
+            return style_name
+        lower = style_name.lower()
+        for name in para_styles.getElementNames():
+            if name.lower() == lower:
+                return name
+    except Exception:
+        pass
+    return style_name
+
 
 def _preserving_search_replace(model, uno_ctx, new_text, search_string,
                                all_matches=False, case_sensitive=True):

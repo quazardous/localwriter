@@ -159,6 +159,110 @@ class WriteTableCell(ToolBase):
         }
 
 
+class CreateTable(ToolBase):
+    """Create a new table at a paragraph position."""
+
+    name = "create_table"
+    description = (
+        "Create a new table at a paragraph position. "
+        "The table is inserted relative to the target paragraph. "
+        "Provide either a locator string or a paragraph_index."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "rows": {
+                "type": "integer",
+                "description": "Number of rows.",
+            },
+            "cols": {
+                "type": "integer",
+                "description": "Number of columns.",
+            },
+            "paragraph_index": {
+                "type": "integer",
+                "description": "Paragraph index for insertion point.",
+            },
+            "locator": {
+                "type": "string",
+                "description": (
+                    "Unified locator for insertion point "
+                    "(e.g. 'bookmark:NAME', 'heading_text:Title')."
+                ),
+            },
+            "position": {
+                "type": "string",
+                "enum": ["before", "after"],
+                "description": (
+                    "Insert before or after the target paragraph "
+                    "(default: after)."
+                ),
+            },
+        },
+        "required": ["rows", "cols"],
+    }
+    doc_types = ["writer"]
+    is_mutation = True
+
+    def execute(self, ctx, **kwargs):
+        rows = kwargs.get("rows")
+        cols = kwargs.get("cols")
+        if not rows or not cols:
+            return {"status": "error", "message": "rows and cols are required."}
+        if rows < 1 or cols < 1:
+            return {"status": "error", "message": "rows and cols must be >= 1."}
+
+        paragraph_index = kwargs.get("paragraph_index")
+        locator = kwargs.get("locator")
+        position = kwargs.get("position", "after")
+
+        doc = ctx.doc
+        doc_svc = ctx.services.document
+
+        try:
+            # Resolve locator to paragraph index
+            if locator is not None and paragraph_index is None:
+                resolved = doc_svc.resolve_locator(doc, locator)
+                paragraph_index = resolved.get("para_index")
+
+            if paragraph_index is None:
+                return {
+                    "status": "error",
+                    "message": "Provide locator or paragraph_index.",
+                }
+
+            # Find the target paragraph element
+            target, _ = doc_svc.find_paragraph_element(doc, paragraph_index)
+            if target is None:
+                return {
+                    "status": "error",
+                    "message": "Paragraph %d not found." % paragraph_index,
+                }
+
+            # Create and insert the table
+            table = doc.createInstance("com.sun.star.text.TextTable")
+            table.initialize(rows, cols)
+
+            doc_text = doc.getText()
+            if position == "before":
+                cursor = doc_text.createTextCursorByRange(target.getStart())
+            else:
+                cursor = doc_text.createTextCursorByRange(target.getEnd())
+
+            doc_text.insertTextContent(cursor, table, False)
+
+            table_name = table.getName()
+
+            return {
+                "status": "ok",
+                "table_name": table_name,
+                "rows": rows,
+                "cols": cols,
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
