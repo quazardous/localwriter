@@ -1,6 +1,9 @@
 """Base class for all modules."""
 
+import logging
 from abc import ABC
+
+log = logging.getLogger("localwriter.module_base")
 
 
 class ModuleBase(ABC):
@@ -55,3 +58,39 @@ class ModuleBase(ABC):
         """Stop background tasks, close connections.
 
         Called in reverse dependency order on extension unload."""
+
+    # ── Action dispatch ──────────────────────────────────────────────
+
+    def on_action(self, action):
+        """Handle an action dispatched from menu/shortcut. Override in subclass."""
+        log.warning("Unhandled action '%s' on module '%s'", action, self.name)
+
+    def get_menu_text(self, action):
+        """Return dynamic menu text for an action, or None for default.
+
+        Override in subclass to provide state-dependent menu labels.
+        Return None to keep the static title from module.yaml.
+        """
+        return None
+
+    def get_menu_icon(self, action):
+        """Return dynamic icon name prefix for an action, or None for default.
+
+        Override in subclass to provide state-dependent menu icons.
+        Return an icon prefix like "running", "stopped", "starting".
+        The framework will load ``{prefix}_16.png`` from ``extension/icons/``.
+        Return None to keep the icon declared in module.yaml.
+        """
+        return None
+
+    # ── Dialog helpers ───────────────────────────────────────────────
+
+    def load_dialog(self, dialog_name):
+        """Load an XDL dialog from this module's dialogs/ directory."""
+        from plugin.framework.dialogs import load_module_dialog
+        return load_module_dialog(self.name, dialog_name)
+
+    def load_framework_dialog(self, dialog_name):
+        """Load a reusable framework dialog template."""
+        from plugin.framework.dialogs import load_framework_dialog
+        return load_framework_dialog(dialog_name)

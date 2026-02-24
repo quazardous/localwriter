@@ -330,6 +330,14 @@ def bootstrap(ctx=None):
             events_svc.emit("modules:started",
                             modules=[m.name for m in _modules])
 
+        # Subscribe to menu:update for dynamic menu text + icons
+        if events_svc:
+            events_svc.subscribe("menu:update",
+                                 lambda **kw: notify_menu_update())
+
+        # Pre-load icons into ImageManager so first menu display has them
+        threading.Thread(target=_update_menu_icons, daemon=True).start()
+
         _initialized = True
         log.info("Framework bootstrap complete: %d modules, %d tools",
                  len(_modules), len(_tools))
@@ -353,13 +361,231 @@ def shutdown():
 
 # ── UNO component registration ────────────────────────────────────────
 
+# ── Dynamic menu text infrastructure ─────────────────────────────────
+
+_DISPATCH_PROTOCOL = "org.extension.localwriter:"
+
+_status_listeners = []  # [(listener, url)]
+_status_lock = threading.Lock()
+
+
+def _dispatch_command(command):
+    """Dispatch a module.action command. Used by both MainJob and DispatchHandler."""
+    dot = command.find(".")
+    if dot <= 0:
+        log.warning("Unhandled command: %s", command)
+        return
+
+    mod_name = command[:dot]
+    action = command[dot + 1:]
+
+    # Framework actions
+    if mod_name == "main":
+        if action == "about":
+            from plugin.framework.uno_context import get_ctx
+            from plugin.framework.dialogs import about_dialog
+            about_dialog(get_ctx())
+        else:
+            log.warning("Unhandled framework action: %s", action)
+        return
+
+    # Module actions
+    for mod in _modules:
+        if mod.name == mod_name:
+            mod.on_action(action)
+            return
+
+    log.warning("Module not found for command: %s", command)
+
+
+def get_menu_text(command):
+    """Get dynamic menu text for a command, or None for default."""
+    dot = command.find(".")
+    if dot <= 0:
+        return None
+    mod_name = command[:dot]
+    action = command[dot + 1:]
+    for mod in _modules:
+        if mod.name == mod_name:
+            return mod.get_menu_text(action)
+    return None
+
+
+def notify_menu_update():
+    """Push current menu text and icons to all registered status listeners.
+
+    Called by modules when state changes (e.g. server start/stop).
+    """
+    with _status_lock:
+        alive = []
+        for listener, url in _status_listeners:
+            command = url.Path
+            text = get_menu_text(command)
+            try:
+                _fire_status_event(listener, url, text)
+                alive.append((listener, url))
+            except Exception:
+                log.debug("Dropping dead status listener for %s", command)
+        _status_listeners[:] = alive
+    # Update icons in a background thread (avoids blocking UI)
+    threading.Thread(target=_update_menu_icons, daemon=True).start()
+
+
+def _fire_status_event(listener, url, text):
+    """Send a FeatureStateEvent to one listener."""
+    import uno
+    ev = uno.createUnoStruct("com.sun.star.frame.FeatureStateEvent")
+    ev.FeatureURL = url
+    ev.IsEnabled = True
+    ev.Requery = False
+    if text is not None:
+        ev.State = text
+    listener.statusChanged(ev)
+
+
+# ── Dynamic menu icons via XImageManager ──────────────────────────────
+
+# LO document modules that have their own ImageManager
+_IMAGE_MANAGER_MODULES = (
+    "com.sun.star.text.TextDocument",
+    "com.sun.star.sheet.SpreadsheetDocument",
+    "com.sun.star.presentation.PresentationDocument",
+    "com.sun.star.drawing.DrawingDocument",
+)
+
+
+def _get_menu_icon(command):
+    """Get dynamic icon prefix for a command, or None."""
+    dot = command.find(".")
+    if dot <= 0:
+        return None
+    mod_name = command[:dot]
+    action = command[dot + 1:]
+    for mod in _modules:
+        if mod.name == mod_name:
+            return mod.get_menu_icon(action)
+    return None
+
+
+def _collect_icon_commands():
+    """Collect all command URLs that declare icons in their manifest.
+
+    Returns {command_url: (module_name, icon_prefix)} for the current state.
+    """
+    try:
+        from plugin._manifest import MODULES
+    except ImportError:
+        return {}
+
+    result = {}
+    for m in MODULES:
+        mod_name = m["name"]
+        action_icons = m.get("action_icons", {})
+        for action_name, default_icon in action_icons.items():
+            cmd_url = "%s%s.%s" % (_DISPATCH_PROTOCOL, mod_name, action_name)
+            # Ask the module for dynamic icon (may override the default)
+            dynamic = _get_menu_icon("%s.%s" % (mod_name, action_name))
+            result[cmd_url] = (mod_name, dynamic or default_icon)
+    return result
+
+
+def _load_icon_graphic(module_name, icon_filename):
+    """Load a PNG icon from a module's icons/ directory as XGraphic."""
+    try:
+        import uno
+        from com.sun.star.beans import PropertyValue
+        ctx = uno.getComponentContext()
+        smgr = ctx.ServiceManager
+        pip = ctx.getValueByName(
+            "/singletons/com.sun.star.deployment.PackageInformationProvider")
+        ext_url = pip.getPackageLocation(EXTENSION_ID)
+        if not ext_url:
+            return None
+        gp = smgr.createInstanceWithContext(
+            "com.sun.star.graphic.GraphicProvider", ctx)
+        pv = PropertyValue()
+        pv.Name = "URL"
+        pv.Value = "%s/plugin/modules/%s/icons/%s" % (
+            ext_url, module_name, icon_filename)
+        return gp.queryGraphic((pv,))
+    except Exception as e:
+        log.debug("Failed to load icon %s/%s: %s",
+                  module_name, icon_filename, e)
+        return None
+
+
+def _update_menu_icons():
+    """Push current-state icons into every module's ImageManager."""
+    try:
+        import uno
+        icon_cmds = _collect_icon_commands()
+        if not icon_cmds:
+            return
+
+        # Group by (module, prefix) to avoid loading the same graphic twice
+        key_cmds = {}  # (mod_name, prefix) -> [cmd_urls]
+        for cmd_url, (mod_name, prefix) in icon_cmds.items():
+            key_cmds.setdefault((mod_name, prefix), []).append(cmd_url)
+
+        # Load graphics
+        key_graphics = {}
+        for key in key_cmds:
+            mod_name, prefix = key
+            filename = "%s_16.png" % prefix
+            graphic = _load_icon_graphic(mod_name, filename)
+            if graphic:
+                key_graphics[key] = graphic
+            else:
+                log.warning("Icon graphic is None for %s/%s", mod_name,
+                            filename)
+
+        if not key_graphics:
+            return
+
+        ctx = uno.getComponentContext()
+        smgr = ctx.ServiceManager
+
+        ok_count = 0
+
+        supplier = smgr.createInstanceWithContext(
+            "com.sun.star.ui.ModuleUIConfigurationManagerSupplier", ctx)
+        for mod_id in _IMAGE_MANAGER_MODULES:
+            try:
+                cfg_mgr = supplier.getUIConfigurationManager(mod_id)
+                img_mgr = cfg_mgr.getImageManager()
+                for key, cmds in key_cmds.items():
+                    graphic = key_graphics.get(key)
+                    if not graphic:
+                        continue
+                    for cmd in cmds:
+                        try:
+                            if img_mgr.hasImage(0, cmd):
+                                img_mgr.replaceImages(0, (cmd,), (graphic,))
+                            else:
+                                img_mgr.insertImages(0, (cmd,), (graphic,))
+                            ok_count += 1
+                        except Exception as e:
+                            log.debug("ImageManager %s cmd %s: %s",
+                                      mod_id, cmd, e)
+            except Exception as e:
+                log.debug("ImageManager skip %s: %s", mod_id, e)
+
+        log.info("Menu icons updated (%d insertions)", ok_count)
+    except Exception as e:
+        log.warning("Dynamic icon update failed: %s", e)
+
+
+# ── UNO component registration ────────────────────────────────────────
+
 try:
     import uno
     import unohelper
     from com.sun.star.task import XJobExecutor, XJob
+    from com.sun.star.frame import XDispatch, XDispatchProvider
+    from com.sun.star.lang import XInitialization, XServiceInfo
 
     class MainJob(unohelper.Base, XJobExecutor, XJob):
-        """UNO Job component — entry point for menu actions and OnStartApp."""
+        """UNO Job component — entry point for OnStartApp bootstrap."""
 
         def __init__(self, ctx):
             log.info("MainJob.__init__ called")
@@ -376,89 +602,91 @@ try:
                 log.exception("MainJob.execute bootstrap FAILED")
             return ()
 
-        # ── XJobExecutor.trigger (menu dispatch) ─────────────────────
+        # ── XJobExecutor.trigger (legacy fallback) ───────────────────
 
         def trigger(self, args):
-            """Dispatch commands from the extension UI."""
+            """Fallback dispatch for service: protocol URLs."""
             log.info("MainJob.trigger called with: %r", args)
             try:
                 bootstrap(self.ctx)
-
                 command = args if isinstance(args, str) else ""
-
-                if command in ("start_mcp", "ToggleMCPServer"):
-                    self._toggle_mcp()
-                elif command == "stop_mcp":
-                    self._stop_mcp()
-                elif command == "MCPStatus":
-                    self._mcp_status()
-                elif command == "About":
-                    self._about()
-                else:
-                    log.info("MainJob.trigger unhandled: %s", command)
-                    self._msgbox("Not implemented: %s" % command)
+                _dispatch_command(command)
             except Exception:
                 log.exception("MainJob.trigger FAILED")
-                self._msgbox("Error: %s" % command)
 
-        # ── UI helpers ─────────────────────────────────────────────
+    class DispatchHandler(unohelper.Base, XDispatch, XDispatchProvider,
+                          XInitialization, XServiceInfo):
+        """Protocol handler for org.extension.localwriter: URLs.
 
-        def _msgbox(self, message, title="LocalWriter"):
-            """Show a simple message box."""
-            from plugin.framework.dialogs import msgbox
-            msgbox(self.ctx, title, str(message))
+        Handles menu dispatch and supports dynamic menu text via
+        FeatureStateEvent / addStatusListener.
+        """
 
-        def _about(self):
-            """Show the About dialog."""
-            from plugin.framework.dialogs import about_dialog
-            about_dialog(self.ctx)
+        IMPL_NAME = "org.extension.localwriter.DispatchHandler"
+        SERVICE_NAMES = ("com.sun.star.frame.ProtocolHandler",)
 
-        # ── HTTP / MCP helpers ───────────────────────────────────────
+        def __init__(self, ctx):
+            self.ctx = ctx
 
-        def _get_module(self, name):
-            for mod in _modules:
-                if mod.name == name:
-                    return mod
+        # ── XInitialization ──────────────────────────────────────────
+
+        def initialize(self, args):
+            pass
+
+        # ── XServiceInfo ─────────────────────────────────────────────
+
+        def getImplementationName(self):
+            return self.IMPL_NAME
+
+        def supportsService(self, name):
+            return name in self.SERVICE_NAMES
+
+        def getSupportedServiceNames(self):
+            return self.SERVICE_NAMES
+
+        # ── XDispatchProvider ────────────────────────────────────────
+
+        def queryDispatch(self, url, target, flags):
+            if url.Protocol == _DISPATCH_PROTOCOL:
+                return self
             return None
 
-        def _toggle_mcp(self):
-            http_mod = self._get_module("http")
-            if http_mod is None:
-                self._msgbox("HTTP module not found")
-                return
-            if http_mod._server and http_mod._server.is_running():
-                log.info("Stopping HTTP server via toggle")
-                http_mod._stop_server()
-                self._msgbox("HTTP server stopped")
-            else:
-                log.info("Starting HTTP server via toggle")
-                http_mod._start_server(get_services())
-                if http_mod._server and http_mod._server.is_running():
-                    status = http_mod._server.get_status()
-                    self._msgbox("HTTP server started\n%s" % status.get("url", ""))
-                else:
-                    self._msgbox("HTTP server failed to start\nCheck ~/localwriter.log")
+        def queryDispatches(self, requests):
+            return [self.queryDispatch(r.FeatureURL, r.FrameName,
+                                       r.SearchFlags) for r in requests]
 
-        def _stop_mcp(self):
-            http_mod = self._get_module("http")
-            if http_mod:
-                http_mod._stop_server()
-                self._msgbox("HTTP server stopped")
+        # ── XDispatch ────────────────────────────────────────────────
 
-        def _mcp_status(self):
-            http_mod = self._get_module("http")
-            if http_mod and http_mod._server:
-                status = http_mod._server.get_status()
-                running = status.get("running", False)
-                url = status.get("url", "?")
-                routes = status.get("routes", 0)
-                if running:
-                    msg = "HTTP server running\nURL: %s\nRoutes: %d" % (url, routes)
-                else:
-                    msg = "HTTP server not running"
-                self._msgbox(msg)
-            else:
-                self._msgbox("HTTP server is not running")
+        def dispatch(self, url, args):
+            command = url.Path
+            log.info("DispatchHandler.dispatch: %s", command)
+            try:
+                bootstrap(self.ctx)
+                _dispatch_command(command)
+                # After action, push updated menu text
+                threading.Thread(target=notify_menu_update,
+                                 daemon=True).start()
+            except Exception:
+                log.exception("DispatchHandler.dispatch FAILED")
+
+        def addStatusListener(self, listener, url):
+            with _status_lock:
+                _status_listeners.append((listener, url))
+            # Send current state immediately
+            command = url.Path
+            text = get_menu_text(command)
+            if text is not None:
+                try:
+                    _fire_status_event(listener, url, text)
+                except Exception:
+                    log.debug("Initial status event failed for %s", command)
+
+        def removeStatusListener(self, listener, url):
+            with _status_lock:
+                _status_listeners[:] = [
+                    (l, u) for l, u in _status_listeners
+                    if not (l is listener and u.Complete == url.Complete)
+                ]
 
     # Register with LibreOffice
     g_ImplementationHelper = unohelper.ImplementationHelper()
@@ -467,7 +695,12 @@ try:
         "org.extension.localwriter.Main",
         ("com.sun.star.task.Job",),
     )
-    log.info("g_ImplementationHelper registered: org.extension.localwriter.Main")
+    g_ImplementationHelper.addImplementation(
+        DispatchHandler,
+        DispatchHandler.IMPL_NAME,
+        DispatchHandler.SERVICE_NAMES,
+    )
+    log.info("g_ImplementationHelper registered: Main + DispatchHandler")
 
     # Module-level fallback auto-bootstrap (like mcp-libre)
     def _module_autostart():

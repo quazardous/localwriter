@@ -15,7 +15,11 @@ MODULES = [
                         "widget": "checkbox",
                         "label": "Debug Mode"
                 }
-        }
+        },
+        "actions": [
+                "about"
+        ],
+        "action_icons": {}
 },
     {
         "name": "core",
@@ -55,7 +59,9 @@ MODULES = [
                                 }
                         ]
                 }
-        }
+        },
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "horde",
@@ -107,7 +113,9 @@ MODULES = [
                         "widget": "checkbox",
                         "label": "Allow NSFW"
                 }
-        }
+        },
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "writer",
@@ -129,7 +137,9 @@ MODULES = [
                         "label": "Max Content Size",
                         "public": True
                 }
-        }
+        },
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "calc",
@@ -149,7 +159,9 @@ MODULES = [
                         "label": "Max Rows Display",
                         "public": True
                 }
-        }
+        },
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "draw",
@@ -160,7 +172,9 @@ MODULES = [
                 "image"
         ],
         "provides_services": [],
-        "config": {}
+        "config": {},
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "openai_compat",
@@ -220,7 +234,9 @@ MODULES = [
                         "widget": "number",
                         "label": "Request Timeout (seconds)"
                 }
-        }
+        },
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "ollama",
@@ -274,7 +290,9 @@ MODULES = [
                         "label": "Request Timeout (seconds)",
                         "description": "Ollama may need longer for initial model loading"
                 }
-        }
+        },
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "http",
@@ -333,6 +351,14 @@ MODULES = [
                         "helper": "Optional. Leave empty to use auto-generated self-signed key.",
                         "file_filter": "PEM files (*.pem)|*.pem"
                 }
+        },
+        "actions": [
+                "toggle_server",
+                "server_status"
+        ],
+        "action_icons": {
+                "toggle_server": "running",
+                "server_status": "stopped"
         }
 },
     {
@@ -353,7 +379,9 @@ MODULES = [
                         "label": "Enable MCP Protocol",
                         "public": True
                 }
-        }
+        },
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "chatbot",
@@ -403,7 +431,12 @@ MODULES = [
                         "label": "Show MCP Activity",
                         "public": True
                 }
-        }
+        },
+        "actions": [
+                "extend_selection",
+                "edit_selection"
+        ],
+        "action_icons": {}
 },
     {
         "name": "tunnel",
@@ -431,7 +464,9 @@ MODULES = [
                         "label": "Tunnel Provider",
                         "options_provider": "plugin.modules.tunnel:get_provider_options"
                 }
-        }
+        },
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "batch",
@@ -442,7 +477,9 @@ MODULES = [
                 "events"
         ],
         "provides_services": [],
-        "config": {}
+        "config": {},
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "writer.nav",
@@ -457,7 +494,9 @@ MODULES = [
                 "writer_tree",
                 "writer_proximity"
         ],
-        "config": {}
+        "config": {},
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "writer.index",
@@ -471,7 +510,9 @@ MODULES = [
         "provides_services": [
                 "writer_index"
         ],
-        "config": {}
+        "config": {},
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "tunnel.bore",
@@ -488,7 +529,9 @@ MODULES = [
                         "label": "Bore Server",
                         "helper": "The bore server address (default: bore.pub)"
                 }
-        }
+        },
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "tunnel.cloudflare",
@@ -511,7 +554,9 @@ MODULES = [
                         "label": "Public URL",
                         "helper": "The public URL assigned by Cloudflare"
                 }
-        }
+        },
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "tunnel.ngrok",
@@ -528,7 +573,9 @@ MODULES = [
                         "label": "Auth Token",
                         "helper": "Your ngrok authentication token"
                 }
-        }
+        },
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "tunnel.tailscale",
@@ -537,7 +584,9 @@ MODULES = [
                 "tunnel_manager"
         ],
         "provides_services": [],
-        "config": {}
+        "config": {},
+        "actions": [],
+        "action_icons": {}
 },
     {
         "name": "common",
@@ -548,6 +597,8 @@ MODULES = [
                 "events"
         ],
         "provides_services": [],
-        "config": {}
+        "config": {},
+        "actions": [],
+        "action_icons": {}
 },
 ]

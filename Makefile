@@ -8,6 +8,7 @@
 #   make clean                     Remove build artifacts
 #
 # Dev workflow:
+#   make deploy                    Build + reinstall + restart LO + show log
 #   make install                   Build + install via unopkg
 #   make install-force             Build + install (no prompts, kills LO)
 #   make cache                     Hot-deploy to LO cache (fast iteration)
@@ -49,12 +50,12 @@ endif
 
 # ── Phony targets ────────────────────────────────────────────────────────────
 
-.PHONY: help build repack repack-cycle manifest xcu clean \
+.PHONY: help build repack repack-deploy manifest xcu clean \
         install install-force uninstall cache \
         dev-deploy dev-deploy-remove \
         lo-start lo-start-full lo-kill lo-restart \
         clean-cache nuke-cache nuke-cache-force unbundle \
-        log log-tail lo-log test check-ext cycle \
+        log log-tail lo-log test check-ext deploy \
         set-config vendor
 
 # ── Help ─────────────────────────────────────────────────────────────────────
@@ -70,6 +71,7 @@ help:
 	@echo "  make clean                  Remove build artifacts"
 	@echo ""
 	@echo "Install:"
+	@echo "  make deploy                 Build + reinstall + restart LO + show log"
 	@echo "  make install                Build + install via unopkg"
 	@echo "  make install-force          Build + install (no prompts)"
 	@echo "  make uninstall              Remove extension via unopkg"
@@ -105,7 +107,7 @@ repack:
 	$(PYTHON) $(SCRIPTS)/build_oxt.py --repack --output build/$(EXTENSION_NAME).oxt
 	@echo "Done: build/$(EXTENSION_NAME).oxt"
 
-repack-cycle: repack
+repack-deploy: repack
 	$(MAKE) lo-kill
 	@sleep 3
 	@rm -f $(HOME)/.config/libreoffice/4/.lock $(HOME)/.config/libreoffice/4/user/.lock
@@ -222,7 +224,7 @@ lo-restart:
 	rm -f $(HOME)/.config/libreoffice/4/.lock $(HOME)/.config/libreoffice/4/user/.lock
 	$(MAKE) lo-start
 
-cycle: build
+deploy: build
 	$(MAKE) lo-kill
 	@sleep 3
 	@rm -f $(HOME)/.config/libreoffice/4/.lock $(HOME)/.config/libreoffice/4/user/.lock
@@ -255,7 +257,7 @@ test:
 # ── POC extension ───────────────────────────────────────────────────────────
 
 set-config:
-	@echo "Usage: make cycle LOCALWRITER_SET_CONFIG=\"mcp.port=9000,mcp.host=0.0.0.0\""
+	@echo "Usage: make deploy LOCALWRITER_SET_CONFIG=\"mcp.port=9000,mcp.host=0.0.0.0\""
 	@echo ""
 	@echo "Available config keys (module.key = default):"
 	@$(PYTHON) -c "from plugin._manifest import MODULES; \
@@ -283,7 +285,7 @@ poc-log:
 poc-log-tail:
 	@tail -f $(HOME)/poc-ext.log
 
-poc-cycle: poc-install
+poc-deploy: poc-install
 	$(MAKE) lo-kill
 	@sleep 3
 	@rm -f $(HOME)/.config/libreoffice/4/.lock $(HOME)/.config/libreoffice/4/user/.lock

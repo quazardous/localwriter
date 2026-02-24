@@ -2,6 +2,26 @@ name: chatbot
 description: AI chat sidebar
 requires: [document, config, events, llm]
 
+actions:
+  extend_selection:
+    title: "Extend Selection"
+  edit_selection:
+    title: "Edit Selection"
+
+menus:
+  - action: extend_selection
+    context: [writer, calc]
+  - action: edit_selection
+    context: [writer, calc]
+
+shortcuts:
+  extend_selection:
+    key: Q_MOD1
+    context: [writer, calc]
+  edit_selection:
+    key: E_MOD1
+    context: [writer, calc]
+
 config:
   max_tool_rounds:
     type: int

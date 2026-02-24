@@ -50,7 +50,7 @@ LocalWriter uses a modular framework where each feature is a self-contained modu
 
 ```bash
 ./install.sh              # Set up dev environment
-make cycle                # Build + install + restart LO + show log
+make deploy               # Build + install + restart LO + show log
 make test                 # Run tests
 ```
 

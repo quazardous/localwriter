@@ -1,8 +1,7 @@
 """Dialog utilities for LibreOffice UNO.
 
-Provides helpers for message boxes, clipboard operations, and rich dialogs
-(with buttons, live updates, etc.). All functions take a UNO context and
-handle errors gracefully with fallback logging.
+Provides helpers for message boxes, clipboard operations, rich dialogs
+(with buttons, live updates, etc.), and XDL dialog loading.
 
 Usage from modules::
 
@@ -11,12 +10,23 @@ Usage from modules::
 
     msgbox(get_ctx(), "Title", "Hello world")
     msgbox_with_copy(get_ctx(), "URL", "Server running at:", "https://localhost:8766")
+
+XDL dialog loading (used by ModuleBase helpers)::
+
+    from plugin.framework.dialogs import load_module_dialog, load_framework_dialog
+
+    dlg = load_framework_dialog("info_action")
+    dlg.getControl("MessageText").getModel().Label = "Hello"
+    dlg.execute()
+    dlg.dispose()
 """
 
 import logging
 import threading
 
 log = logging.getLogger("localwriter.dialogs")
+
+EXTENSION_ID = "org.extension.localwriter"
 
 
 # ── Simple message box ──────────────────────────────────────────────
@@ -296,19 +306,112 @@ def status_dialog(ctx, title, build_status_fn, copy_url_fn=None):
 
 
 def about_dialog(ctx):
-    """Show the LocalWriter About dialog."""
+    """Show the LocalWriter About dialog with a clickable GitHub link."""
     try:
         from plugin.version import EXTENSION_VERSION
     except ImportError:
         EXTENSION_VERSION = "?"
 
-    lines = [
-        "LocalWriter",
-        "Version: %s" % EXTENSION_VERSION,
-        "",
-        "AI-powered extension for LibreOffice",
-        "with MCP server and chatbot.",
-        "",
-        "GitHub: https://github.com/quazardous/localwriter",
-    ]
-    msgbox(ctx, "About LocalWriter", "\n".join(lines))
+    if not ctx:
+        log.info("ABOUT (no ctx)")
+        return
+
+    try:
+        smgr = ctx.ServiceManager
+
+        dlg_model = smgr.createInstanceWithContext(
+            "com.sun.star.awt.UnoControlDialogModel", ctx)
+        dlg_model.Title = "About LocalWriter"
+        dlg_model.Width = 220
+        dlg_model.Height = 90
+
+        # Info text
+        lbl = dlg_model.createInstance(
+            "com.sun.star.awt.UnoControlFixedTextModel")
+        lbl.Name = "Info"
+        lbl.PositionX = 10
+        lbl.PositionY = 8
+        lbl.Width = 200
+        lbl.Height = 36
+        lbl.MultiLine = True
+        lbl.Label = (
+            "LocalWriter\n"
+            "Version: %s\n"
+            "AI-powered extension for LibreOffice" % EXTENSION_VERSION
+        )
+        dlg_model.insertByName("Info", lbl)
+
+        # Clickable hyperlink
+        link = dlg_model.createInstance(
+            "com.sun.star.awt.UnoControlFixedHyperlinkModel")
+        link.Name = "GitHubLink"
+        link.PositionX = 10
+        link.PositionY = 48
+        link.Width = 200
+        link.Height = 12
+        link.Label = "GitHub: quazardous/localwriter"
+        link.URL = "https://github.com/quazardous/localwriter"
+        link.TextColor = 0x0563C1  # standard link blue
+        dlg_model.insertByName("GitHubLink", link)
+
+        ok_btn = dlg_model.createInstance(
+            "com.sun.star.awt.UnoControlButtonModel")
+        ok_btn.Name = "OKBtn"
+        ok_btn.PositionX = 160
+        ok_btn.PositionY = 68
+        ok_btn.Width = 50
+        ok_btn.Height = 14
+        ok_btn.Label = "OK"
+        ok_btn.PushButtonType = 1
+        dlg_model.insertByName("OKBtn", ok_btn)
+
+        dlg = smgr.createInstanceWithContext(
+            "com.sun.star.awt.UnoControlDialog", ctx)
+        dlg.setModel(dlg_model)
+        toolkit = smgr.createInstanceWithContext(
+            "com.sun.star.awt.Toolkit", ctx)
+        dlg.createPeer(toolkit, None)
+        dlg.execute()
+        dlg.dispose()
+    except Exception:
+        log.exception("About dialog error")
+        msgbox(ctx, "About LocalWriter",
+               "LocalWriter %s\nhttps://github.com/quazardous/localwriter"
+               % EXTENSION_VERSION)
+
+
+# ── XDL dialog loading ──────────────────────────────────────────────
+
+
+def load_module_dialog(module_name, dialog_name):
+    """Load an XDL dialog from a module's dialogs/ directory.
+
+    Returns an XDialog ready for execute()/dispose().
+    """
+    module_dir = module_name.replace(".", "_")
+    xdl_path = "plugin/modules/%s/dialogs/%s.xdl" % (module_dir, dialog_name)
+    return _load_xdl(xdl_path)
+
+
+def load_framework_dialog(dialog_name):
+    """Load an XDL dialog from the framework's dialogs/ directory.
+
+    Returns an XDialog ready for execute()/dispose().
+    """
+    xdl_path = "plugin/framework/dialogs/%s.xdl" % dialog_name
+    return _load_xdl(xdl_path)
+
+
+def _load_xdl(relative_path):
+    """Load an XDL file from the extension bundle via DialogProvider2."""
+    from plugin.framework.uno_context import get_ctx
+
+    ctx = get_ctx()
+    smgr = ctx.getServiceManager()
+    pip = ctx.getValueByName(
+        "/singletons/com.sun.star.deployment.PackageInformationProvider")
+    base = pip.getPackageLocation(EXTENSION_ID)
+    url = base + "/" + relative_path
+    dp = smgr.createInstanceWithContext(
+        "com.sun.star.awt.DialogProvider2", ctx)
+    return dp.createDialog(url)

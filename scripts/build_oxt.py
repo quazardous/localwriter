@@ -25,9 +25,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ALWAYS_INCLUDE_EXTENSION = [
     "extension/description.xml",
     "extension/META-INF/",
-    "extension/Addons.xcu",
-    "extension/Accelerators.xcu",
     "extension/Jobs.xcu",
+    "extension/ProtocolHandler.xcu",
     "extension/XPromptFunction.rdb",
     "extension/registration/",
     "extension/registry/",
@@ -77,6 +76,8 @@ GENERATED_INCLUDES = [
     "build/generated/registry/",
     "build/generated/dialogs/",
     "build/generated/OptionsDialog.xcu",
+    "build/generated/Addons.xcu",
+    "build/generated/Accelerators.xcu",
 ]
 
 BUNDLE_DIR = "build/bundle"

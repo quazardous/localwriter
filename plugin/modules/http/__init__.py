@@ -66,6 +66,8 @@ class HttpModule(ModuleBase):
                 event_bus.emit("http:server_started",
                                port=status["port"], host=status["host"],
                                url=status["url"])
+            if event_bus:
+                event_bus.emit("menu:update")
         except Exception:
             log.exception("Failed to start HTTP server")
             self._server = None
@@ -77,9 +79,130 @@ class HttpModule(ModuleBase):
             event_bus = getattr(self._services, "events", None)
             if event_bus:
                 event_bus.emit("http:server_stopped", reason="shutdown")
+                event_bus.emit("menu:update")
 
     def shutdown(self):
         self._stop_server()
+
+    # ── Action dispatch ──────────────────────────────────────────────
+
+    def on_action(self, action):
+        if action == "toggle_server":
+            self._action_toggle_server()
+        elif action == "server_status":
+            self._action_server_status()
+        else:
+            super().on_action(action)
+
+    def get_menu_text(self, action):
+        if action == "toggle_server":
+            if self._server and self._server.is_running():
+                return "Stop HTTP Server"
+            return "Start HTTP Server"
+        return None
+
+    def get_menu_icon(self, action):
+        running = self._server and self._server.is_running()
+        if action == "toggle_server":
+            # Show target state: "start" icon when stopped, "stop" icon when running
+            return "stopped" if running else "running"
+        if action == "server_status":
+            return "running" if running else "stopped"
+        return None
+
+    def _action_toggle_server(self):
+        from plugin.framework.dialogs import msgbox
+        from plugin.framework.uno_context import get_ctx
+
+        ctx = get_ctx()
+        if self._server and self._server.is_running():
+            log.info("Stopping HTTP server via toggle")
+            self._stop_server()
+            msgbox(ctx, "LocalWriter", "HTTP server stopped")
+        else:
+            log.info("Starting HTTP server via toggle")
+            self._start_server(self._services)
+            if self._server and self._server.is_running():
+                status = self._server.get_status()
+                msgbox(ctx, "LocalWriter",
+                       "HTTP server started\n%s" % status.get("url", ""))
+            else:
+                msgbox(ctx, "LocalWriter",
+                       "HTTP server failed to start\nCheck ~/localwriter.log")
+
+    def _action_server_status(self):
+        from plugin.framework.dialogs import msgbox
+        from plugin.framework.uno_context import get_ctx
+
+        ctx = get_ctx()
+        if not self._server:
+            msgbox(ctx, "LocalWriter", "HTTP server is not running")
+            return
+
+        status = self._server.get_status()
+        running = status.get("running", False)
+        if not running:
+            msgbox(ctx, "LocalWriter", "HTTP server not running")
+            return
+
+        url = status.get("url", "?")
+        routes = status.get("routes", 0)
+        msg = "HTTP server running\nRoutes: %d" % routes
+
+        try:
+            smgr = ctx.ServiceManager
+
+            dlg_model = smgr.createInstanceWithContext(
+                "com.sun.star.awt.UnoControlDialogModel", ctx)
+            dlg_model.Title = "Server Status"
+            dlg_model.Width = 230
+            dlg_model.Height = 80
+
+            lbl = dlg_model.createInstance(
+                "com.sun.star.awt.UnoControlFixedTextModel")
+            lbl.Name = "Msg"
+            lbl.PositionX = 10
+            lbl.PositionY = 6
+            lbl.Width = 210
+            lbl.Height = 24
+            lbl.MultiLine = True
+            lbl.Label = msg
+            dlg_model.insertByName("Msg", lbl)
+
+            # Read-only textfield for the URL — user can select + Ctrl+C
+            url_field = dlg_model.createInstance(
+                "com.sun.star.awt.UnoControlEditModel")
+            url_field.Name = "UrlField"
+            url_field.PositionX = 10
+            url_field.PositionY = 34
+            url_field.Width = 210
+            url_field.Height = 14
+            url_field.ReadOnly = True
+            url_field.Text = url
+            dlg_model.insertByName("UrlField", url_field)
+
+            ok_btn = dlg_model.createInstance(
+                "com.sun.star.awt.UnoControlButtonModel")
+            ok_btn.Name = "OKBtn"
+            ok_btn.PositionX = 170
+            ok_btn.PositionY = 58
+            ok_btn.Width = 50
+            ok_btn.Height = 14
+            ok_btn.Label = "OK"
+            ok_btn.PushButtonType = 1
+            dlg_model.insertByName("OKBtn", ok_btn)
+
+            dlg = smgr.createInstanceWithContext(
+                "com.sun.star.awt.UnoControlDialog", ctx)
+            dlg.setModel(dlg_model)
+            toolkit = smgr.createInstanceWithContext(
+                "com.sun.star.awt.Toolkit", ctx)
+            dlg.createPeer(toolkit, None)
+            dlg.execute()
+            dlg.dispose()
+        except Exception:
+            log.exception("Status dialog error")
+            msgbox(ctx, "LocalWriter", "%s\nURL: %s" % (msg, url))
 
     # ---- Built-in route handlers ----
 

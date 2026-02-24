@@ -3,6 +3,18 @@ description: HTTP server for extension endpoints
 requires: [config, events]
 provides_services: [http_routes]
 
+actions:
+  toggle_server:
+    title: "Toggle HTTP Server"
+    icon: running
+  server_status:
+    title: "Server Status"
+    icon: stopped
+
+menus:
+  - action: toggle_server
+  - action: server_status
+
 config:
   enabled:
     type: boolean

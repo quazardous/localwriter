@@ -1,6 +1,14 @@
 name: main
 description: LocalWriter global settings
 
+actions:
+  about:
+    title: "About LocalWriter"
+
+menus:
+  - separator: true
+  - action: about
+
 config:
   debug:
     type: boolean
