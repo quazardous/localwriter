@@ -30,7 +30,9 @@ class DocumentHealthCheck(ToolBase):
 
         issues = []
         last_heading_level = 0
+        last_heading_text = ""
         paragraphs_since_heading = 0
+        total_headings = 0
 
         for i, para in enumerate(para_ranges):
             text = ""
@@ -42,11 +44,19 @@ class DocumentHealthCheck(ToolBase):
                 pass
 
             if outline_level > 0:
+                total_headings += 1
+                heading_preview = text.strip()[:80]
+
                 # --- Empty heading check ---
                 if not text.strip():
                     issues.append({
                         "type": "empty_heading",
+                        "severity": "warning",
                         "paragraph_index": i,
+                        "message": (
+                            "Empty heading level %d at paragraph %d."
+                            % (outline_level, i)
+                        ),
                         "detail": "Heading level %d is empty." % outline_level,
                     })
 
@@ -54,15 +64,26 @@ class DocumentHealthCheck(ToolBase):
                 if (last_heading_level > 0
                         and outline_level > last_heading_level + 1):
                     issues.append({
-                        "type": "level_jump",
+                        "type": "heading_level_skip",
+                        "severity": "info",
                         "paragraph_index": i,
+                        "message": (
+                            "Heading jumps from level %d to %d "
+                            "at paragraph %d: '%s'"
+                            % (
+                                last_heading_level,
+                                outline_level,
+                                i,
+                                heading_preview,
+                            )
+                        ),
                         "detail": (
                             "Heading jumps from level %d to %d (skips %s)."
                             % (
                                 last_heading_level,
                                 outline_level,
                                 ", ".join(
-                                    str(l) for l in range(
+                                    str(lv) for lv in range(
                                         last_heading_level + 1, outline_level
                                     )
                                 ),
@@ -71,12 +92,18 @@ class DocumentHealthCheck(ToolBase):
                     })
 
                 last_heading_level = outline_level
+                last_heading_text = heading_preview
 
                 # --- Large unstructured block check ---
                 if paragraphs_since_heading > 50:
                     issues.append({
                         "type": "large_block",
+                        "severity": "info",
                         "paragraph_index": i - paragraphs_since_heading,
+                        "message": (
+                            "%d paragraphs without a heading before "
+                            "paragraph %d." % (paragraphs_since_heading, i)
+                        ),
                         "detail": (
                             "%d paragraphs without a heading before "
                             "paragraph %d." % (paragraphs_since_heading, i)
@@ -90,7 +117,12 @@ class DocumentHealthCheck(ToolBase):
         if paragraphs_since_heading > 50:
             issues.append({
                 "type": "large_block",
+                "severity": "info",
                 "paragraph_index": len(para_ranges) - paragraphs_since_heading,
+                "message": (
+                    "%d paragraphs without a heading at end of document."
+                    % paragraphs_since_heading
+                ),
                 "detail": (
                     "%d paragraphs without a heading at end of document."
                     % paragraphs_since_heading
@@ -109,7 +141,12 @@ class DocumentHealthCheck(ToolBase):
                         if anchor is None or not anchor.getString():
                             issues.append({
                                 "type": "broken_bookmark",
+                                "severity": "warning",
                                 "paragraph_index": -1,
+                                "message": (
+                                    "Bookmark '%s' has an empty anchor."
+                                    % name
+                                ),
                                 "detail": (
                                     "Bookmark '%s' has an empty anchor."
                                     % name
@@ -118,7 +155,11 @@ class DocumentHealthCheck(ToolBase):
                     except Exception:
                         issues.append({
                             "type": "broken_bookmark",
+                            "severity": "warning",
                             "paragraph_index": -1,
+                            "message": (
+                                "Bookmark '%s' could not be read." % name
+                            ),
                             "detail": (
                                 "Bookmark '%s' could not be read." % name
                             ),
@@ -150,7 +191,12 @@ class DocumentHealthCheck(ToolBase):
                             if not has_graphic:
                                 issues.append({
                                     "type": "orphan_image",
+                                    "severity": "warning",
                                     "paragraph_index": -1,
+                                    "message": (
+                                        "Graphic object '%s' has no image "
+                                        "data." % name
+                                    ),
                                     "detail": (
                                         "Graphic object '%s' has no image "
                                         "data." % name
@@ -166,6 +212,7 @@ class DocumentHealthCheck(ToolBase):
             "issues": issues,
             "issue_count": len(issues),
             "paragraph_count": len(para_ranges),
+            "total_headings": total_headings,
         }
 
 

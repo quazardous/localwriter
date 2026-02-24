@@ -37,6 +37,10 @@ class ListImages(ToolBase):
         if not hasattr(doc, "getGraphicObjects"):
             return {"status": "error", "message": "Document does not support graphic objects."}
 
+        doc_svc = ctx.services.document
+        para_ranges = doc_svc.get_paragraph_ranges(doc)
+        text_obj = doc.getText()
+
         graphics = doc.getGraphicObjects()
         images = []
         for name in graphics.getElementNames():
@@ -53,7 +57,28 @@ class ListImages(ToolBase):
                     description = graphic.getPropertyValue("Description")
                 except Exception:
                     pass
-                images.append({
+
+                # Paragraph index via anchor
+                paragraph_index = -1
+                try:
+                    anchor = graphic.getAnchor()
+                    paragraph_index = doc_svc.find_paragraph_for_range(
+                        anchor, para_ranges, text_obj
+                    )
+                except Exception:
+                    pass
+
+                # Page number via view cursor
+                page = None
+                try:
+                    anchor = graphic.getAnchor()
+                    vc = doc.getCurrentController().getViewCursor()
+                    vc.gotoRange(anchor.getStart(), False)
+                    page = vc.getPage()
+                except Exception:
+                    pass
+
+                entry = {
                     "name": name,
                     "width_mm": size.Width / 100.0,
                     "height_mm": size.Height / 100.0,
@@ -61,7 +86,11 @@ class ListImages(ToolBase):
                     "height_100mm": size.Height,
                     "title": title,
                     "description": description,
-                })
+                    "paragraph_index": paragraph_index,
+                }
+                if page is not None:
+                    entry["page"] = page
+                images.append(entry)
             except Exception as e:
                 log.debug("list_images: skip '%s': %s", name, e)
 

@@ -47,94 +47,110 @@ class SearchInDocument(ToolBase):
     doc_types = ["writer"]
 
     def execute(self, ctx, **kwargs):
+        import re as re_mod
+
         pattern = kwargs.get("pattern", "")
         if not pattern:
             return {"status": "error", "message": "pattern is required."}
 
-        regex = kwargs.get("regex", False)
+        use_regex = kwargs.get("regex", False)
         case_sensitive = kwargs.get("case_sensitive", False)
         max_results = kwargs.get("max_results", 20)
         context_paragraphs = kwargs.get("context_paragraphs", 1)
 
         doc = ctx.doc
         doc_svc = ctx.services.document
+        para_ranges = doc_svc.get_paragraph_ranges(doc)
+        para_count = len(para_ranges)
 
         try:
-            search_desc = doc.createSearchDescriptor()
-            search_desc.SearchString = pattern
-            search_desc.SearchRegularExpression = bool(regex)
-            search_desc.SearchCaseSensitive = bool(case_sensitive)
+            # Read paragraph texts once
+            para_texts = []
+            for para in para_ranges:
+                try:
+                    if para.supportsService(
+                        "com.sun.star.text.Paragraph"
+                    ):
+                        para_texts.append(para.getString())
+                    else:
+                        para_texts.append("")
+                except Exception:
+                    para_texts.append("")
 
-            found = doc.findAll(search_desc)
-            if found is None or found.getCount() == 0:
-                return {"status": "ok", "matches": [], "count": 0}
+            # Compile regex if needed
+            if use_regex:
+                flags = 0 if case_sensitive else re_mod.IGNORECASE
+                try:
+                    compiled = re_mod.compile(pattern, flags)
+                except re_mod.error as e:
+                    return {
+                        "status": "error",
+                        "error": "Invalid regex: %s" % e,
+                    }
 
-            total_found = found.getCount()
-            text_obj = doc.getText()
-            para_ranges = doc_svc.get_paragraph_ranges(doc)
-            para_count = len(para_ranges)
+            # Search within paragraphs
+            matches = []
+            total_count = 0
 
-            # Determine which matches to process and which paragraphs
-            # we need text from (for context).
-            limit = min(total_found, max_results)
-            match_indices = []
-            needed_paras = set()
+            for i, ptext in enumerate(para_texts):
+                if not ptext:
+                    continue
 
-            for i in range(limit):
-                match_range = found.getByIndex(i)
-                idx = doc_svc.find_paragraph_for_range(
-                    match_range, para_ranges, text_obj
-                )
-                match_indices.append((i, match_range, idx))
-                ctx_lo = max(0, idx - context_paragraphs)
-                ctx_hi = min(para_count, idx + context_paragraphs + 1)
-                for j in range(ctx_lo, ctx_hi):
-                    needed_paras.add(j)
-
-            # Read only the paragraphs we need
-            para_texts = {}
-            if needed_paras:
-                text_enum = text_obj.createEnumeration()
-                pidx = 0
-                max_needed = max(needed_paras)
-                while text_enum.hasMoreElements():
-                    el = text_enum.nextElement()
-                    if pidx in needed_paras:
-                        if el.supportsService(
-                            "com.sun.star.text.Paragraph"
-                        ):
-                            para_texts[pidx] = el.getString()
-                        else:
-                            para_texts[pidx] = "[Table]"
-                    pidx += 1
-                    if pidx > max_needed:
-                        break
-
-            # Build result list
-            results = []
-            for i, match_range, match_para_idx in match_indices:
-                match_text = match_range.getString()
-                ctx_start = max(0, match_para_idx - context_paragraphs)
-                ctx_end = min(
-                    para_count, match_para_idx + context_paragraphs + 1
-                )
-                context = [
-                    {"index": j, "text": para_texts.get(j, "")}
-                    for j in range(ctx_start, ctx_end)
-                ]
-                results.append({
-                    "text": match_text,
-                    "paragraph_index": match_para_idx,
-                    "context": context,
-                })
+                if use_regex:
+                    for m in compiled.finditer(ptext):
+                        total_count += 1
+                        if len(matches) < max_results:
+                            matches.append(
+                                _build_match(
+                                    m.group(), i,
+                                    context_paragraphs, para_count,
+                                    para_texts,
+                                )
+                            )
+                else:
+                    haystack = ptext if case_sensitive else ptext.lower()
+                    needle = (
+                        pattern if case_sensitive else pattern.lower()
+                    )
+                    step = max(1, len(needle))
+                    pos = 0
+                    while True:
+                        pos = haystack.find(needle, pos)
+                        if pos == -1:
+                            break
+                        total_count += 1
+                        if len(matches) < max_results:
+                            matches.append(
+                                _build_match(
+                                    ptext[pos:pos + len(pattern)], i,
+                                    context_paragraphs, para_count,
+                                    para_texts,
+                                )
+                            )
+                        pos += step
 
             return {
                 "status": "ok",
-                "matches": results,
-                "count": total_found,
+                "matches": matches,
+                "count": total_count,
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
+
+
+def _build_match(text, para_idx, ctx_paras, para_count, para_texts):
+    """Build a single match result with context paragraphs."""
+    ctx_lo = max(0, para_idx - ctx_paras)
+    ctx_hi = min(para_count, para_idx + ctx_paras + 1)
+    context = [
+        {"index": j, "text": para_texts[j]}
+        for j in range(ctx_lo, ctx_hi)
+    ]
+    return {
+        "text": text,
+        "paragraph_index": para_idx,
+        "context": context,
+    }
 
 
 class ReplaceInDocument(ToolBase):
