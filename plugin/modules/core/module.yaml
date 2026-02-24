@@ -1,0 +1,21 @@
+name: core
+description: Core services (document, config, events, llm, image, format)
+provides_services: [document, config, events, llm, image, format]
+requires: []
+
+config:
+  log_level:
+    type: string
+    default: WARN
+    widget: select
+    label: Log Level
+    public: true
+    options:
+      - value: DEBUG
+        label: Debug
+      - value: INFO
+        label: Info
+      - value: WARN
+        label: Warning
+      - value: ERROR
+        label: Error

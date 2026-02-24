@@ -2,9 +2,14 @@
 localwriter.json
 
 # Build artifacts
+build/
 *.oxt
 *.pyc
 __pycache__/
+*.egg-info/
+
+# Virtual environment
+.venv/
 
 # System files
 .DS_Store
@@ -22,6 +27,9 @@ log.txt
 
 # Temporary files
 *.tmp
+
+# POC / scratch
+poc/
 
 # Vendor or external components
 libre_calc_ai*/

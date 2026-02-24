@@ -1,0 +1,243 @@
+"""Streaming helpers for the chatbot module.
+
+Provides:
+- accumulate_delta: merge SSE chunk deltas into a complete message
+- run_stream_drain_loop: main-thread drain loop for streaming responses
+- run_stream_async: async wrapper that runs streaming on a worker thread
+"""
+
+import queue
+import threading
+import logging
+
+log = logging.getLogger("localwriter.chatbot.streaming")
+
+
+# ── Delta accumulation ────────────────────────────────────────────────
+# Adapted from openai-python (Apache 2.0) src/openai/lib/streaming/_deltas.py
+
+
+def accumulate_delta(acc, delta):
+    """Merge a streaming chunk delta into an accumulated message.
+
+    Required for tool-calling: builds the full assistant message from SSE
+    chunks. Content and tool_calls (with partial function.arguments) are
+    merged by index; strings are concatenated.
+    """
+    for key, delta_value in delta.items():
+        if key not in acc:
+            acc[key] = delta_value
+            continue
+
+        acc_value = acc[key]
+        if acc_value is None:
+            acc[key] = delta_value
+            continue
+
+        if key == "index" or key == "type":
+            acc[key] = delta_value
+            continue
+
+        if isinstance(acc_value, str) and isinstance(delta_value, str):
+            acc_value += delta_value
+        elif isinstance(acc_value, (int, float)) and isinstance(
+            delta_value, (int, float)
+        ):
+            acc_value += delta_value
+        elif isinstance(acc_value, dict) and isinstance(delta_value, dict):
+            acc_value = accumulate_delta(acc_value, delta_value)
+        elif isinstance(acc_value, list) and isinstance(delta_value, list):
+            if all(isinstance(x, (str, int, float)) for x in acc_value):
+                acc_value.extend(delta_value)
+                acc[key] = acc_value
+                continue
+
+            for delta_entry in delta_value:
+                if not isinstance(delta_entry, dict):
+                    raise TypeError(
+                        "Unexpected list delta entry: %s" % delta_entry)
+                index = delta_entry.get("index")
+                if index is None or not isinstance(index, int):
+                    raise RuntimeError(
+                        "Expected list delta entry to have int 'index': %s"
+                        % delta_entry)
+                try:
+                    acc_entry = acc_value[index]
+                except IndexError:
+                    acc_value.insert(index, delta_entry)
+                else:
+                    if isinstance(acc_entry, dict):
+                        acc_value[index] = accumulate_delta(
+                            acc_entry, delta_entry)
+
+        acc[key] = acc_value
+
+    return acc
+
+
+# ── Main-thread drain loop ───────────────────────────────────────────
+
+
+def run_stream_drain_loop(
+    q, toolkit, job_done, apply_chunk_fn,
+    on_stream_done, on_stopped, on_error, on_status_fn=None,
+):
+    """Main-thread drain loop for streaming responses.
+
+    Batches items from queue, maintains thinking/chunk buffers,
+    calls apply_chunk_fn for content. Processes VCL events between
+    iterations to keep the UI responsive.
+
+    on_stream_done(response) returns True if finished, False if more
+    items will be pushed (e.g. next tool round).
+    """
+    thinking_open = [False]
+
+    while not job_done[0]:
+        items = []
+        try:
+            items.append(q.get(timeout=0.1))
+            try:
+                while True:
+                    items.append(q.get_nowait())
+            except queue.Empty:
+                pass
+        except queue.Empty:
+            toolkit.processEventsToIdle()
+            continue
+
+        try:
+            current_content = []
+            current_thinking = []
+
+            def flush_buffers():
+                if current_thinking:
+                    if not thinking_open[0]:
+                        apply_chunk_fn("[Thinking] ", is_thinking=True)
+                        thinking_open[0] = True
+                    apply_chunk_fn("".join(current_thinking), is_thinking=True)
+                    current_thinking.clear()
+                if current_content:
+                    if thinking_open[0]:
+                        apply_chunk_fn(" /thinking\n", is_thinking=True)
+                        thinking_open[0] = False
+                    apply_chunk_fn("".join(current_content), is_thinking=False)
+                    current_content.clear()
+
+            def close_thinking():
+                if thinking_open[0]:
+                    apply_chunk_fn(" /thinking\n", is_thinking=True)
+                    thinking_open[0] = False
+
+            for item in items:
+                kind = item[0] if isinstance(item, tuple) else item
+                response = item[1] if len(item) > 1 else None
+                if kind == "chunk":
+                    if current_thinking:
+                        flush_buffers()
+                    current_content.append(item[1])
+                elif kind == "thinking":
+                    if current_content:
+                        flush_buffers()
+                    current_thinking.append(item[1])
+                elif kind == "stream_done":
+                    flush_buffers()
+                    close_thinking()
+                    if on_stream_done(response):
+                        job_done[0] = True
+                    break
+                elif kind == "stopped":
+                    flush_buffers()
+                    close_thinking()
+                    try:
+                        on_stopped()
+                    except Exception:
+                        log.exception("on_stopped failed")
+                    job_done[0] = True
+                    break
+                elif kind == "error":
+                    flush_buffers()
+                    close_thinking()
+                    try:
+                        on_error(response)
+                    except Exception:
+                        log.exception("on_error failed")
+                    job_done[0] = True
+                    break
+                elif kind == "status":
+                    if on_status_fn:
+                        try:
+                            on_status_fn(item[1])
+                        except Exception:
+                            pass
+
+            flush_buffers()
+
+        except Exception as e:
+            job_done[0] = True
+            try:
+                on_error(e)
+            except Exception:
+                log.exception("on_error failed")
+
+        toolkit.processEventsToIdle()
+
+
+# ── Async stream wrapper ──────────────────────────────────────────────
+
+
+def run_stream_async(
+    ctx, provider, messages, tools,
+    apply_chunk_fn, on_done_fn, on_error_fn,
+    on_status_fn=None, stop_checker=None, **kwargs,
+):
+    """Run provider.stream() on a worker thread, drain via main-thread loop.
+
+    apply_chunk_fn(text, is_thinking) and on_done_fn() / on_error_fn(exc)
+    are called on the main thread. Blocks until stream finishes.
+    """
+    q = queue.Queue()
+    job_done = [False]
+
+    def worker():
+        try:
+            acc = {}
+            for chunk in provider.stream(messages, tools=tools, **kwargs):
+                if stop_checker and stop_checker():
+                    q.put(("stopped",))
+                    return
+                content = chunk.get("content", "")
+                thinking = chunk.get("thinking", "")
+                delta = chunk.get("delta", {})
+                if thinking:
+                    q.put(("thinking", thinking))
+                if content:
+                    q.put(("chunk", content))
+                if delta:
+                    acc = accumulate_delta(acc, delta)
+            q.put(("stream_done", acc))
+        except Exception as e:
+            q.put(("error", e))
+
+    try:
+        import uno
+        toolkit = ctx.getServiceManager().createInstanceWithContext(
+            "com.sun.star.awt.Toolkit", ctx)
+    except Exception as e:
+        on_error_fn(e)
+        return
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    def on_stream_done(response):
+        on_done_fn()
+        return True
+
+    run_stream_drain_loop(
+        q, toolkit, job_done, apply_chunk_fn,
+        on_stream_done=on_stream_done,
+        on_stopped=on_done_fn,
+        on_error=on_error_fn,
+        on_status_fn=on_status_fn,
+    )

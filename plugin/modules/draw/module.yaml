@@ -1,0 +1,5 @@
+name: draw
+description: Draw/Impress tools (shapes, pages/slides)
+requires: [document, config, image]
+
+config: {}
