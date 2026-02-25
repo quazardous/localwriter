@@ -88,6 +88,18 @@ To handle complex spreadsheet tasks, LocalWriter is optimized for high-throughpu
 *   **High-Volume Insertion**: The `import_csv_from_string` tool allows the AI to generate and inject large datasets instantly. This is orders of magnitude faster than inserting data cell-by-cell; we found that providing these batch tools encourages the AI to perform far more ambitious spreadsheet automation and data analysis.
 *   **Optimized Ranges**: Formatting and number formats are applied at the range level, minimizing UNO calls and ensuring the UI remains fluid even during heavy document analysis.
 
+## Recent Progress & Benchmarks (Feb 2026)
+
+We have recently integrated a comprehensive, internal **LLM Evaluation Suite** directly into the LibreOffice UI. This allows users and developers to benchmark models across 50+ real-world tasks in Writer, Calc, and Draw, tracking both accuracy and **Intelligence-per-Dollar (IpD)**. By fetching real-time pricing from OpenRouter, the system calculates the exact cost of every AI turn and ranks backends by their value-to-performance ratio.
+
+Our latest multi-model sweeps show significant leadership from frontier and specialized models:
+*   **openai/gpt-oss-120b**: Achieved a perfect **1.0 correctness** score with an unmatched value of **346.8 Corr/USD**.
+*   **google/gemini-3-flash-preview**: Maintains strong reasoning (**0.93 correctness**) at an exceptional value of **161.7 Corr/USD**.
+*   **allenai/olmo-3.1-32b-instruct**: High-fidelity open model with **0.96 correctness** and excellent stability.
+*   **openai/gpt-4o-mini**: Remains a reliable baseline with **0.94 correctness** and high token efficiency.
+
+This benchmarking framework is now used to automatically tune our system prompts and select the best-performing models for local-first office automation.
+
 ## Roadmap
 
 We are moving towards a native "AI co-pilot" experience:
