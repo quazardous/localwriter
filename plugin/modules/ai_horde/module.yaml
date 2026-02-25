@@ -1,6 +1,5 @@
 name: ai.horde
 description: AI Horde image generation (free, no key required)
-provides_services: [image]
 requires: [ai]
 capabilities: [image]
 

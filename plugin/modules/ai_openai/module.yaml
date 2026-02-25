@@ -1,6 +1,5 @@
 name: ai.openai
 description: OpenAI-compatible API backend (OpenAI, OpenRouter, LM Studio, etc.)
-provides_services: [llm]
 requires: [ai]
 capabilities: [text, image, vision, tools]
 

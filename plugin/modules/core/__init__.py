@@ -9,13 +9,9 @@ class Module(ModuleBase):
         from plugin.modules.core.services.document import DocumentService
         from plugin.modules.core.services.config import ConfigService
         from plugin.modules.core.services.events import EventBusService
-        from plugin.modules.core.services.llm import LlmService
-        from plugin.modules.core.services.image import ImageService
         from plugin.modules.core.services.format import FormatService
 
         services.register(DocumentService())
         services.register(ConfigService())
         services.register(EventBusService())
-        services.register(LlmService())
-        services.register(ImageService())
         services.register(FormatService())

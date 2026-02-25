@@ -440,7 +440,7 @@ try:
                     root_window = self._create_panel_window()
                     self.toolpanel = ChatToolPanel(
                         root_window, self.xParentWindow, self.ctx,
-                        preferred_height=105)
+                        preferred_height=100)
                     self._wire_controls(root_window)
                 except Exception:
                     log.exception("ChatSettingsElement.getRealInterface failed")

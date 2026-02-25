@@ -45,8 +45,8 @@ class GenerateImage(ToolBase):
         width = kwargs.get("width", 512)
         height = kwargs.get("height", 512)
 
-        image_svc = ctx.services.image
-        paths, error = image_svc.generate(prompt, width=width, height=height)
+        paths, error = ctx.services.ai.generate_image(
+            prompt, width=width, height=height)
 
         if not paths:
             return {
@@ -98,8 +98,7 @@ class EditImage(ToolBase):
                 "message": "No image selected. Please select an image first.",
             }
 
-        image_svc = ctx.services.image
-        paths, error = image_svc.generate(
+        paths, error = ctx.services.ai.generate_image(
             prompt, source_image=source_b64, strength=strength,
         )
 

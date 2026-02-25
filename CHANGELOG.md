@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.0] — 2026-02-25
+
+### Changed
+
+- Removed `LlmService` and `ImageService` shims — `AiService` is the sole AI service
+- Moved provider ABCs (`LlmProvider`, `ImageProvider`) from `core/services/` to `ai/provider_base.py`
+- Writer image tools use `services.ai.generate_image()` directly (no more `services.image`)
+- Module dependencies: `chatbot`, `writer`, `draw` now require `ai` instead of `llm`/`image`
+- AI provider modules no longer declare `provides_services: [llm]` or `[image]`
+- Core module no longer provides `llm` or `image` services
+
 ## [1.3.0] — 2026-02-25
 
 ### Added

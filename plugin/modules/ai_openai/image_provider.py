@@ -11,7 +11,7 @@ import logging
 import re
 import tempfile
 
-from plugin.modules.core.services.image import ImageProvider
+from plugin.modules.ai.provider_base import ImageProvider
 
 log = logging.getLogger("localwriter.ai_openai.image")
 

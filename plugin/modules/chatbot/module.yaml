@@ -1,6 +1,6 @@
 name: chatbot
 description: AI chat sidebar
-requires: [document, config, events, llm]
+requires: [document, config, events, ai]
 
 actions:
   extend_selection:

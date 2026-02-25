@@ -1,6 +1,6 @@
 name: writer
 description: Writer document tools (outline, content, comments, styles, tables, tracking, images)
-requires: [document, config, format, image]
+requires: [document, config, format, ai]
 
 config:
   max_content_chars:

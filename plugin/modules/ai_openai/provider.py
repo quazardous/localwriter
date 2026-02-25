@@ -13,7 +13,7 @@ import ssl
 import urllib.parse
 import urllib.request
 
-from plugin.modules.core.services.llm import LlmProvider
+from plugin.modules.ai.provider_base import LlmProvider
 
 log = logging.getLogger("localwriter.ai_openai")
 
