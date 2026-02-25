@@ -25,10 +25,10 @@ Override model or endpoint via env or CLI:
 
 ```bash
 export OPENROUTER_API_KEY="your-key"
-python run_eval.py              # all examples
-python run_eval.py -e table_from_mess   # one task_id
-python run_eval.py -n 2         # first 2 examples
-python run_eval.py -v          # verbose: print every tool call as it runs
+python run_eval.py                          # all examples
+python run_eval.py -e table_from_mess       # one task_id
+python run_eval.py -n 2                     # first 2 examples
+python run_eval.py -v                       # verbose: print every tool call as it runs
 python run_eval.py --compare-with optimized_writer_prompt.json   # compare current vs optimized
 python run_eval.py --no-bust-cache   # disable cache-busting (default: on)
 ```
@@ -71,3 +71,34 @@ Mock tools in `tools_mock.py` implement `get_document_content`, `apply_document_
 ## Applying the result
 
 After a run, open `optimized_writer_prompt.json` and copy the optimized instruction text into `core/constants.py` as `DEFAULT_CHAT_SYSTEM_PROMPT` (or merge with `FORMAT_RULES` as in the current prompt). Then test in LocalWriter with the same evaluation tasks.
+
+## Multi-model evaluation (intelligence per dollar)
+
+You can also run the same fixed dataset and current system prompt across **multiple models** and compare their performance and estimated cost.
+
+Models and prices live in `model_configs.py` (one `ModelConfig` per model with context window and list prices in USD per 1M input/output tokens).
+
+```bash
+export OPENROUTER_API_KEY="your-key"
+
+# Run all default models from model_configs.get_default_models()
+python run_eval_multi.py
+
+# Restrict to a subset of models by OpenRouter id
+python run_eval_multi.py --models openai/gpt-oss-120b,openai/gpt-4o-mini
+
+# Fewer examples (faster, cheaper)
+python run_eval_multi.py -n 2
+
+# 8 models in parallel (default); use -j 1 for sequential with verbose output
+python run_eval_multi.py -j 8
+```
+
+For each model, `run_eval_multi.py` reports:
+
+- **Average correctness** and **average score** (correctness minus token penalty).
+- **Total tokens** used across all examples.
+- **Estimated dollar cost**, based on per-million token prices.
+- An **“intelligence per dollar”** figure: average correctness divided by total cost (higher is better).
+
+Use `--out path.json` or `--out path.csv` to write results (format by extension). Results are written after each model completes so partial data is saved if the run is interrupted. The final file is sorted by intelligence-per-dollar.

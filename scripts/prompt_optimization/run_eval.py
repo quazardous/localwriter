@@ -33,7 +33,8 @@ import dspy
 
 from dataset import ALL_EXAMPLES, to_dspy_examples
 from program import build_program
-from metric import writer_assistant_metric, TOKEN_PENALTY_LAMBDA
+from metric import TOKEN_PENALTY_LAMBDA
+from eval_core import ExampleEval, run_eval_on_examples, summarize_results
 import tools_mock
 
 DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
@@ -48,96 +49,6 @@ def _load_prompt_from_json(path: Path) -> str:
         return data["react.react"]["signature"]["instructions"]
     except KeyError:
         raise ValueError(f"Could not find react.react.signature.instructions in {path}")
-
-
-def _get_tokens_from_pred(pred, debug_usage: bool = False) -> int:
-    """Extract total tokens from DSPy prediction. Handles OpenRouter/LiteLLM formats."""
-    try:
-        usage = pred.get_lm_usage()
-        if not usage or not isinstance(usage, dict):
-            if debug_usage:
-                print(f"  [debug] get_lm_usage() = {usage!r}", flush=True)
-            return 0
-        for model_data in usage.values():
-            if not isinstance(model_data, dict):
-                continue
-            if "total_tokens" in model_data:
-                return int(model_data["total_tokens"])
-            p = int(model_data.get("prompt_tokens", 0) or model_data.get("input_tokens", 0))
-            c = int(model_data.get("completion_tokens", 0) or model_data.get("output_tokens", 0))
-            if p or c:
-                return p + c
-        if debug_usage:
-            print(f"  [debug] get_lm_usage() = {usage!r} (no token keys found)", flush=True)
-    except Exception as e:
-        if debug_usage:
-            print(f"  [debug] get_lm_usage error: {e}", flush=True)
-    return 0
-
-
-def _run_eval(program, examples, verbose: bool, debug_usage: bool = False, bust_cache: bool = False) -> tuple[list[float], list[int]]:
-    """Run program on examples and return (scores, token_counts).
-    If bust_cache=True, append a unique suffix to the instruction per example to avoid OpenRouter prompt cache."""
-    scores = []
-    token_counts = []
-    n = len(examples)
-    base_instruction = getattr(program, "instruction", None) or ""
-    with dspy.settings.context(track_usage=True, cache=False):
-        for i, ex in enumerate(examples):
-            task_id = getattr(ex, "task_id", "") or f"example_{i}"
-            doc = getattr(ex, "document_content", "")
-            question = getattr(ex, "user_question", "")
-            print(f"--- [{i+1}/{n}] {task_id} ---")
-            print(f"  Q: {question[:80]}{'...' if len(question) > 80 else ''}")
-            print("  Calling model (may take 15–60s)...", flush=True)
-            try:
-                if bust_cache and base_instruction:
-                    prog = build_program(instruction=base_instruction + f"\n\n[Eval: {uuid.uuid4().hex[:8]}]", tool_names=None)
-                else:
-                    prog = program
-                pred = prog(document_content=doc, user_question=question)
-                final = getattr(pred, "final_document", "") or ""
-                correct, missing, found_reject = _correctness_breakdown(ex, final)
-                tokens = _get_tokens_from_pred(pred, debug_usage=debug_usage)
-                penalty = TOKEN_PENALTY_LAMBDA * (tokens / 1000.0)
-                score = max(0.0, correct - penalty)
-                scores.append(score)
-                token_counts.append(tokens)
-                if missing:
-                    print(f"  expected_contains MISSING: {missing}")
-                else:
-                    print(f"  expected_contains: ok")
-                if found_reject:
-                    print(f"  reject_contains FOUND (bad): {found_reject}")
-                else:
-                    print(f"  reject_contains: ok")
-                print(f"  correctness={correct:.2f}  tokens={tokens}  score={score:.3f}")
-                snippet = (final[:300] + "...") if len(final) > 300 else final
-                print(f"  doc snippet: {snippet!r}")
-            except Exception as e:
-                print(f"  ERROR: {e}")
-                scores.append(0.0)
-                token_counts.append(0)
-            print()
-    return scores, token_counts
-
-
-def _correctness_breakdown(example, final_document: str) -> tuple[float, list[str], list[str]]:
-    """Return (score, list of missing expected, list of bad reject found)."""
-    expected = getattr(example, "expected_contains", []) or []
-    reject = getattr(example, "reject_contains", []) or []
-    score = 1.0
-    missing = []
-    for s in expected:
-        if s not in (final_document or ""):
-            score -= 0.2
-            missing.append(s)
-    found_reject = []
-    for s in reject:
-        if s in (final_document or ""):
-            score -= 0.3
-            found_reject.append(s)
-    return max(0.0, min(1.0, score)), missing, found_reject
 
 
 def main():
@@ -198,17 +109,32 @@ def main():
         print("PROMPT A: Current (from core/constants.py)")
         print("=" * 60)
         program_a = build_program(instruction=None, tool_names=None)
-        scores_a, tokens_a = _run_eval(program_a, examples, args.verbose, args.debug_usage, bust_cache=not args.no_bust_cache)
-        avg_a = sum(scores_a) / len(scores_a) if scores_a else 0
-        total_tokens_a = sum(tokens_a)
+        results_a = run_eval_on_examples(
+            program_a,
+            examples,
+            verbose=args.verbose,
+            debug_usage=args.debug_usage,
+            bust_cache=not args.no_bust_cache,
+        )
+        summary_a = summarize_results(results_a)
 
         print("=" * 60)
         print(f"PROMPT B: From {compare_path.name}")
         print("=" * 60)
         program_b = build_program(instruction=alt_instruction, tool_names=None)
-        scores_b, tokens_b = _run_eval(program_b, examples, args.verbose, args.debug_usage, bust_cache=not args.no_bust_cache)
-        avg_b = sum(scores_b) / len(scores_b) if scores_b else 0
-        total_tokens_b = sum(tokens_b)
+        results_b = run_eval_on_examples(
+            program_b,
+            examples,
+            verbose=args.verbose,
+            debug_usage=args.debug_usage,
+            bust_cache=not args.no_bust_cache,
+        )
+        summary_b = summarize_results(results_b)
+
+        avg_a = summary_a["avg_metric_score"]
+        total_tokens_a = summary_a["total_tokens"]
+        avg_b = summary_b["avg_metric_score"]
+        total_tokens_b = summary_b["total_tokens"]
 
         print("=" * 60)
         print("COMPARISON")
@@ -225,9 +151,19 @@ def main():
         return 0
 
     program = build_program(instruction=None, tool_names=None)
-    scores, _ = _run_eval(program, examples, args.verbose, args.debug_usage, bust_cache=not args.no_bust_cache)
-    if scores:
-        print(f"Average score: {sum(scores)/len(scores):.3f} ({len(scores)} examples)")
+    results = run_eval_on_examples(
+        program,
+        examples,
+        verbose=args.verbose,
+        debug_usage=args.debug_usage,
+        bust_cache=not args.no_bust_cache,
+    )
+    summary = summarize_results(results)
+    if results:
+        print(
+            f"Average score: {summary['avg_metric_score']:.3f} "
+            f"({len(results)} examples)"
+        )
     return 0
 
 

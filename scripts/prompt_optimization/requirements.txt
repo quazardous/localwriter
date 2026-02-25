@@ -1,0 +1,2 @@
+# DSPy prompt optimization (run from scripts/prompt_optimization)
+dspy-ai

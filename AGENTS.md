@@ -416,6 +416,7 @@ Restart LibreOffice after install/update. Test: menu **LocalWriter → Settings*
 ### General
 - API key and auth for the configured endpoint are already implemented; optional: endpoint preset dropdown in Settings.
 - Impress support; Calc range-aware behavior.
+- DSPy prompt optimization and evaluation live in `scripts/prompt_optimization/`. `run_eval.py` runs a fixed Writer dataset against the current `DEFAULT_CHAT_SYSTEM_PROMPT` (using mock tools) and reports correctness + token usage; `run_optimize.py` runs DSPy MIPROv2 to search for better system prompts; `run_eval_multi.py` sweeps **multiple models** (from `model_configs.py`) and ranks them by **intelligence per dollar** (average correctness divided by estimated USD cost from list prices).
 
 ### Optional refactoring (future work)
 - **chat_panel.py**: Split `SendButtonListener._do_send` into smaller methods (e.g. `_do_send_direct_image`, `_do_send_with_tools`, `_do_send_simple_stream`) with a short `_do_send` that validates and dispatches. Optionally simplify `_wireControls` by extracting "build initial model/prompt from config," "wire Send/Stop/Clear," "wire optional image UI."
