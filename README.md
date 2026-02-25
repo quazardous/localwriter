@@ -1,5 +1,7 @@
 # LocalWriter
 
+> **WIP (refactor)** — The `framework` branch is an ongoing architectural refactor. Expect breaking changes.
+
 A LibreOffice extension that adds AI capabilities to Writer, Calc, and Draw — local-first, modular, and extensible.
 
 ## Features
