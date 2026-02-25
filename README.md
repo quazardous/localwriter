@@ -109,6 +109,12 @@ We have recently integrated a comprehensive, internal **LLM Evaluation Suite** d
 
 This benchmarking framework is used to tune system prompts and select the best-performing models for local-first office automation. Details: [scripts/prompt_optimization/README.md](scripts/prompt_optimization/README.md).
 
+**Scope of this release.** The current eval is an **initial MVP**: tasks are deliberately simple and objective (e.g. “add a heading,” “replace this phrase”), with little subjective difficulty or taste. The goal is to establish a reproducible baseline and support further research—e.g. harder tasks, human preference studies, or domain-specific benchmarks—rather than to claim broad “intelligence” of any model.
+
+**Fine-tuning.** An interesting direction is to **fine-tune a model** specifically for this tool set and task distribution: the same correctness could potentially be achieved with fewer reasoning steps and fewer tokens, improving both latency and Corr/USD. The existing eval and dataset are a natural training signal (correct vs incorrect tool use, minimal vs verbose traces).
+
+**Tool set and model size.** LocalWriter already exposes a rich but curated subset of Writer/Calc/Draw operations (styles, comments, tables, markdown apply, etc.), not the full OpenDocument/UNO surface. An open question is whether we should or can **expose more of the full UNO tool set** for capable models, while keeping a **smaller subset** for smaller or cheaper models that might be confused or wasteful with too many options. That would allow “right-sized” backends: minimal tools for fast local models, full power for frontier models when the user needs it.
+
 ## Roadmap
 
 We are moving towards a native "AI co-pilot" experience:
