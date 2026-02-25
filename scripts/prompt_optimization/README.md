@@ -29,9 +29,11 @@ python run_eval.py              # all examples
 python run_eval.py -e table_from_mess   # one task_id
 python run_eval.py -n 2         # first 2 examples
 python run_eval.py -v          # verbose: print every tool call as it runs
+python run_eval.py --compare-with optimized_writer_prompt.json   # compare current vs optimized
+python run_eval.py --no-bust-cache   # disable cache-busting (default: on)
 ```
 
-Shows for each example: task_id, expected_contains / reject_contains pass or miss, correctness, tokens, score, and a short doc snippet. Use `-v`/`--verbose` to print each tool call (e.g. `get_document_content`, `apply_document_content`) so you see progress during long runs.
+Shows for each example: task_id, expected_contains / reject_contains pass or miss, correctness, tokens, score, and a short doc snippet. Use `-v`/`--verbose` to print each tool call. Use `--compare-with` to run both the current prompt and the prompt from a DSPy JSON file, then report which scores higher. Cache-busting is enabled by default (unique suffix per example) to avoid OpenRouter prompt cache; use `--no-bust-cache` to disable.
 
 **Full optimization (MIPROv2):**
 
