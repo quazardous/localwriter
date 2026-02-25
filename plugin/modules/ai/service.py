@@ -42,6 +42,7 @@ class AiService(ServiceBase):
         self._instances = {}       # instance_id -> AiInstance
         self._global_models = []   # flat list of model dicts from YAML
         self._config = None
+        self._active = {}          # volatile: capability -> instance_id
 
     def set_config(self, config):
         self._config = config
@@ -233,19 +234,31 @@ class AiService(ServiceBase):
 
     # -- Active selection ------------------------------------------------------
 
-    def _get_active_instance_id(self, capability):
-        """Read the active instance ID from config.
+    def set_active_instance(self, capability, instance_id):
+        """Set volatile active instance for a capability (not persisted)."""
+        cap = "image" if capability in ("image",) else "text"
+        self._active[cap] = instance_id
+        log.info("Active %s instance set to: %s", cap, instance_id or "(auto)")
 
-        Config keys:
-          - ``ai.text_instance`` for "text" / "tools" capabilities
-          - ``ai.image_instance`` for "image" capability
-        """
+    def get_active_instance(self, capability):
+        """Return the volatile active instance ID, or None if not set."""
+        cap = "image" if capability in ("image",) else "text"
+        return self._active.get(cap)
+
+    def _get_active_instance_id(self, capability):
+        """Return the active instance: volatile first, then config default."""
+        cap = "image" if capability in ("image",) else "text"
+        # Volatile override (from sidebar)
+        val = self._active.get(cap)
+        if val is not None:
+            return val
+        # Fall back to config default
         if not self._config:
             return ""
-        if capability in ("image",):
-            key = "ai.image_instance"
+        if cap == "image":
+            key = "ai.default_image_instance"
         else:
-            key = "ai.text_instance"
+            key = "ai.default_text_instance"
         return self._config.get(key, caller_module=None) or ""
 
 
@@ -257,7 +270,7 @@ def _instance_label(inst):
 
 
 def get_text_instance_options(services):
-    """Options provider for the ai.text_instance config select widget."""
+    """Options provider for the ai.default_text_instance config select widget."""
     ai = services.get("ai")
     if not ai:
         return []
@@ -269,7 +282,7 @@ def get_text_instance_options(services):
 
 
 def get_image_instance_options(services):
-    """Options provider for the ai.image_instance config select widget."""
+    """Options provider for the ai.default_image_instance config select widget."""
     ai = services.get("ai")
     if not ai:
         return []

@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.3.0] — 2026-02-25
+
+### Added
+
+- AI Settings sidebar panel with dropdown selects for Text AI and Image AI instances
+- Volatile instance selection: sidebar changes are session-only, Options panel sets persistent defaults
+- `AiService.set_active_instance()` / `get_active_instance()` for volatile overrides
+- Dynamic status display in query label ("Ask (Ready)", "Ask (...)")
+
+### Changed
+
+- Renamed config keys `ai.text_instance` / `ai.image_instance` → `ai.default_text_instance` / `ai.default_image_instance`
+- Chat panel: removed "Chat:" response label, response area starts at top
+- Chat panel: query label shows status instead of separate status field
+- Sidebar panel order: AI Settings first, Chat with Document second
+- Dropdown controls created programmatically via `addControl()` for proper rendering in sidebar
+
 ## [1.2.0] — 2026-02-25
 
 ### Added

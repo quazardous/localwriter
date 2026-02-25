@@ -1,6 +1,6 @@
 """Auto-generated module manifest. DO NOT EDIT."""
 
-VERSION = '1.2.0'
+VERSION = '1.3.0'
 
 MODULES = [
     {
@@ -74,19 +74,19 @@ MODULES = [
                 "ai"
         ],
         "config": {
-                "text_instance": {
+                "default_text_instance": {
                         "type": "string",
                         "default": "",
                         "widget": "select",
-                        "label": "Active Text AI",
+                        "label": "Default Text AI",
                         "public": True,
                         "options_provider": "plugin.modules.ai.service:get_text_instance_options"
                 },
-                "image_instance": {
+                "default_image_instance": {
                         "type": "string",
                         "default": "",
                         "widget": "select",
-                        "label": "Active Image AI",
+                        "label": "Default Image AI",
                         "public": True,
                         "options_provider": "plugin.modules.ai.service:get_image_instance_options"
                 },

@@ -49,16 +49,21 @@ try:
     import unohelper
     from com.sun.star.ui import XUIElementFactory, XUIElement, XToolPanel, XSidebarPanel
     from com.sun.star.ui.UIElementType import TOOLPANEL
-    from com.sun.star.awt import XActionListener
+    from com.sun.star.awt import (
+        XActionListener, XItemListener, XWindowListener, XFocusListener)
+
+    SETTINGS_XDL_PATH = "LocalWriterDialogs/ChatSettingsDialog.xdl"
 
     class ChatToolPanel(unohelper.Base, XToolPanel, XSidebarPanel):
         """Holds the panel window; implements XToolPanel + XSidebarPanel."""
 
-        def __init__(self, panel_window, parent_window, ctx):
+        def __init__(self, panel_window, parent_window, ctx,
+                     preferred_height=280):
             self.ctx = ctx
             self.PanelWindow = panel_window
             self.Window = panel_window
             self.parent_window = parent_window
+            self._preferred_height = preferred_height
 
         def getWindow(self):
             return self.Window
@@ -67,12 +72,14 @@ try:
             return self.PanelWindow
 
         def getHeightForWidth(self, width):
+            h = self._preferred_height
             if self.parent_window and self.PanelWindow and width > 0:
                 parent_rect = self.parent_window.getPosSize()
-                h = parent_rect.Height if parent_rect.Height > 0 else 280
+                if parent_rect.Height > 0:
+                    h = parent_rect.Height
                 self.PanelWindow.setPosSize(0, 0, width, h, 15)
             return uno.createUnoStruct(
-                "com.sun.star.ui.LayoutSize", 280, -1, 280)
+                "com.sun.star.ui.LayoutSize", h, -1, h)
 
         def getMinimalWidth(self):
             return 180
@@ -133,7 +140,6 @@ try:
             query_ctrl = root_window.getControl("query")
             response_ctrl = root_window.getControl("response")
             stop_btn = _get_optional(root_window, "stop")
-            status_ctrl = _get_optional(root_window, "status")
             clear_btn = _get_optional(root_window, "clear")
 
             # ── Bootstrap framework ────────────────────────────────
@@ -195,10 +201,12 @@ try:
             listener = SendButtonListener(services, session, adapter)
 
             # Connect UI callbacks
+            query_label = _get_optional(root_window, "query_label")
+
             def set_status(text):
                 try:
-                    if status_ctrl:
-                        status_ctrl.setText(text)
+                    if query_label and query_label.getModel():
+                        query_label.getModel().Label = "Ask (%s)" % text
                 except Exception:
                     pass
 
@@ -249,6 +257,7 @@ try:
 
                     append_response("\nYou: %s\n" % text)
                     set_buttons(False, True)
+                    set_status("...")
 
                     # Get current document
                     d = None
@@ -294,47 +303,266 @@ try:
 
             if clear_btn:
                 class _ClearAction(unohelper.Base, XActionListener):
-                    def __init__(self, session, response_ctrl, status_ctrl):
+                    def __init__(self, session, response_ctrl):
                         self._session = session
                         self._response = response_ctrl
-                        self._status = status_ctrl
 
                     def actionPerformed(self, evt):
                         self._session.clear()
                         if self._response and self._response.getModel():
                             self._response.getModel().Text = ""
-                        if self._status:
-                            self._status.setText("")
 
                     def disposing(self, evt):
                         pass
 
                 clear_btn.addActionListener(
-                    _ClearAction(session, response_ctrl, status_ctrl))
+                    _ClearAction(session, response_ctrl))
 
             # ── Initial state ──────────────────────────────────────
 
             set_buttons(True, False)
+            set_status("Ready")
 
             greeting = get_greeting(doc_type)
             if response_ctrl and response_ctrl.getModel():
                 response_ctrl.getModel().Text = "%s\n" % greeting
 
-            if status_ctrl:
-                status_ctrl.setText("Ready")
+            # Prevent cursor in response area — redirect focus to query
+            class _NoFocus(unohelper.Base, XFocusListener):
+                def __init__(self, target):
+                    self._target = target
+
+                def focusGained(self, evt):
+                    try:
+                        self._target.setFocus()
+                    except Exception:
+                        pass
+
+                def focusLost(self, evt):
+                    pass
+
+                def disposing(self, evt):
+                    pass
+
+            response_ctrl.addFocusListener(_NoFocus(query_ctrl))
+
+            # ── Dynamic resize ────────────────────────────────────
+
+            ctrls = {
+                "response": response_ctrl,
+                "query_label": query_label,
+                "query": query_ctrl,
+                "send": send_btn,
+                "stop": stop_btn,
+                "clear": clear_btn,
+            }
+
+            class _ChatResize(unohelper.Base, XWindowListener):
+                def __init__(self, ctrls):
+                    self._c = ctrls
+
+                def windowResized(self, evt):
+                    try:
+                        self._relayout(evt.Source)
+                    except Exception:
+                        pass
+
+                def windowMoved(self, evt):
+                    pass
+
+                def windowShown(self, evt):
+                    pass
+
+                def windowHidden(self, evt):
+                    pass
+
+                def disposing(self, evt):
+                    pass
+
+                def _relayout(self, win):
+                    r = win.getPosSize()
+                    w, h = r.Width, r.Height
+                    if w <= 0 or h <= 0:
+                        return
+                    m = 6
+                    btn_h = 24
+                    query_h = 50
+                    label_h = 16
+                    gap = 4
+
+                    # Bottom-up layout
+                    btn_y = h - m - btn_h
+                    btn_w = max(50, (w - 2 * m - 2 * gap) // 3)
+                    for i, name in enumerate(["send", "stop", "clear"]):
+                        c = self._c.get(name)
+                        if c:
+                            c.setPosSize(
+                                m + i * (btn_w + gap), btn_y,
+                                btn_w, btn_h, 15)
+
+                    query_y = btn_y - gap - query_h
+                    c = self._c.get("query")
+                    if c:
+                        c.setPosSize(m, query_y, w - 2 * m, query_h, 15)
+
+                    qlabel_y = query_y - label_h
+                    c = self._c.get("query_label")
+                    if c:
+                        c.setPosSize(m, qlabel_y, w - 2 * m, label_h, 15)
+
+                    # Response fills remaining space from top
+                    resp_h = max(30, qlabel_y - gap - m)
+                    c = self._c.get("response")
+                    if c:
+                        c.setPosSize(m, m, w - 2 * m, resp_h, 15)
+
+            resize_listener = _ChatResize(ctrls)
+            root_window.addWindowListener(resize_listener)
+            # Trigger initial layout
+            resize_listener._relayout(root_window)
+
+    class ChatSettingsElement(unohelper.Base, XUIElement):
+        """XUIElement for the AI Settings panel."""
+
+        def __init__(self, ctx, frame, parent_window, resource_url):
+            self.ctx = ctx
+            self.xFrame = frame
+            self.xParentWindow = parent_window
+            self.ResourceURL = resource_url
+            self.Frame = frame
+            self.Type = TOOLPANEL
+            self.toolpanel = None
+            self.m_panelRootWindow = None
+
+        def getRealInterface(self):
+            if not self.toolpanel:
+                try:
+                    root_window = self._create_panel_window()
+                    self.toolpanel = ChatToolPanel(
+                        root_window, self.xParentWindow, self.ctx,
+                        preferred_height=105)
+                    self._wire_controls(root_window)
+                except Exception:
+                    log.exception("ChatSettingsElement.getRealInterface failed")
+                    raise
+            return self.toolpanel
+
+        def _create_panel_window(self):
+            """Load XDL container, then add ListBox controls in code."""
+            pip = self.ctx.getValueByName(
+                "/singletons/com.sun.star.deployment"
+                ".PackageInformationProvider")
+            base_url = pip.getPackageLocation(EXTENSION_ID)
+            dialog_url = base_url + "/" + SETTINGS_XDL_PATH
+
+            provider = self.ctx.getServiceManager().createInstanceWithContext(
+                "com.sun.star.awt.ContainerWindowProvider", self.ctx)
+            self.m_panelRootWindow = provider.createContainerWindow(
+                dialog_url, "", self.xParentWindow, None)
+
+            if self.m_panelRootWindow:
+                self.m_panelRootWindow.setVisible(True)
+            parent_rect = self.xParentWindow.getPosSize()
+            if parent_rect.Width > 0 and parent_rect.Height > 0:
+                self.m_panelRootWindow.setPosSize(
+                    0, 0, parent_rect.Width, parent_rect.Height, 15)
+
+            return self.m_panelRootWindow
+
+        def _wire_controls(self, root_window):
+            if not hasattr(root_window, "getControl"):
+                return
+
+            from plugin.main import bootstrap, get_services
+            bootstrap(self.ctx)
+            services = get_services()
+
+            from plugin.modules.ai.service import (
+                get_text_instance_options, get_image_instance_options)
+
+            smgr = self.ctx.getServiceManager()
+
+            def _add_label(name, y, text):
+                fm = smgr.createInstanceWithContext(
+                    "com.sun.star.awt.UnoControlFixedTextModel", self.ctx)
+                fm.Label = text
+                fc = smgr.createInstanceWithContext(
+                    "com.sun.star.awt.UnoControlFixedText", self.ctx)
+                fc.setModel(fm)
+                fc.setPosSize(6, y, 200, 16, 15)
+                root_window.addControl(name, fc)
+                return fc
+
+            ai = services.get("ai")
+
+            def _add_dropdown(name, y, options, capability):
+                lm = smgr.createInstanceWithContext(
+                    "com.sun.star.awt.UnoControlListBoxModel", self.ctx)
+                lm.Dropdown = True
+                lm.LineCount = 8
+                lc = smgr.createInstanceWithContext(
+                    "com.sun.star.awt.UnoControlListBox", self.ctx)
+                lc.setModel(lm)
+                lc.setPosSize(6, y, 200, 20, 15)
+                root_window.addControl(name, lc)
+
+                ids = []
+                for opt in options:
+                    lc.addItem(opt["label"], len(ids))
+                    ids.append(opt["value"])
+
+                # Init from volatile, fall back to config default
+                current = ""
+                if ai:
+                    current = ai._get_active_instance_id(capability)
+                sel = 0
+                for i, v in enumerate(ids):
+                    if v == current:
+                        sel = i
+                        break
+                if ids:
+                    lc.selectItemPos(sel, True)
+
+                class _Listener(unohelper.Base, XItemListener):
+                    def __init__(self, ai_svc, cap, ids):
+                        self._ai = ai_svc
+                        self._cap = cap
+                        self._ids = ids
+
+                    def itemStateChanged(self, evt):
+                        pos = evt.Selected
+                        if self._ai and 0 <= pos < len(self._ids):
+                            self._ai.set_active_instance(
+                                self._cap, self._ids[pos])
+
+                    def disposing(self, evt):
+                        pass
+
+                lc.addItemListener(
+                    _Listener(ai, capability, ids))
+                return lc
+
+            # All in pixels — label 16px, dropdown 22px, group gap 12px
+            _add_label("text_label", 6, "Text AI:")
+            _add_dropdown(
+                "text_instance", 24,
+                get_text_instance_options(services),
+                "text")
+
+            _add_label("image_label", 58, "Image AI:")
+            _add_dropdown(
+                "image_instance", 76,
+                get_image_instance_options(services),
+                "image")
 
     class ChatPanelFactory(unohelper.Base, XUIElementFactory):
-        """Factory that creates ChatPanelElement instances for the sidebar."""
+        """Factory that creates chat and settings panel elements."""
 
         def __init__(self, ctx):
             self.ctx = ctx
 
         def createUIElement(self, resource_url, args):
             log.info("createUIElement: %s", resource_url)
-            if "ChatPanel" not in resource_url:
-                from com.sun.star.container import NoSuchElementException
-                raise NoSuchElementException(
-                    "Unknown resource: " + resource_url)
 
             frame = _get_arg(args, "Frame")
             parent_window = _get_arg(args, "ParentWindow")
@@ -342,8 +570,16 @@ try:
                 from com.sun.star.lang import IllegalArgumentException
                 raise IllegalArgumentException("ParentWindow is required")
 
-            return ChatPanelElement(
-                self.ctx, frame, parent_window, resource_url)
+            if "ChatSettingsPanel" in resource_url:
+                return ChatSettingsElement(
+                    self.ctx, frame, parent_window, resource_url)
+            if "ChatPanel" in resource_url:
+                return ChatPanelElement(
+                    self.ctx, frame, parent_window, resource_url)
+
+            from com.sun.star.container import NoSuchElementException
+            raise NoSuchElementException(
+                "Unknown resource: " + resource_url)
 
     # Register with LibreOffice
     g_ImplementationHelper = unohelper.ImplementationHelper()

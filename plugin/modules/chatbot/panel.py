@@ -143,6 +143,7 @@ class SendButtonListener:
         self._adapter = adapter
         self.stop_requested = False
         self._busy = False
+        self.instance_id = ""  # set by panel instance selector
 
         # UI callbacks (set by panel factory)
         self.on_status = None
@@ -170,9 +171,10 @@ class SendButtonListener:
         config = self._services.config.proxy_for("chatbot")
         max_rounds = config.get("max_tool_rounds") or DEFAULT_MAX_TOOL_ROUNDS
 
-        # Get the LLM provider
+        # Get the LLM provider (use panel instance selector or fallback)
         try:
-            provider = self._services.ai.get_provider("text")
+            provider = self._services.ai.get_provider(
+                "text", instance_id=self.instance_id or None)
         except RuntimeError:
             self._set_status("No LLM provider configured")
             return
