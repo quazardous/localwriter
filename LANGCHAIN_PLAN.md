@@ -76,6 +76,86 @@ We will proceed with writing a custom LangChain wrapper (`LocalWriterLangChainMo
 
 For Phase 4 (RAG), the **vector store is vendored**: stdlib-only (pure-Python cosine) by default so it runs with no extra deps, but **per-element Python math will be slow** for large stores. Design for an **optional NumPy path**: when NumPy is available (system or venv), use it for similarity and batch operations; document that heavier RAG use may require pointing LibreOffice at a venv with NumPy installed. Persistence: binary vectors (`struct`) + JSON. Support **streaming search** for large data. Optional: vendor HNSW (e.g. hnsw-lite) with NumPy when available. No Chroma, FAISS, or sqlite-vector.
 
+---
+
+## Appendix: HNSW and hnsw-lite
+
+This section explains the HNSW algorithm and the hnsw-lite library, and gives a short tutorial. It supports Phase 4’s optional in-memory index for faster approximate search.
+
+### What is HNSW?
+
+**HNSW** (Hierarchical Navigable Small World) is an algorithm for **approximate nearest neighbor (ANN)** search in high-dimensional vector spaces. It is described in Malkov & Yashunin, “Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs” (IEEE TPAMI, 2018).
+
+- **Problem**: Given many vectors (e.g. embeddings of document chunks) and a query vector, find the k vectors closest to the query. A naive linear scan is O(n) per query; for millions of vectors this is too slow.
+- **Idea**: Build a **graph** where each vector is a node and edges connect “nearby” vectors. The graph has the **small world** property: you can reach any node in a small number of hops. Add **hierarchy** (multiple layers, like skip lists): top layers have long-range links for fast coarse search; bottom layer has fine-grained neighborhoods. Search starts at the top, narrows in, then refines at the bottom.
+- **Trade-off**: Search is **approximate** — you get the true k nearest neighbors only with some probability (recall). In practice, recall is often 95%+ with sub-millisecond query time and O(log n) scaling.
+- **Parameters**: (1) **M** — max number of connections per node; higher M → better recall, more memory and slower. (2) **ef_construction** — size of the candidate list during index build; higher → better graph quality, slower build. (3) **ef_search** (at query time in some impls) — how many candidates to consider during search; higher → better recall, slower query.
+
+HNSW is used in many vector DBs (e.g. Pinecone, Weaviate, Qdrant) and libraries (e.g. hnswlib, nmslib).
+
+### What is hnsw-lite?
+
+**hnsw-lite** is a **pure Python** implementation of HNSW: no C/C++ extensions. It is lightweight and easy to vendor or depend on.
+
+- **PyPI**: `pip install hnsw-lite`
+- **Dependency**: Declares NumPy (used for distance calculations). For a zero-NumPy setup we could vendor it and replace the distance layer with pure-Python cosine.
+- **Features**: Cosine and Euclidean distance; optional metadata per vector; configurable M and ef_construction.
+- **API**: Build an index with `insert(vector, metadata)`, then run `knn_search(query_node, k)` to get k approximate nearest neighbors. Vectors are Python lists (or NumPy arrays when NumPy is used).
+
+### Tutorial: using hnsw-lite
+
+**1. Install and create an index**
+
+```python
+# pip install hnsw-lite
+from hnsw import HNSW
+from hnsw.node import Node
+
+# space: "cosine" or "euclidean"
+# M: max connections per node (e.g. 16); higher = better recall, more memory
+# ef_construction: build-time quality (e.g. 200); higher = better graph, slower build
+hnsw = HNSW(space="cosine", M=16, ef_construction=200)
+```
+
+**2. Insert vectors (e.g. document chunk embeddings)**
+
+```python
+# Each vector is a list of floats (embedding dimension, e.g. 384 or 768)
+vectors = [
+    [0.1, 0.2, ...],  # chunk 1
+    [0.3, 0.1, ...],  # chunk 2
+    # ...
+]
+for i, vec in enumerate(vectors):
+    hnsw.insert(vec, {"id": i, "text": "Snippet of document chunk..."})
+```
+
+**3. Query for nearest neighbors**
+
+```python
+query_embedding = [0.15, 0.18, ...]  # same dimension as stored vectors
+query_node = Node(query_embedding, level=0)
+k = 5
+results = hnsw.knn_search(query_node, k)
+
+# results: list of (distance, node) — note distances may be negated (check library)
+for dist, node in results:
+    print(node.metadata["id"], node.metadata["text"][:50])
+```
+
+**4. Tuning**
+
+- **M=8–12**: Faster, lower recall; good for speed-critical or small datasets.
+- **M=15–20**: Balanced; good default for most uses.
+- **M=25–40**: Higher recall, slower and more memory.
+- **ef_construction=200**: Solid default; increase (e.g. 300–500) for better graph quality if build time is acceptable.
+
+### How this fits the LocalWriter plan
+
+- **When to use**: For the **in-memory index** path in Phase 4: when we load a subset of vectors (e.g. “recent 30 days”) into RAM and want **fast approximate search** instead of a linear scan. We can vendor hnsw-lite (or depend on it in a venv with NumPy) and use it as the in-memory index; use NumPy for distance when available, pure-Python fallback when not.
+- **Persistence**: hnsw-lite does not persist the graph by default. We would need to implement save/load (e.g. serialize the graph and metadata to our binary+JSON format) or build the index on load from our stored vectors.
+- **Streaming vs HNSW**: For a **year of conversations** we do **streaming search** (no full load) and do not use HNSW for that path. HNSW is for the **loaded subset** path where we have a bounded number of vectors in memory and want O(log n) approximate search.
+
 ## Verification Plan
 ### Automated & Manual Verification
 - **Phase 1**: Verify that multi-turn conversations maintain context without manually re-reading the entire chat history in the prompt.
