@@ -23,7 +23,7 @@ Enhance LocalWriter's AI capabilities by replacing manual prompt construction wi
 **Objective**: Allow chats to persist across LibreOffice restarts.
 
 - **Storage Mechanism**:
-  - Implement a local storage solution (e.g., a simple JSON file per document URL under `~/.config/libreoffice/4/user/config/localwriter_chat_history/` or an SQLite database).
+  - Implement a local storage solution (e.g., a simple JSON file per document URL under `~/.config/libreoffice/4/user/config/localwriter_chat_history/` or an **SQLite database** — Python’s `sqlite3` is stdlib on all major OSes, so no extra dependency).
   - Use LangChain's `BaseChatMessageHistory` interface (e.g., `FileChatMessageHistory` or a custom implementation) to load and save messages.
 - **Session Management**:
   - Tie conversation histories to document URLs (`doc.getURL()`).
@@ -71,10 +71,23 @@ Enhance LocalWriter's AI capabilities by replacing manual prompt construction wi
 - **Human-in-the-Loop**:
   - Implement LangChain callbacks to pause execution and ask the user for confirmation before applying destructive changes to the document.
 
+## Note: SQLite ships with Python
+
+**`sqlite3` is part of the Python standard library** on all major OSes (Windows, macOS, Linux) in normal CPython builds — no `pip install` required. That opens several storage options without adding dependencies:
+
+- **Phase 2 (persistent chat history)**: SQLite is a natural fit for conversation history (e.g. one table per document URL, or a single DB with a doc key). No extra dependency.
+- **Phase 4 (RAG)**: Stdlib SQLite does **not** provide vector similarity search (no sqlite-vector), so we still use binary vectors + JSON (or streaming search) for embeddings. We can still use SQLite for **metadata and chunk text** (e.g. id, document URL, chunk text, timestamps) and keep vectors in a separate binary file keyed by id — or use SQLite as the primary store for everything except the vector math. So SQLite can still be helpful for structured persistence even when the vector store itself is custom.
+
+Keeping this in mind makes it easier to choose stdlib-friendly storage (e.g. SQLite for history and RAG metadata) without pulling in heavier backends.
+
+**Vector extension in stdlib?** As of early 2025 there is **no plan or PEP** to add a vector/similarity-search extension to Python’s standard library. Stdlib `sqlite3` stays as the DB-API interface to stock SQLite; vector search is provided by **loadable extensions** (e.g. `sqlite-vec`, `sqlite-vector`) that are third-party and require `conn.enable_load_extension(True)` and `conn.load_extension(...)`. So for the foreseeable future, “stdlib-only” RAG means our own vector store (binary + JSON, pure-Python or optional NumPy) — we can’t rely on stdlib SQLite gaining vector search.
+
+---
+
 ## Architecture Decision: Custom Wrapper vs. Provider Packages
 We will proceed with writing a custom LangChain wrapper (`LocalWriterLangChainModel`) around our existing `LlmClient` rather than importing heavy provider packages like `langchain-openai` or `langchain-ollama`. LocalWriter runs in LibreOffice's constrained Python environment; keeping dependencies minimal (just `langchain-core`) is critical to avoid bloat and cross-platform installation issues, while allowing us to keep our custom UI streaming loops and connection management.
 
-For Phase 4 (RAG), the **vector store is vendored**: stdlib-only (pure-Python cosine) by default so it runs with no extra deps, but **per-element Python math will be slow** for large stores. Design for an **optional NumPy path**: when NumPy is available (system or venv), use it for similarity and batch operations; document that heavier RAG use may require pointing LibreOffice at a venv with NumPy installed. Persistence: binary vectors (`struct`) + JSON. Support **streaming search** for large data. Optional: vendor HNSW (e.g. hnsw-lite) with NumPy when available. No Chroma, FAISS, or sqlite-vector.
+For Phase 4 (RAG), the **vector store is vendored**: stdlib-only (pure-Python cosine) by default so it runs with no extra deps, but **per-element Python math will be slow** for large stores. Design for an **optional NumPy path**: when NumPy is available (system or venv), use it for similarity and batch operations; document that heavier RAG use may require pointing LibreOffice at a venv with NumPy installed. Persistence: binary vectors (`struct`) + JSON (or SQLite for metadata/chunk text; see note above). Support **streaming search** for large data. Optional: vendor HNSW (e.g. hnsw-lite) with NumPy when available. No Chroma, FAISS, or sqlite-vector.
 
 ---
 
