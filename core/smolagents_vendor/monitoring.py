@@ -18,16 +18,74 @@ import json
 from dataclasses import dataclass, field
 from enum import IntEnum
 
-from rich import box
-from rich.console import Console, Group
-from rich.panel import Panel
-from rich.rule import Rule
-from rich.syntax import Syntax
-from rich.table import Table
-from rich.text import Text
-from rich.tree import Tree
+class Console:
+    def __init__(self, highlight=False, **kwargs):
+        pass
+    def print(self, *args, **kwargs):
+        print(*args, **kwargs)
 
-from smolagents.utils import escape_code_brackets
+class Text:
+    def __init__(self, content="", style=None):
+        self.content = content
+    def __str__(self):
+        return self.content
+
+class Group:
+    def __init__(self, *args):
+        self.args = args
+    def __str__(self):
+        return "\n".join(str(a) for a in self.args)
+
+class Panel:
+    def __init__(self, content, title=None, subtitle=None, **kwargs):
+        self.content = content
+        self.title = title
+        self.subtitle = subtitle
+    def __str__(self):
+        res = []
+        if self.title:
+            res.append(f"=== {self.title} ===")
+        res.append(str(self.content))
+        if self.subtitle:
+            res.append(f"--- {self.subtitle} ---")
+        return "\n".join(res)
+
+class Rule:
+    def __init__(self, title="", **kwargs):
+        self.title = title
+    def __str__(self):
+        return f"\n{'='*20} {self.title} {'='*20}\n"
+
+class Syntax:
+    def __init__(self, content, **kwargs):
+        self.content = content
+    def __str__(self):
+        return self.content
+
+class Table:
+    def __init__(self, **kwargs):
+        self.rows = []
+    def add_column(self, *args, **kwargs):
+        pass
+    def add_row(self, *args):
+        self.rows.append(args)
+    def __str__(self):
+        return "\n".join(" | ".join(map(str, row)) for row in self.rows)
+
+class Tree:
+    def __init__(self, label, **kwargs):
+        self.label = label
+        self.children = []
+    def add(self, child):
+        self.children.append(child)
+        return child
+    def __str__(self):
+        return f"{self.label}\n" + "\n".join(f"  - {c}" for c in self.children)
+
+box = type('box', (), {'HORIZONTALS': None})
+
+
+from .utils import escape_code_brackets
 
 
 __all__ = ["AgentLogger", "LogLevel", "Monitor", "TokenUsage", "Timing"]

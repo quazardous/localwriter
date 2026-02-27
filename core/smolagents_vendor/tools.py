@@ -33,14 +33,18 @@ from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from huggingface_hub import (
-    CommitOperationAdd,
-    create_commit,
-    create_repo,
-    get_collection,
-    hf_hub_download,
-    metadata_update,
-)
+try:
+    from huggingface_hub import (
+        CommitOperationAdd,
+        create_commit,
+        create_repo,
+        get_collection,
+        hf_hub_download,
+        metadata_update,
+    )
+except ImportError:
+    CommitOperationAdd = create_commit = create_repo = get_collection = None  # type: ignore[assignment]
+    hf_hub_download = metadata_update = None  # type: ignore[assignment]
 
 from ._function_type_hints_utils import (
     TypeHintParsingException,

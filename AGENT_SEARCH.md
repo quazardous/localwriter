@@ -72,13 +72,17 @@ This is a custom file specific to LocalWriter, acting as the bridge between `smo
 - **Model Wrapper**: Built `LocalWriterSmolModel` (`core/smol_model.py`) to connect the sub-agent directly to LocalWriter's existing `LlmClient`.
 - **Tool Registration**: Registered the `search_web` task in `core/document_tools.py` executing the ReAct loop inline.
 - **YAML Removal (Partial)**: In `agents.py`, patched prompt loading to read `toolcalling_agent.json` instead of loading a `.yaml` file.
+- **Minimal `local_python_executor`**: Added `core/smolagents_vendor/local_python_executor.py` with stubs so that `default_tools` and `agents` import without failure; the search_web path only uses DuckDuckGo and VisitWebpage tools.
+- **Jinja2 removal for ToolCallingAgent**: Replaced `populate_template()` in `ToolCallingAgent.initialize_system_prompt()` with `_render_toolcalling_system_prompt()`; `toolcalling_agent.json` system_prompt now uses placeholders `__TOOLS_LIST__`, `__MANAGED_AGENTS_BLOCK__`, `__CUSTOM_INSTRUCTIONS__`. No jinja2 required for the search_web path.
+- **Rich optional**: In `monitoring.py`, Rich is imported in try/except with stub classes when missing; `agents.py` similarly uses optional Rich with stubs. The sub-agent runs without the `rich` package.
+- **Vendored import fixes**: `monitoring.py` uses `from .utils import escape_code_brackets`; `memory.py` uses relative `.models`, `.monitoring`, `.utils`; optional imports for `huggingface_hub`, `remote_executors`, `yaml`, `jinja2` in `agents.py` and `tools.py` so the package loads on minimal environments.
+- **Error handling and timeout**: `tool_search_web` catches all exceptions and returns JSON `{"status": "error", "message": "..."}`; optional config key `search_web_timeout` (default 120 s) with `ThreadPoolExecutor` so long-running searches do not block the UI indefinitely.
 
 **What Still Needs to be Done:**
-- **Jinja2 dependency removal**: `smolagents` uses `jinja2` to populate prompt templates (e.g., `populate_template` in `utils.py`). We must rewrite this to use basic python `.format()` or `.replace()` to remove the `jinja2` requirement.
-- **Decoupling heavy dependencies**: Strip out remaining references to `transformers`, `huggingface_hub`, `rich`, `pillow`/`PIL`, and `markdownify` deep within the vendored files. We want it to run seamlessly on a clean Python install matching LibreOffice's bundled environment.
-- **Console output/logging adaptation**: `smolagents` logs heavily using the `rich` library. We should patch its logger to pass messages via LocalWriter's `status_callback` or log quietly. 
-- **Testing the full loop**: Running a test search call to verify `LlmClient` formats the tool calls correctly for `smolagents`, and that `smolagents` can iteratively invoke our custom Python `urllib` tools without crashing.
-- **Error Handling**: Gracefully handling timeouts, API blocks during scraping, and making sure the sub-agent's failure states return clean error messages back to the main agent.
+- **Decoupling remaining heavy dependencies**: Make `PIL` and `requests` optional in `agent_types.py` so the vendored package loads on a clean Python install without them (search_web does not use images).
+- **Other templates**: Planning and managed-agent prompts still use `populate_template` (jinja2) when those code paths are used; only the ToolCallingAgent system_prompt is jinja2-free.
+- **Testing the full loop**: Run a live search from the Chat sidebar to confirm end-to-end behavior with the configured LLM and DuckDuckGo/VisitWebpage tools.
+- **Scraping robustness**: Gracefully handle API blocks and rate limits during scraping; sub-agent failure states already return clean error messages to the main agent.
 
 ---
 

@@ -226,32 +226,42 @@ def tool_edit_image(model, ctx, args, status_callback=None):
 
 
 def tool_search_web(model, ctx, args, status_callback=None):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
     from core.config import get_api_config
     from core.api import LlmClient
     from core.smol_model import LocalWriterSmolModel
     from core.smolagents_vendor.agents import ToolCallingAgent
     from core.smolagents_vendor.default_tools import DuckDuckGoSearchTool, VisitWebpageTool
-    
+
     query = args.get("query", "")
     if not query:
         return json.dumps({"status": "error", "message": "Query is required for web search."})
-        
+
     try:
         if status_callback:
             status_callback("Sub-agent starting web search: " + query)
-            
+
         config = get_api_config(ctx)
-        
         max_tokens = int(config.get("chat_max_tokens", 2048))
-        
-        # Instantiate smol wrapped model using our existing LlmClient and config
+        search_timeout = int(config.get("search_web_timeout", 120))  # seconds, default 2 min
+
         smol_model = LocalWriterSmolModel(LlmClient(config, ctx), max_tokens=max_tokens)
         agent = ToolCallingAgent(
             tools=[DuckDuckGoSearchTool(), VisitWebpageTool()],
             model=smol_model,
         )
-        
-        answer = agent.run(f"Please find the answer to this query by searching the web and reading pages if needed: {query}")
+        task = f"Please find the answer to this query by searching the web and reading pages if needed: {query}"
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(agent.run, task)
+            try:
+                answer = future.result(timeout=search_timeout)
+            except FuturesTimeoutError:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Web search timed out after {search_timeout} seconds. Try a narrower query or increase search_web_timeout in config.",
+                })
+
         return json.dumps({"status": "ok", "result": str(answer)})
     except Exception as e:
         return json.dumps({"status": "error", "message": f"Web search failed: {str(e)}"})

@@ -30,15 +30,39 @@ from logging import getLogger
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Type, TypeAlias, TypedDict, Union
 
-import yaml
-from huggingface_hub import create_repo, metadata_update, snapshot_download, upload_folder
-from jinja2 import StrictUndefined, Template
-from rich.console import Group
-from rich.live import Live
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.rule import Rule
-from rich.text import Text
+try:
+    import yaml
+except ImportError:
+    yaml = None  # type: ignore[assignment]
+
+try:
+    from huggingface_hub import create_repo, metadata_update, snapshot_download, upload_folder
+except ImportError:
+    create_repo = metadata_update = snapshot_download = upload_folder = None  # type: ignore[assignment]
+
+try:
+    from jinja2 import StrictUndefined, Template
+except ImportError:
+    StrictUndefined = None  # type: ignore[assignment]
+    Template = None  # type: ignore[assignment]
+
+class _StubText:
+    def __init__(self, content="", style=None): self.content = content
+    def __str__(self): return self.content
+class _StubLive:
+    def __init__(self, *args, **kwargs): pass
+    def __enter__(self): return self
+    def __exit__(self, *a): return None
+    def update(self, x): pass
+class _StubRenderable:
+    def __init__(self, *args, **kwargs): self.args = args
+Group = _StubRenderable
+Live = _StubLive
+Markdown = _StubRenderable
+Panel = _StubRenderable
+Rule = _StubRenderable
+Text = _StubText
+
 
 
 if TYPE_CHECKING:
@@ -77,7 +101,10 @@ from .monitoring import (
     Monitor,
     TokenUsage,
 )
-from .remote_executors import BlaxelExecutor, DockerExecutor, E2BExecutor, ModalExecutor, WasmExecutor
+try:
+    from .remote_executors import BlaxelExecutor, DockerExecutor, E2BExecutor, ModalExecutor, WasmExecutor
+except ImportError:
+    BlaxelExecutor = DockerExecutor = E2BExecutor = ModalExecutor = WasmExecutor = None  # type: ignore[assignment]
 from .tools import BaseTool, Tool, validate_tool_arguments
 from .utils import (
     AgentError,
@@ -97,6 +124,35 @@ from .utils import (
 
 
 logger = getLogger(__name__)
+
+
+def _render_toolcalling_system_prompt(
+    template_str: str,
+    tools: dict,
+    managed_agents: dict,
+    custom_instructions: str,
+) -> str:
+    """Build system prompt without Jinja2. Replaces __TOOLS_LIST__, __MANAGED_AGENTS_BLOCK__, __CUSTOM_INSTRUCTIONS__."""
+    tools_list = "\n".join("- " + (t.to_tool_calling_prompt() or "") for t in tools.values())
+    managed_agents_block = ""
+    if managed_agents and list(managed_agents.values()):
+        parts = [
+            "You can also give tasks to team members.",
+            "Calling a team member works similarly to calling a tool: provide the task description as the 'task' argument. Since this team member is a real human, be as detailed and verbose as necessary in your task description.",
+            "You can also include any relevant variables or context using the 'additional_args' argument.",
+            "Here is a list of the team members that you can call:",
+        ]
+        for agent in managed_agents.values():
+            parts.append(f"- {agent.name}: {agent.description}")
+            parts.append(f"  - Takes inputs: {agent.inputs}")
+            parts.append(f"  - Returns an output of type: {agent.output_type}")
+        managed_agents_block = "\n".join(parts)
+    custom_block = (custom_instructions or "").strip()
+    return (
+        template_str.replace("__TOOLS_LIST__", tools_list)
+        .replace("__MANAGED_AGENTS_BLOCK__", managed_agents_block)
+        .replace("__CUSTOM_INSTRUCTIONS__", custom_block)
+    )
 
 
 def populate_template(template: str, variables: dict[str, Any]) -> str:
@@ -582,7 +638,7 @@ You have been provided with these additional arguments, that you can access dire
                     if isinstance(output, ActionOutput) and output.is_final_answer:
                         final_answer = output.output
                         self.logger.log(
-                            Text(f"Final answer: {final_answer}", style=f"bold {YELLOW_HEX}"),
+                            f"Final answer: {final_answer}",
                             level=LogLevel.INFO,
                         )
 
@@ -659,15 +715,13 @@ You have been provided with these additional arguments, that you can access dire
                 plan_message_content = ""
                 output_stream = self.model.generate_stream(input_messages, stop_sequences=["<end_plan>"])  # type: ignore
                 input_tokens, output_tokens = 0, 0
-                with Live("", console=self.logger.console, vertical_overflow="visible") as live:
-                    for event in output_stream:
-                        if event.content is not None:
-                            plan_message_content += event.content
-                            live.update(Markdown(plan_message_content))
-                            if event.token_usage:
-                                input_tokens = event.token_usage.input_tokens
-                                output_tokens += event.token_usage.output_tokens
-                        yield event
+                for event in output_stream:
+                    if event.content is not None:
+                        plan_message_content += event.content
+                        if event.token_usage:
+                            input_tokens = event.token_usage.input_tokens
+                            output_tokens += event.token_usage.output_tokens
+                    yield event
             else:
                 plan_message = self.model.generate(input_messages, stop_sequences=["<end_plan>"])
                 plan_message_content = plan_message.content
@@ -714,18 +768,16 @@ You have been provided with these additional arguments, that you can access dire
             if self.stream_outputs and hasattr(self.model, "generate_stream"):
                 plan_message_content = ""
                 input_tokens, output_tokens = 0, 0
-                with Live("", console=self.logger.console, vertical_overflow="visible") as live:
-                    for event in self.model.generate_stream(
-                        input_messages,
-                        stop_sequences=["<end_plan>"],
-                    ):  # type: ignore
-                        if event.content is not None:
-                            plan_message_content += event.content
-                            live.update(Markdown(plan_message_content))
-                            if event.token_usage:
-                                input_tokens = event.token_usage.input_tokens
-                                output_tokens += event.token_usage.output_tokens
-                        yield event
+                for event in self.model.generate_stream(
+                    input_messages,
+                    stop_sequences=["<end_plan>"],
+                ):  # type: ignore
+                    if event.content is not None:
+                        plan_message_content += event.content
+                        if event.token_usage:
+                            input_tokens = event.token_usage.input_tokens
+                            output_tokens += event.token_usage.output_tokens
+                    yield event
             else:
                 plan_message = self.model.generate(input_messages, stop_sequences=["<end_plan>"])
                 plan_message_content = plan_message.content
@@ -737,7 +789,7 @@ You have been provided with these additional arguments, that you can access dire
                 f"""I still need to solve the task I was given:\n```\n{self.task}\n```\n\nHere are the facts I know and my new/updated plan of action to solve the task:\n```\n{plan_message_content}\n```"""
             )
         log_headline = "Initial plan" if is_first_step else "Updated plan"
-        self.logger.log(Rule(f"[bold]{log_headline}", style="orange"), Text(plan), level=LogLevel.INFO)
+        self.logger.log(f"--- {log_headline} ---\n{plan}", level=LogLevel.INFO)
         yield PlanningStep(
             model_input_messages=input_messages,
             plan=plan,
@@ -1266,15 +1318,12 @@ class ToolCallingAgent(MultiStepAgent):
         return list(self.tools.values()) + list(self.managed_agents.values())
 
     def initialize_system_prompt(self) -> str:
-        system_prompt = populate_template(
+        return _render_toolcalling_system_prompt(
             self.prompt_templates["system_prompt"],
-            variables={
-                "tools": self.tools,
-                "managed_agents": self.managed_agents,
-                "custom_instructions": self.instructions,
-            },
+            tools=self.tools,
+            managed_agents=self.managed_agents,
+            custom_instructions=self.instructions or "",
         )
-        return system_prompt
 
     def _step_stream(
         self, memory_step: ActionStep
@@ -1300,13 +1349,9 @@ class ToolCallingAgent(MultiStepAgent):
                 )
 
                 chat_message_stream_deltas: list[ChatMessageStreamDelta] = []
-                with Live("", console=self.logger.console, vertical_overflow="visible") as live:
-                    for event in output_stream:
-                        chat_message_stream_deltas.append(event)
-                        live.update(
-                            Markdown(agglomerate_stream_deltas(chat_message_stream_deltas).render_as_markdown())
-                        )
-                        yield event
+                for event in output_stream:
+                    chat_message_stream_deltas.append(event)
+                    yield event
                 chat_message = agglomerate_stream_deltas(chat_message_stream_deltas)
             else:
                 chat_message: ChatMessage = self.model.generate(
@@ -1387,7 +1432,7 @@ class ToolCallingAgent(MultiStepAgent):
             tool_name = tool_call.name
             tool_arguments = tool_call.arguments or {}
             self.logger.log(
-                Panel(Text(f"Calling tool: '{tool_name}' with arguments: {tool_arguments}")),
+                f"Calling tool: '{tool_name}' with arguments: {tool_arguments}",
                 level=LogLevel.INFO,
             )
             tool_call_result = self.execute_tool_call(tool_name, tool_arguments)
@@ -1672,13 +1717,9 @@ class CodeAgent(MultiStepAgent):
                     **additional_args,
                 )
                 chat_message_stream_deltas: list[ChatMessageStreamDelta] = []
-                with Live("", console=self.logger.console, vertical_overflow="visible") as live:
-                    for event in output_stream:
-                        chat_message_stream_deltas.append(event)
-                        live.update(
-                            Markdown(agglomerate_stream_deltas(chat_message_stream_deltas).render_as_markdown())
-                        )
-                        yield event
+                for event in output_stream:
+                    chat_message_stream_deltas.append(event)
+                    yield event
                 chat_message = agglomerate_stream_deltas(chat_message_stream_deltas)
                 memory_step.model_output_message = chat_message
                 output_text = chat_message.content
@@ -1736,8 +1777,8 @@ class CodeAgent(MultiStepAgent):
             execution_outputs_console = []
             if len(code_output.logs) > 0:
                 execution_outputs_console += [
-                    Text("Execution logs:", style="bold"),
-                    Text(code_output.logs),
+                    "Execution logs:",
+                    code_output.logs,
                 ]
             observation = "Execution logs:\n" + code_output.logs
         except Exception as e:
@@ -1745,11 +1786,11 @@ class CodeAgent(MultiStepAgent):
                 execution_logs = str(self.python_executor.state["_print_outputs"])
                 if len(execution_logs) > 0:
                     execution_outputs_console = [
-                        Text("Execution logs:", style="bold"),
-                        Text(execution_logs),
+                        "Execution logs:",
+                        execution_logs,
                     ]
                     memory_step.observations = "Execution logs:\n" + execution_logs
-                    self.logger.log(Group(*execution_outputs_console), level=LogLevel.INFO)
+                    self.logger.log("\n".join(map(str, execution_outputs_console)), level=LogLevel.INFO)
             error_msg = str(e)
             if "Import of " in error_msg and " is not allowed" in error_msg:
                 self.logger.log(
@@ -1763,12 +1804,8 @@ class CodeAgent(MultiStepAgent):
         memory_step.observations = observation
 
         if not code_output.is_final_answer:
-            execution_outputs_console += [
-                Text(
-                    f"Out: {truncated_output}",
-                ),
-            ]
-        self.logger.log(Group(*execution_outputs_console), level=LogLevel.INFO)
+            execution_outputs_console += [f"Out: {truncated_output}"]
+        self.logger.log("\n".join(map(str, execution_outputs_console)), level=LogLevel.INFO)
         memory_step.action_output = code_output.output
         yield ActionOutput(output=code_output.output, is_final_answer=code_output.is_final_answer)
 
