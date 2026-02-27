@@ -285,6 +285,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             {"name": "image_translate_from", "value": str(self.get_config("image_translate_from", ""))},
             {"name": "mcp_enabled", "value": "true" if as_bool(self.get_config("mcp_enabled", False)) else "false", "type": "bool"},
             {"name": "mcp_port", "value": str(self.get_config("mcp_port", 8765)), "type": "int"},
+            {"name": "show_search_thinking", "value": "true" if as_bool(self.get_config("show_search_thinking", False)) else "false", "type": "bool"},
         ]
 
     def _apply_settings_result(self, result):

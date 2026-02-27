@@ -47,6 +47,9 @@
   <dlg:textfield dlg:id="mcp_port" dlg:page="1" dlg:left="168" dlg:top="146" dlg:width="40" dlg:height="14" dlg:tabstop="true" dlg:value="8765"/>
   <dlg:text dlg:id="label_mcp_info" dlg:page="1" dlg:left="220" dlg:top="148" dlg:width="210" dlg:height="10" dlg:value="Localhost only, no auth." dlg:align="left"/>
 
+  <!-- Search Settings -->
+  <dlg:checkbox dlg:id="show_search_thinking" dlg:page="1" dlg:left="8" dlg:top="162" dlg:width="150" dlg:height="10" dlg:value="Show Web Search Thinking" dlg:checked="false"/>
+
 
 
   <!-- === Page 2: Image Settings === -->

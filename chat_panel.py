@@ -629,11 +629,16 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
         def run_search():
             try:
+                from core.config import get_config
+                from core.config import as_bool
+                show_thinking = as_bool(get_config(self.ctx, "show_search_thinking", False))
+
                 def status_cb(msg):
                     q.put(("status", msg))
 
                 def thinking_cb(msg):
-                    q.put(("thinking", msg))
+                    if show_thinking:
+                        q.put(("thinking", msg))
 
                 result = execute_tool(
                     "search_web",
