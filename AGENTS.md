@@ -15,7 +15,7 @@ plugin/version.py           Version (single source of truth)
 plugin/plugin.yaml          Global config schema
 plugin/_manifest.py         Generated — do not edit
 plugin/framework/           Core engine (services, tools, events, config, http, dialogs)
-plugin/modules/<name>/      Feature modules (module.yaml + __init__.py + tools + services/)
+plugin/modules/<name>/      Feature modules (module.yaml + __init__.py + tools + services/ + providers/)
 extension/                  Static LO files (XCU, manifest, assets)
 scripts/                    Build & deploy scripts
 tests/                      Pytest suite (tests/legacy/ = old, may not pass)

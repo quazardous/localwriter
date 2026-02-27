@@ -1,6 +1,6 @@
 name: chatbot
-title: AI chat sidebar
-requires: [document, config, events, ai]
+title: AI chat sidebar and REST API
+requires: [document, config, events, ai, http_routes]
 
 actions:
   extend_selection:
@@ -103,6 +103,21 @@ config:
     widget: checkbox
     label: Show MCP Activity
     public: true
+
+  api_enabled:
+    type: boolean
+    default: false
+    widget: checkbox
+    label: Enable Chat API
+    helper: "Expose /api/chat endpoints on the HTTP server"
+    public: true
+
+  api_auth_token:
+    type: string
+    default: ""
+    widget: text
+    label: API Auth Token
+    helper: "Optional Bearer token for researchers/external apps. Empty = no auth."
 
   query_history:
     type: string

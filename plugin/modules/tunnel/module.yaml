@@ -17,3 +17,30 @@ config:
     widget: select
     label: Tunnel Provider
     options_provider: "plugin.modules.tunnel:get_provider_options"
+
+  # Bore config
+  server:
+    type: string
+    default: bore.pub
+    label: Bore Server
+    helper: "Relay server (default: bore.pub)"
+
+  # Cloudflare config
+  tunnel_name:
+    type: string
+    default: ""
+    label: Cloudflare Tunnel Name
+    helper: "Optional: use a named tunnel instead of a quick tunnel"
+
+  public_url:
+    type: string
+    default: ""
+    label: Cloudflare Public URL
+    helper: "Required for named tunnels"
+
+  # Ngrok config
+  authtoken:
+    type: string
+    default: ""
+    widget: password
+    label: Ngrok Authtoken

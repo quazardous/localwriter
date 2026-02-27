@@ -223,11 +223,8 @@ class TunnelManager:
             port = http_cfg.get("port", 8766)
             scheme = "https" if http_cfg.get("use_ssl") else "http"
 
-            # Provider-specific config
-            provider_cfg = self._config_svc.proxy_for(
-                "tunnel.%s" % provider_name)
-
-            # Pre-start hook
+            # Provider-specific config (now merged into 'tunnel')
+            provider_cfg = self._config_svc.proxy_for("tunnel")
             try:
                 provider.pre_start(provider_cfg)
             except Exception:
@@ -278,8 +275,7 @@ class TunnelManager:
             # Post-stop hook
             if provider:
                 try:
-                    provider_cfg = self._config_svc.proxy_for(
-                        "tunnel.%s" % provider.name)
+                    provider_cfg = self._config_svc.proxy_for("tunnel")
                     provider.post_stop(provider_cfg)
                 except Exception:
                     log.exception("Provider post_stop failed for %s",
@@ -295,6 +291,17 @@ class TunnelModule(ModuleBase):
         self._services = services
         self._manager = TunnelManager(services.config, services.events)
         services.register_instance("tunnel_manager", self._manager)
+
+        # Register built-in providers (consolidated from tunnel_* modules)
+        from .providers.bore import BoreProvider
+        from .providers.cloudflare import CloudflareProvider
+        from .providers.ngrok import NgrokProvider
+        from .providers.tailscale import TailscaleProvider
+
+        self._manager.register_provider("bore", BoreProvider())
+        self._manager.register_provider("cloudflare", CloudflareProvider())
+        self._manager.register_provider("ngrok", NgrokProvider())
+        self._manager.register_provider("tailscale", TailscaleProvider())
 
         if hasattr(services, "events"):
             services.events.subscribe("config:changed",

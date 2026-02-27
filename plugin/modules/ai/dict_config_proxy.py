@@ -10,17 +10,20 @@ import logging
 log = logging.getLogger("localwriter.ai")
 
 
-def load_instances_json(cfg):
+def load_instances_json(cfg, key="instances"):
     """Parse the instances JSON list from config. Returns list or None."""
-    raw = cfg.get("instances", "[]")
+    raw = cfg.get(key, "[]")
     if not raw or raw == "[]":
         return None
     try:
-        items = json.loads(raw)
+        if isinstance(raw, str):
+            items = json.loads(raw)
+        else:
+            items = raw
         if isinstance(items, list) and items:
             return items
     except (json.JSONDecodeError, TypeError):
-        log.warning("Invalid instances JSON in config")
+        log.warning("Invalid instances JSON in config: %s", key)
     return None
 
 

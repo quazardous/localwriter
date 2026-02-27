@@ -3,8 +3,6 @@
 import logging
 import subprocess
 
-from plugin.framework.module_base import ModuleBase
-
 log = logging.getLogger("localwriter.tunnel.tailscale")
 
 # Windows: hide subprocess console window
@@ -30,24 +28,25 @@ class TailscaleProvider:
     install_url = "https://tailscale.com/download"
 
     def build_command(self, port, scheme, config):
+        # We assume tailscale is already logged in
         if scheme == "https":
+            # Tailscale needs to know if the target is HTTPS
             target = "https+insecure://127.0.0.1:%s" % port
         else:
             target = str(port)
 
         cmd = ["tailscale", "funnel", target]
-        url_regex = r"(https://[\w.-]+\.ts\.net)"
+        # Funnel logs: "Available at https://node-name.tailnet-name.ts.net/"
+        url_regex = r"Available at (https://[\w.\-]+/)"
         return cmd, url_regex
 
     def parse_line(self, line):
         return None
 
     def pre_start(self, config):
-        """Reset funnel/serve state before starting."""
         self._run_reset_commands()
 
     def post_stop(self, config):
-        """Reset funnel/serve state after stopping."""
         self._run_reset_commands()
 
     def _run_reset_commands(self):
@@ -61,11 +60,3 @@ class TailscaleProvider:
                 log.debug("Reset: %s", " ".join(cmd))
             except Exception:
                 log.debug("Reset command failed: %s", " ".join(cmd))
-
-
-class TailscaleModule(ModuleBase):
-
-    def initialize(self, services):
-        if hasattr(services, "tunnel_manager"):
-            services.tunnel_manager.register_provider(
-                "tailscale", TailscaleProvider())

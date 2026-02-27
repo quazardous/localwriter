@@ -10,7 +10,7 @@ Endpoints:
 import json
 import logging
 
-log = logging.getLogger("localwriter.chatbot_api.handler")
+log = logging.getLogger("localwriter.chatbot.api")
 
 
 class ChatApiHandler:
@@ -52,8 +52,8 @@ class ChatApiHandler:
 
     def _check_auth(self, handler):
         """Check Bearer token auth. Returns True if OK, sends 401 if not."""
-        cfg = self._services.config.proxy_for("chatbot_api")
-        token = cfg.get("auth_token") or ""
+        cfg = self._services.config.proxy_for("chatbot")
+        token = cfg.get("api_auth_token") or ""
         if not token:
             return True
 
@@ -70,8 +70,8 @@ class ChatApiHandler:
 
     def _check_auth_simple(self, body, headers, query):
         """Check auth for simple (non-raw) handlers. Returns error tuple or None."""
-        cfg = self._services.config.proxy_for("chatbot_api")
-        token = cfg.get("auth_token") or ""
+        cfg = self._services.config.proxy_for("chatbot")
+        token = cfg.get("api_auth_token") or ""
         if not token:
             return None
         auth = (headers or {}).get("Authorization", "")

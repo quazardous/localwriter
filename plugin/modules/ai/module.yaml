@@ -66,3 +66,91 @@ config:
     widget: file
     label: Models File (YAML)
     helper: "Override or extend the built-in model catalog for all providers"
+
+  # OpenAI-compatible config
+  openai_endpoint:
+    type: string
+    default: ""
+    label: OpenAI Default Endpoint
+    placeholder: "https://api.openai.com/v1"
+
+  openai_model:
+    type: string
+    default: ""
+    widget: select
+    label: OpenAI Default Model
+    options_provider: "plugin.modules.ai:get_openai_model_options"
+
+  openai_instances:
+    type: string
+    default: "[]"
+    widget: list_detail
+    inline: true
+    label: OpenAI Instances
+    name_field: name
+    item_fields:
+      name: {type: string, label: Name}
+      endpoint: {type: string, label: Endpoint}
+      api_key: {type: string, label: API Key, widget: password}
+      model: {type: string, label: Model, widget: select, options_from: openai_model}
+      image: {type: boolean, label: Images, widget: checkbox}
+
+  # Ollama config
+  ollama_endpoint:
+    type: string
+    default: "http://localhost:11434"
+    label: Ollama Default URL
+
+  ollama_model:
+    type: string
+    default: ""
+    widget: select
+    label: Ollama Default Model
+    options_provider: "plugin.modules.ai:get_ollama_model_options"
+
+  ollama_instances:
+    type: string
+    default: "[]"
+    widget: list_detail
+    inline: true
+    label: Ollama Instances
+    name_field: name
+    item_fields:
+      name: {type: string, label: Name}
+      endpoint: {type: string, label: URL, default: "http://localhost:11434"}
+      model: {type: string, label: Model, widget: select, options_from: ollama_model}
+
+  # Horde config
+  horde_api_key:
+    type: string
+    default: "0000000000"
+    widget: password
+    label: Horde API Key
+
+  horde_instances:
+    type: string
+    default: "[]"
+    widget: list_detail
+    inline: true
+    label: Horde Instances
+    name_field: name
+    item_fields:
+      name: {type: string, label: Name}
+      api_key: {type: string, label: API Key, widget: password}
+      model: {type: string, label: Model}
+
+  # Global AI Defaults (shared or per-provider?)
+  # Keeping them shared to simplify the UI if possible, or use prefixes if needed.
+  ai_temperature:
+    type: float
+    default: 0.7
+    min: 0.0
+    max: 2.0
+    widget: slider
+    label: Temperature
+
+  ai_max_tokens:
+    type: int
+    default: 4096
+    widget: number
+    label: Max Tokens
