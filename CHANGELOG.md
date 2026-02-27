@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.7.1] — 2026-02-27
+
+### Changed
+
+- Chat spinner: braille circling dot animation
+- Removed `chatbot.show_panel` option (LO sidebar API limitation)
+
 ## [1.7.0] — 2026-02-27
 
 ### Added
@@ -11,7 +18,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Inline submodule config: `config_inline: true` merges fields onto parent page with labeled separators
 - `config_inline` accepts explicit module name (e.g., `config_inline: main`) for cross-module grouping
 - Page titles (bold) and helpers on all module config pages
-- `chatbot.show_panel` option to control chat sidebar visibility (requires restart)
 - Automatic cleanup of stale XDL files during build
 
 ### Changed

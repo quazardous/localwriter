@@ -223,25 +223,23 @@ try:
                     return  # thread running, just updated text
                 _spinner_active[0] = True
                 def _spin():
-                    # Bouncing ball: . · ∘ ° ● ° ∘ · .
-                    frames = [".", "\u00B7", "\u2218",
-                              "\u00B0", "\u25CF",
-                              "\u00B0", "\u2218", "\u00B7"]
+                    # Braille circling dot
+                    frames = ["\u280B", "\u2819", "\u2839", "\u2838",
+                              "\u283C", "\u2834", "\u2826", "\u2827",
+                              "\u2807", "\u280F"]
                     i = 0
                     while _spinner_active[0]:
                         try:
                             if query_label and query_label.getModel():
-                                f = frames[i % len(frames)]
                                 t = _spinner_text[0]
+                                label = frames[i % len(frames)]
                                 if t:
-                                    query_label.getModel().Label = (
-                                        "%s %s" % (f, t))
-                                else:
-                                    query_label.getModel().Label = f
+                                    label = "%s  %s" % (label, t)
+                                query_label.getModel().Label = label
                         except Exception:
                             break
                         i += 1
-                        threading.Event().wait(0.12)
+                        threading.Event().wait(0.1)
                 threading.Thread(
                     target=_spin, daemon=True).start()
 
