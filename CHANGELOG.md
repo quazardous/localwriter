@@ -4,12 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.7.1] — 2026-02-27
+## [1.7.2] — 2026-02-27
 
 ### Changed
 
 - Chat spinner: braille circling dot animation
 - Removed `chatbot.show_panel` option (LO sidebar API limitation)
+- `description.xml` generated from template (`description.xml.tpl`)
+- Release process documented in AGENTS.md and DEVEL.md
 
 ## [1.7.0] — 2026-02-27
 

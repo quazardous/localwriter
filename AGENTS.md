@@ -36,6 +36,17 @@ make set-config             # List all config keys
 make help                   # All targets
 ```
 
+## Release
+
+```bash
+# bump version in plugin/version.py + CHANGELOG.md, then:
+git add -A && git commit -m "v1.x.y: description"
+git push
+make build
+gh release create v1.x.y --target framework --title "v1.x.y" --notes "changelog"
+gh release upload v1.x.y build/localwriter.oxt
+```
+
 ## Build pipeline
 
 ```

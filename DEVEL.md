@@ -161,6 +161,19 @@ make lo-log       # Show LO error log
 | `make nuke-cache` | Wipe entire cache (requires `make deploy` after) |
 | `make unbundle` | Remove bundled dev symlink |
 
+## Release
+
+1. Bump version in `plugin/version.py`
+2. Update `CHANGELOG.md`
+3. Commit and push
+4. Build and create GitHub release with the `.oxt` artifact:
+
+```bash
+make build
+gh release create v1.x.y --target framework --title "v1.x.y" --notes "changelog"
+gh release upload v1.x.y build/localwriter.oxt
+```
+
 ## Tests
 
 ```bash

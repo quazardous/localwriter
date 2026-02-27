@@ -1,5 +1,4 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<!-- The <version> element is patched automatically by: scripts/generate_manifest.py -->
 <description
   xmlns="http://openoffice.org/extensions/description/2006"
   xmlns:dep="http://openoffice.org/extensions/description/2006"
@@ -7,12 +6,12 @@
   xmlns:d="http://openoffice.org/extensions/description/2006"
   xmlns:l="http://libreoffice.org/extensions/description/2011">
     <identifier value="org.extension.localwriter"/>
-    <version value="1.5.1"/>
+    <version value="{{VERSION}}"/>
 	<dependencies>
 		<l:LibreOffice-minimal-version d:name="LibreOffice 4.1" value="4.1"/>
 	</dependencies>
     <publisher>
-        <name xlink:href="mailto:mylastnameumyfirstname@gmail.com">Developer</name>
+        <name xlink:href="mailto:berliozdavid@gmail.com">Developer</name>
     </publisher>
     <display-name>
         <name>localwriter</name>
@@ -22,6 +21,6 @@
   <default xlink:href="assets/logo.png"/>
   </icon>
 
-  
+
 
 </description>

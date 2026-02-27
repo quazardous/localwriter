@@ -3,6 +3,7 @@ build/
 *.oxt
 plugin/_manifest.py
 extension/META-INF/manifest.xml
+extension/description.xml
 
 # Vendored dependencies (make vendor)
 vendor/

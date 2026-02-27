@@ -5,7 +5,7 @@ Reads each module.yaml under plugin/modules/, validates it, and produces:
   - build/generated/_manifest.py     — Python dict for runtime
   - build/generated/registry/*.xcs   — LO config schemas
   - build/generated/registry/*.xcu   — LO config defaults
-  - Patches description.xml with version from plugin/version.py
+  - Generates description.xml from description.xml.tpl with version
 
 Usage:
     python3 scripts/generate_manifest.py
@@ -1563,30 +1563,24 @@ def generate_manifest_xml(modules, output_path):
 
 
 def patch_description_xml(extension_dir):
-    """Patch description.xml with version from plugin/version.py."""
+    """Generate description.xml from .tpl with version from plugin/version.py."""
     from plugin.version import EXTENSION_VERSION
 
+    tpl_path = os.path.join(extension_dir, "description.xml.tpl")
     desc_path = os.path.join(extension_dir, "description.xml")
-    if not os.path.exists(desc_path):
-        print("  WARNING: description.xml not found, skipping version patch")
+
+    if not os.path.exists(tpl_path):
+        print("  WARNING: description.xml.tpl not found, skipping")
         return
 
-    with open(desc_path) as f:
+    with open(tpl_path) as f:
         content = f.read()
 
-    # Replace version value
-    new_content = re.sub(
-        r'<version value="[^"]*"/>',
-        '<version value="%s"/>' % EXTENSION_VERSION,
-        content,
-    )
+    content = content.replace("{{VERSION}}", EXTENSION_VERSION)
 
-    if new_content != content:
-        with open(desc_path, "w") as f:
-            f.write(new_content)
-        print("  Patched description.xml with version %s" % EXTENSION_VERSION)
-    else:
-        print("  description.xml already at version %s" % EXTENSION_VERSION)
+    with open(desc_path, "w") as f:
+        f.write(content)
+    print("  Generated description.xml with version %s" % EXTENSION_VERSION)
 
 
 def main():
