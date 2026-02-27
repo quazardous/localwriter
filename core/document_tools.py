@@ -82,18 +82,14 @@ SEARCH_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "search_web",
-            "description": "Perform an autonomous web search using an AI sub-agent. The sub-agent will search the web, visit pages to read their content, and return a synthesized answer.",
+            "name": "web_research",
+            "description": "Perform an autonomous web research using an AI sub-agent. The sub-agent will search the web, visit pages to read their content, and return a synthesized answer.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string", 
                         "description": "The information to search for or the question to answer."
-                    },
-                    "rationale": {
-                        "type": "string",
-                        "description": "Why you are requesting this information."
                     }
                 },
                 "required": ["query"],
@@ -225,8 +221,7 @@ def tool_edit_image(model, ctx, args, status_callback=None):
         return json.dumps({"status": "error", "message": str(e)})
 
 
-def tool_search_web(model, ctx, args, status_callback=None, append_thinking_callback=None):
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+def tool_web_research(model, ctx, args, status_callback=None, append_thinking_callback=None):
     from core.config import get_api_config
     from core.api import LlmClient
     from core.smol_model import LocalWriterSmolModel
@@ -243,52 +238,53 @@ def tool_search_web(model, ctx, args, status_callback=None, append_thinking_call
 
         config = get_api_config(ctx)
         max_tokens = int(config.get("chat_max_tokens", 2048))
-        search_timeout = int(config.get("search_web_timeout", 120))  # seconds, default 2 min
+        max_steps = int(config.get("search_web_max_steps", 10))
 
-        smol_model = LocalWriterSmolModel(LlmClient(config, ctx), max_tokens=max_tokens)
+        smol_model = LocalWriterSmolModel(
+            LlmClient(config, ctx), max_tokens=max_tokens,
+            status_callback=status_callback,
+        )
         agent = ToolCallingAgent(
             tools=[DuckDuckGoSearchTool(), VisitWebpageTool()],
             model=smol_model,
+            max_steps=max_steps,
         )
         task = f"Please find the answer to this query by searching the web and reading pages if needed: {query}"
 
-        def run_agent_stream():
-            if not append_thinking_callback:
-                return agent.run(task)
-                
-            final_ans = None
-            from core.smolagents_vendor.memory import ActionStep, FinalAnswerStep
-            for step in agent.run(task, stream=True):
-                if isinstance(step, ActionStep):
+        # Always use streaming mode so we can push status heartbeats between steps.
+        # This keeps the UI drain loop active and LibreOffice responsive.
+        final_ans = None
+        from core.smolagents_vendor.memory import ActionStep, FinalAnswerStep
+        for step in agent.run(task, stream=True):
+            if isinstance(step, ActionStep):
+                # Always push a status update so the drain loop stays active
+                step_label = "Step %d" % step.step_number
+                if step.tool_calls:
+                    tool_names = ", ".join(tc.name for tc in step.tool_calls)
+                    step_label += ": %s" % tool_names
+                if status_callback:
+                    status_callback("Web research %s..." % step_label)
+
+                # Detailed thinking text is optional (controlled by show_search_thinking)
+                if append_thinking_callback:
                     msg = f"Step {step.step_number}:\n"
                     if step.model_output:
                         msg += f"{step.model_output.strip()}\n"
                     elif getattr(step, "model_output_message", None) and step.model_output_message.content:
                         msg += f"{str(step.model_output_message.content).strip()}\n"
-                    
+
                     if step.tool_calls:
                         for tc in step.tool_calls:
                             msg += f"Running tool: {tc.name} with {tc.arguments}\n"
-                    
+
                     if step.observations:
                         msg += f"Observation: {str(step.observations).strip()}\n"
-                        
+
                     append_thinking_callback(msg + "\n")
-                elif isinstance(step, FinalAnswerStep):
-                    final_ans = step.output
-            return final_ans
+            elif isinstance(step, FinalAnswerStep):
+                final_ans = step.output
 
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(run_agent_stream)
-            try:
-                answer = future.result(timeout=search_timeout)
-            except FuturesTimeoutError:
-                return json.dumps({
-                    "status": "error",
-                    "message": f"Web search timed out after {search_timeout} seconds. Try a narrower query or increase search_web_timeout in config.",
-                })
-
-        return json.dumps({"status": "ok", "result": str(answer)})
+        return json.dumps({"status": "ok", "result": str(final_ans)})
     except Exception as e:
         return json.dumps({"status": "error", "message": f"Web search failed: {str(e)}"})
 
@@ -325,7 +321,7 @@ TOOL_DISPATCH = {
     "generate_image": tool_generate_image,
     "edit_image": tool_edit_image,
     # Search
-    "search_web": tool_search_web,
+    "web_research": tool_web_research,
 }
 
 

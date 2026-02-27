@@ -616,7 +616,7 @@ class SendButtonListener(unohelper.Base, XActionListener):
     # was failing in some environments. Revisit when integrating with the async tool-calling path.
 
     def _run_web_search(self, query_text, model):
-        """Run the search_web tool via the sub-agent and stream its result into the response area."""
+        """Run the web_research tool via the sub-agent and stream its result into the response area."""
         from core.api import format_error_message
         from core.document_tools import execute_tool
 
@@ -626,22 +626,27 @@ class SendButtonListener(unohelper.Base, XActionListener):
 
         q = queue.Queue()
         job_done = [False]
+        # Read show_thinking before spawning the thread so apply_chunk can use it
+        try:
+            from core.config import get_config, as_bool
+            show_thinking = as_bool(get_config(self.ctx, "show_search_thinking", False))
+        except Exception:
+            show_thinking = False
 
         def run_search():
             try:
-                from core.config import get_config
-                from core.config import as_bool
-                show_thinking = as_bool(get_config(self.ctx, "show_search_thinking", False))
 
                 def status_cb(msg):
                     q.put(("status", msg))
 
+                # Always push thinking to the queue so the drain loop stays active
+                # (processEventsToIdle fires each iteration). Display is controlled
+                # by show_thinking in apply_chunk below.
                 def thinking_cb(msg):
-                    if show_thinking:
-                        q.put(("thinking", msg))
+                    q.put(("thinking", msg))
 
                 result = execute_tool(
-                    "search_web",
+                    "web_research",
                     {"query": query_text},
                     model,
                     self.ctx,
@@ -679,6 +684,10 @@ class SendButtonListener(unohelper.Base, XActionListener):
             return
 
         def apply_chunk(chunk_text, is_thinking=False):
+            # Thinking items always flow through the queue to keep the drain loop
+            # active, but we only display them if the setting is on.
+            if is_thinking and not show_thinking:
+                return
             self._append_response(chunk_text)
 
         def on_stream_done(response):
@@ -1298,6 +1307,14 @@ class ChatPanelElement(unohelper.Base, XUIElement):
                 if base_size_label and hasattr(base_size_label, "setVisible"):
                     base_size_label.setVisible(is_image_mode)
 
+            # Helper to enable/disable controls
+            def set_control_enabled(ctrl, enabled):
+                if ctrl:
+                    if hasattr(ctrl, "setEnable"):
+                        ctrl.setEnable(enabled)
+                    elif hasattr(ctrl.getModel(), "Enabled"):
+                        ctrl.getModel().Enabled = enabled
+
             # "Use Image model" checkbox
             if direct_image_check:
                 try:
@@ -1305,11 +1322,16 @@ class ChatPanelElement(unohelper.Base, XUIElement):
                     direct_checked = get_config(self.ctx, "chat_direct_image", False)
                     set_checkbox_state(direct_image_check, 1 if direct_checked else 0)
                     toggle_image_ui(direct_checked)
+                    
+                    if direct_checked:
+                        set_control_enabled(web_search_check, False)
+                        
                     if hasattr(direct_image_check, "addItemListener"):
                         class DirectImageCheckListener(unohelper.Base, XItemListener):
-                            def __init__(self, ctx, toggle_cb):
+                            def __init__(self, ctx, toggle_cb, web_check):
                                 self.ctx = ctx
                                 self.toggle_cb = toggle_cb
+                                self.web_check = web_check
                             def itemStateChanged(self, ev):
                                 try:
                                     state = getattr(ev, "Selected", 0)
@@ -1317,13 +1339,40 @@ class ChatPanelElement(unohelper.Base, XUIElement):
                                     
                                     set_config(self.ctx, "chat_direct_image", is_checked)
                                     self.toggle_cb(is_checked)
+                                    set_control_enabled(self.web_check, not is_checked)
                                 except Exception as e:
                                     debug_log("Image checkbox listener error: %s" % e, context="Chat")
                             def disposing(self, ev):
                                 pass
-                        direct_image_check.addItemListener(DirectImageCheckListener(self.ctx, toggle_image_ui))
+                        direct_image_check.addItemListener(DirectImageCheckListener(self.ctx, toggle_image_ui, web_search_check))
                 except Exception as e:
                     debug_log("direct_image_check wire error: %s" % e, context="Chat")
+
+            # "Web Research" checkbox
+            if web_search_check:
+                try:
+                    # If web search should also disable image model at startup if it was checked:
+                    from core.uno_ui_helpers import get_checkbox_state
+                    web_is_checked = get_checkbox_state(web_search_check) == 1
+                    if web_is_checked:
+                        set_control_enabled(direct_image_check, False)
+
+                    if hasattr(web_search_check, "addItemListener"):
+                        class WebSearchCheckListener(unohelper.Base, XItemListener):
+                            def __init__(self, img_check):
+                                self.img_check = img_check
+                            def itemStateChanged(self, ev):
+                                try:
+                                    state = getattr(ev, "Selected", 0)
+                                    is_checked = (state == 1)
+                                    set_control_enabled(self.img_check, not is_checked)
+                                except Exception as e:
+                                    debug_log("Web search check listener error: %s" % e, context="Chat")
+                            def disposing(self, ev):
+                                pass
+                        web_search_check.addItemListener(WebSearchCheckListener(direct_image_check))
+                except Exception as e:
+                    debug_log("web_search_check wire error: %s" % e, context="Chat")
 
             # Register for config changes (e.g. Settings dialog). Weakref so this panel can be
             # GC'd without unregistering; callback no-ops if panel is gone.

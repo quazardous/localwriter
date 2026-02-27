@@ -10,11 +10,12 @@ class LocalWriterSmolModel(Model):
     A wrapper that implements `smolagents.models.Model` by delegating 
     requests to LocalWriter's `LlmClient` (`core.api`).
     """
-    def __init__(self, llm_client, max_tokens=1024, **kwargs):
+    def __init__(self, llm_client, max_tokens=1024, status_callback=None, **kwargs):
         super().__init__(**kwargs)
         self.api = llm_client
         self.max_tokens = max_tokens
         self.model_id = self.api.config.get("model", "localwriter/model")
+        self._status_callback = status_callback
 
     def generate(self, messages, stop_sequences=None, response_format=None, tools_to_call_from=None, **kwargs):
         completion_kwargs = self._prepare_completion_kwargs(
@@ -27,9 +28,16 @@ class LocalWriterSmolModel(Model):
         msg_dicts = completion_kwargs.get("messages", [])
         tools = completion_kwargs.get("tools", None)
         
+        # Push heartbeat so the UI drain loop stays active during this blocking call
+        if self._status_callback:
+            self._status_callback("Calling model...")
+
         # Make the request to LocalWriter's backend
         result = self.api.request_with_tools(msg_dicts, max_tokens=self.max_tokens, tools=tools)
         
+        if self._status_callback:
+            self._status_callback("Model responded, processing...")
+
         content = result.get("content") or ""
         tool_calls_dict = result.get("tool_calls")
         
@@ -73,3 +81,4 @@ class LocalWriterSmolModel(Model):
         if token_usage:
             msg.token_usage = token_usage
         return msg
+
