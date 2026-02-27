@@ -40,12 +40,6 @@ try:
 except ImportError:
     create_repo = metadata_update = snapshot_download = upload_folder = None  # type: ignore[assignment]
 
-try:
-    from jinja2 import StrictUndefined, Template
-except ImportError:
-    StrictUndefined = None  # type: ignore[assignment]
-    Template = None  # type: ignore[assignment]
-
 class _StubText:
     def __init__(self, content="", style=None): self.content = content
     def __str__(self): return self.content
@@ -156,11 +150,21 @@ def _render_toolcalling_system_prompt(
 
 
 def populate_template(template: str, variables: dict[str, Any]) -> str:
-    compiled_template = Template(template, undefined=StrictUndefined)
-    try:
-        return compiled_template.render(**variables)
-    except Exception as e:
-        raise Exception(f"Error during jinja template rendering: {type(e).__name__}: {e}")
+    """
+    Lightweight template substitution used by the vendored agent.
+
+    This implementation intentionally avoids Jinja2 to keep dependencies minimal.
+    It supports the simple `{{var}}` placeholders used in ToolCallingAgent prompts
+    and final-answer templates by performing plain string replacement.
+
+    More advanced Jinja2 features (loops, conditionals) are NOT supported here.
+    They are not used by the LocalWriter `search_web` path.
+    """
+    result = template
+    for key, value in (variables or {}).items():
+        placeholder = "{{" + key + "}}"
+        result = result.replace(placeholder, str(value))
+    return result
 
 
 @dataclass

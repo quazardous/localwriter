@@ -31,8 +31,6 @@ from pathlib import Path
 from textwrap import dedent
 from typing import TYPE_CHECKING, Any, Callable
 
-import jinja2
-
 
 if TYPE_CHECKING:
     from .memory import AgentLogger
@@ -473,6 +471,20 @@ if __name__ == "__main__":
 
 
 def create_agent_gradio_app_template():
+    """
+    Return a Jinja2 template for generating a Gradio app, if Jinja2 is available.
+
+    LocalWriter does not rely on this for the `search_web` path; it is kept only
+    for completeness when users have the optional Jinja2 dependency installed.
+    """
+    try:
+        import jinja2
+    except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(
+            "Jinja2 is required only for exporting agents as Gradio apps. "
+            "Install it with `pip install jinja2` if you need that feature."
+        ) from e
+
     env = jinja2.Environment(loader=jinja2.BaseLoader(), undefined=jinja2.StrictUndefined)
     env.filters["repr"] = repr
     env.filters["camelcase"] = lambda value: "".join(word.capitalize() for word in value.split("_"))

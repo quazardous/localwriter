@@ -20,9 +20,12 @@ from enum import IntEnum
 
 class Console:
     def __init__(self, highlight=False, **kwargs):
+        # Lightweight stub: ignore highlighting/styling kwargs.
         pass
+
     def print(self, *args, **kwargs):
-        print(*args, **kwargs)
+        # Drop Rich-style keyword args like `style=...` and just print the text.
+        print(*args)
 
 class Text:
     def __init__(self, content="", style=None):

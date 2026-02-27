@@ -105,7 +105,13 @@ class DuckDuckGoSearchTool(Tool):
 
         url = "https://lite.duckduckgo.com/lite/"
         data = urllib.parse.urlencode({"q": query}).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers={"User-Agent": "Mozilla/5.0"})
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0"
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=10) as response:
                 html = response.read().decode("utf-8")
@@ -184,7 +190,12 @@ class VisitWebpageTool(Tool):
         import re
 
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0"
+                },
+            )
             with urllib.request.urlopen(req, timeout=20) as response:
                 content_type = response.headers.get_content_charset() or "utf-8"
                 html = response.read().decode(content_type, errors="ignore")

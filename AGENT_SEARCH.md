@@ -21,18 +21,18 @@ To avoid introducing a heavy external dependency on `smolagents` (which ordinari
 
 ### Zero-Dependency Web Tools
 The original `smolagents` web tools (`DuckDuckGoSearchTool` and `VisitWebpageTool`) rely on `requests`, `beautifulsoup4`, and `markdownify`. We completely rewrote these tools to use only Python's standard library:
-- **Networking**: Replaced `requests` with `urllib.request`.
+- **Networking**: Replaced `requests` with `urllib.request`. Both tools send a realistic Firefox user agent string (`Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0`) to reduce 403s from some sites (e.g., Yelp).
 - **Parsing**: Replaced `beautifulsoup4` and `markdownify` with custom subclasses of standard `html.parser.HTMLParser` to extract search results and strip tags for page content reading.
 
 ### LlmClient Wrapper
-To ensure the sub-agent uses the exact same model, endpoint, and API keys as the rest of LocalWriter, we created `LocalWriterSmolModel` (in `core/smol_model.py`). This class extends the `smolagents` base `Model` class but overrides `generate()` to proxy all requests directly to LocalWriter's existing `core.api.LlmClient`.
+To ensure the sub-agent uses the exact same model, endpoint, and API keys as the rest of LocalWriter, we created `LocalWriterSmolModel` (in `core/smol_model.py`). This class extends the `smolagents` base `Model` class but overrides `generate()` to proxy all requests directly to LocalWriter's existing `core.api.LlmClient`. For CLI testing without LibreOffice we also provide `OpenRouterSmolModel` in `scripts/test_search_web.py`, which talks directly to OpenRouter’s OpenAI-compatible HTTP API.
 
 ### The `search_web` Tool
 Exposed in `core/document_tools.py`, the `search_web` tool accepts a `query` and an optional `rationale`. When invoked:
 1. It instantiates the `LocalWriterSmolModel`.
 2. It initializes a `ToolCallingAgent` equipped with the zero-dependency DuckDuckGo and Webpage Visitor tools.
-3. It kicks off the `smolagents` run loop, which autonomously researches the query.
-4. It catches the final answer and returns it as a string to the main agent.
+3. It kicks off the `smolagents` run loop, which autonomously researches the query until it calls the `final_answer` tool or hits a timeout/max-steps limit.
+4. It catches the final answer and returns it to the main agent as JSON: `{"status": "ok", "result": "<answer>"}` (or `{"status": "error", "message": "..."}` on failure/timeout).
 
 ## 3. Vendored Files Overview
 
@@ -64,25 +64,25 @@ This is a custom file specific to LocalWriter, acting as the bridge between `smo
 
 ---
 
-## 4. Current Status & Remaining Work
+## 4. Current Status & Testing
 
 **What is Done:**
 - **Vendoring core files**: Copied `agents.py`, `models.py`, `tools.py`, `default_tools.py`, etc. to `core/smolagents_vendor`.
-- **Tool Adaptation**: Completely rewrote `DuckDuckGoSearchTool` and `VisitWebpageTool` in `default_tools.py` to use `urllib.request` and standard library parsers.
+- **Tool Adaptation**: Completely rewrote `DuckDuckGoSearchTool` and `VisitWebpageTool` in `default_tools.py` to use `urllib.request` and standard library parsers, with a realistic Firefox user agent to reduce 403s.
 - **Model Wrapper**: Built `LocalWriterSmolModel` (`core/smol_model.py`) to connect the sub-agent directly to LocalWriter's existing `LlmClient`.
 - **Tool Registration**: Registered the `search_web` task in `core/document_tools.py` executing the ReAct loop inline.
-- **YAML Removal (Partial)**: In `agents.py`, patched prompt loading to read `toolcalling_agent.json` instead of loading a `.yaml` file.
-- **Minimal `local_python_executor`**: Added `core/smolagents_vendor/local_python_executor.py` with stubs so that `default_tools` and `agents` import without failure; the search_web path only uses DuckDuckGo and VisitWebpage tools.
-- **Jinja2 removal for ToolCallingAgent**: Replaced `populate_template()` in `ToolCallingAgent.initialize_system_prompt()` with `_render_toolcalling_system_prompt()`; `toolcalling_agent.json` system_prompt now uses placeholders `__TOOLS_LIST__`, `__MANAGED_AGENTS_BLOCK__`, `__CUSTOM_INSTRUCTIONS__`. No jinja2 required for the search_web path.
-- **Rich optional**: In `monitoring.py`, Rich is imported in try/except with stub classes when missing; `agents.py` similarly uses optional Rich with stubs. The sub-agent runs without the `rich` package.
-- **Vendored import fixes**: `monitoring.py` uses `from .utils import escape_code_brackets`; `memory.py` uses relative `.models`, `.monitoring`, `.utils`; optional imports for `huggingface_hub`, `remote_executors`, `yaml`, `jinja2` in `agents.py` and `tools.py` so the package loads on minimal environments.
-- **Error handling and timeout**: `tool_search_web` catches all exceptions and returns JSON `{"status": "error", "message": "..."}`; optional config key `search_web_timeout` (default 120 s) with `ThreadPoolExecutor` so long-running searches do not block the UI indefinitely.
+- **YAML/Jinja2 removal for ToolCallingAgent**: Replaced `populate_template()` in `ToolCallingAgent.initialize_system_prompt()` with `_render_toolcalling_system_prompt()` and a JSON prompt (`toolcalling_agent.json`) using simple placeholders. The search_web path no longer depends on Jinja2.
+- **Optional Rich/logging**: `monitoring.py` and `agents.py` use lightweight stubs when `rich` is absent; the search_web path logs to stderr/stdout only, and our `Console` stub ignores Rich-only kwargs like `style=...`.
+- **Optional heavy deps (PIL/requests/audio)**: `agent_types.py` treats Pillow and requests as optional; image/audio types only require them if actually used. This keeps the vendored package importable on a minimal Python install while search_web (text only) continues to work.
+- **Error handling and timeout**: `tool_search_web` catches all exceptions and returns JSON `{"status": "error", "message": "..."}`; optional config key `search_web_timeout` (default 120 s) wraps the sub-agent in a `ThreadPoolExecutor` so long-running searches do not block the UI indefinitely.
+- **CLI harness (OpenRouter)**: `scripts/test_search_web.py` provides a standalone CLI that uses `OpenRouterSmolModel` + `ToolCallingAgent` + `DuckDuckGoSearchTool` + `VisitWebpageTool` against OpenRouter. It defaults to `nvidia/nemotron-3-nano-30b-a3b` and falls back to a plain completion if the model does not emit JSON tool-calls.
 
-**What Still Needs to be Done:**
-- **Decoupling remaining heavy dependencies**: Make `PIL` and `requests` optional in `agent_types.py` so the vendored package loads on a clean Python install without them (search_web does not use images).
-- **Other templates**: Planning and managed-agent prompts still use `populate_template` (jinja2) when those code paths are used; only the ToolCallingAgent system_prompt is jinja2-free.
-- **Testing the full loop**: Run a live search from the Chat sidebar to confirm end-to-end behavior with the configured LLM and DuckDuckGo/VisitWebpage tools.
-- **Scraping robustness**: Gracefully handle API blocks and rate limits during scraping; sub-agent failure states already return clean error messages to the main agent.
+**Manual Testing Notes:**
+- From the repo root:
+  - `export OPENROUTER_API_KEY="sk-or-..."`  
+  - `python -m scripts.test_search_web "What is the latest stable Python release and when was it released?"`
+- You can pass `--model some/other-model` or `--max-tokens 4096` to experiment.
+- Models that fully support OpenAI tool-calling will drive the ReAct loop (web_search + visit_webpage + final_answer). Models that ignore tools will still produce a useful answer via the direct-completion fallback.
 
 ---
 

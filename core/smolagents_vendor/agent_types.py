@@ -20,8 +20,10 @@ import uuid
 from io import BytesIO
 from typing import Any
 
-import PIL.Image
-import requests
+try:
+    import PIL.Image as _PIL_Image
+except ModuleNotFoundError:
+    _PIL_Image = None
 
 from .utils import _is_package_available
 
@@ -71,14 +73,13 @@ class AgentText(AgentType, str):
         return str(self._value)
 
 
-class AgentImage(AgentType, PIL.Image.Image):
+class AgentImage(AgentType):
     """
     Image type returned by the agent. Behaves as a PIL.Image.Image.
     """
 
     def __init__(self, value):
         AgentType.__init__(self, value)
-        PIL.Image.Image.__init__(self)
 
         self._path = None
         self._raw = None
@@ -86,10 +87,13 @@ class AgentImage(AgentType, PIL.Image.Image):
 
         if isinstance(value, AgentImage):
             self._raw, self._path, self._tensor = value._raw, value._path, value._tensor
-        elif isinstance(value, PIL.Image.Image):
+        elif _PIL_Image is not None and isinstance(value, _PIL_Image.Image):
             self._raw = value
         elif isinstance(value, bytes):
-            self._raw = PIL.Image.open(BytesIO(value))
+            if _PIL_Image is not None:
+                self._raw = _PIL_Image.open(BytesIO(value))
+            else:
+                self._raw = value
         elif isinstance(value, (str, pathlib.Path)):
             self._path = value
         else:
@@ -124,14 +128,23 @@ class AgentImage(AgentType, PIL.Image.Image):
             return self._raw
 
         if self._path is not None:
-            self._raw = PIL.Image.open(self._path)
+            if _PIL_Image is None:
+                raise ModuleNotFoundError(
+                    "Pillow is required to load image paths into AgentImage. "
+                    "Install it with `pip install pillow`, or avoid image outputs."
+                )
+            self._raw = _PIL_Image.open(self._path)
             return self._raw
 
         if self._tensor is not None:
             import numpy as np
 
             array = self._tensor.cpu().detach().numpy()
-            return PIL.Image.fromarray((255 - array * 255).astype(np.uint8))
+            if _PIL_Image is None:
+                raise ModuleNotFoundError(
+                    "Pillow is required to convert tensors to images in AgentImage."
+                )
+            return _PIL_Image.fromarray((255 - array * 255).astype(np.uint8))
 
     def to_string(self):
         """
@@ -144,6 +157,11 @@ class AgentImage(AgentType, PIL.Image.Image):
         if self._raw is not None:
             directory = tempfile.mkdtemp()
             self._path = os.path.join(directory, str(uuid.uuid4()) + ".png")
+            if _PIL_Image is None and not hasattr(self._raw, "save"):
+                raise ModuleNotFoundError(
+                    "Pillow is required to save AgentImage contents. "
+                    "Install it with `pip install pillow`, or avoid image outputs."
+                )
             self._raw.save(self._path, format="png")
             return self._path
 
@@ -153,7 +171,11 @@ class AgentImage(AgentType, PIL.Image.Image):
             array = self._tensor.cpu().detach().numpy()
 
             # There is likely simpler than load into image into save
-            img = PIL.Image.fromarray((255 - array * 255).astype(np.uint8))
+            if _PIL_Image is None:
+                raise ModuleNotFoundError(
+                    "Pillow is required to convert tensors to images in AgentImage."
+                )
+            img = _PIL_Image.fromarray((255 - array * 255).astype(np.uint8))
 
             directory = tempfile.mkdtemp()
             self._path = os.path.join(directory, str(uuid.uuid4()) + ".png")
@@ -170,6 +192,11 @@ class AgentImage(AgentType, PIL.Image.Image):
             **params: Additional parameters to pass to PIL.Image.save.
         """
         img = self.to_raw()
+        if _PIL_Image is None and not hasattr(img, "save"):
+            raise ModuleNotFoundError(
+                "Pillow is required to save AgentImage contents. "
+                "Install it with `pip install pillow`, or avoid image outputs."
+            )
         img.save(output_bytes, format=format, **params)
 
 
@@ -226,6 +253,13 @@ class AgentAudio(AgentType, str):
 
         if self._path is not None:
             if "://" in str(self._path):
+                try:
+                    import requests
+                except ModuleNotFoundError as e:
+                    raise ModuleNotFoundError(
+                        "requests is required to load remote audio URLs in AgentAudio. "
+                        "Install it with `pip install requests`, or provide local file paths instead."
+                    ) from e
                 response = requests.get(self._path)
                 response.raise_for_status()
                 tensor, self.samplerate = sf.read(BytesIO(response.content))
@@ -269,7 +303,7 @@ def handle_agent_output_types(output: Any, output_type: str | None = None) -> An
     # If the class does not have defined output, then we map according to the type
     if isinstance(output, str):
         return AgentText(output)
-    if isinstance(output, PIL.Image.Image):
+    if _PIL_Image is not None and isinstance(output, _PIL_Image.Image):
         return AgentImage(output)
     try:
         import torch

@@ -53,8 +53,6 @@ Opus 4.6 one-shotted this Arch Linux resume:
 Sonnet 4.6 one-shotted this "pretty spreadsheet"
 ![Chat Sidebar with Dashboard](Sonnet46Spreadsheet.png)
 
-
-
 ## LocalWriter Architecture
 
 LocalWriter isn't just a wrapper; it's built for performance and deep integration with LibreOffice:
@@ -119,6 +117,24 @@ This benchmarking framework is used to tune system prompts and select the best-p
 **Fine-tuning.** An interesting direction is to **fine-tune a model** specifically for this tool set and task distribution: the same correctness could potentially be achieved with fewer reasoning steps and fewer tokens, improving both latency and Corr/USD. The existing eval and dataset are a natural training signal (correct vs incorrect tool use, minimal vs verbose traces).
 
 **Tool set and model size.** LocalWriter already exposes a rich but curated subset of Writer/Calc/Draw operations (styles, comments, tables, markdown apply, etc.), not the full OpenDocument/UNO surface. An open question is whether we should or can **expose more of the full UNO tool set** for capable models, while keeping a **smaller subset** for smaller or cheaper models that might be confused or wasteful with too many options. That would allow “right-sized” backends: minimal tools for fast local models, full power for frontier models when the user needs it.
+
+### 9. Web Search via Smolagents (experimental)
+
+LocalWriter can delegate “research on the open web” to a small autonomous sub-agent built with a vendored subset of Hugging Face’s **smolagents**:
+
+*   **ToolCallingAgent + tools**: We vendor `ToolCallingAgent` and lightweight tools `DuckDuckGoSearchTool` and `VisitWebpageTool` in `core/smolagents_vendor/`. They use only standard library networking (`urllib.request`) and parsing (`html.parser`), plus a realistic Firefox user agent string for fewer 403s.
+*   **`search_web` tool (Writer Chat)**: In `core/document_tools.py` we expose a `search_web` tool that the main chat agent can call. It spins up a ToolCallingAgent with those web tools and runs a ReAct loop (search → visit → synthesize) until it calls the `final_answer` tool, then returns `{"status": "ok", "result": "<answer>"}` back to the main agent.
+*   **Same model & endpoint as chat**: Inside LibreOffice, the sub-agent uses `LocalWriterSmolModel`, which wraps LocalWriter’s existing `LlmClient` and therefore respects your configured endpoint, model, API key, temperature, etc.
+*   **CLI harness for testing**: For manual testing and debugging, `scripts/test_search_web.py` uses an `OpenRouterSmolModel` that talks directly to OpenRouter’s OpenAI-compatible HTTP API with the same ToolCallingAgent + web tools. Example:
+
+    ```bash
+    export OPENROUTER_API_KEY="sk-or-..."
+    python -m scripts.test_search_web "What is the latest stable Python release and when was it released?"
+    ```
+
+    By default it uses `nvidia/nemotron-3-nano-30b-a3b`, but you can override with `--model` or `--max-tokens`.
+
+Today this web search capability is available to the AI as a **tool**, not yet as a separate “mode” in the UI, but it’s designed so we can easily surface a dedicated “Web Research” entry point alongside “Chat with Document” in a future iteration.
 
 ## Roadmap
 
