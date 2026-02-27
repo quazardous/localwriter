@@ -1,5 +1,5 @@
 name: ai.ollama
-description: Ollama local LLM backend
+title: Ollama local LLM backend
 requires: [ai]
 capabilities: [text, tools]
 

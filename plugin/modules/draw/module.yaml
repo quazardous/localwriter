@@ -1,5 +1,5 @@
 name: draw
-description: Draw/Impress tools (shapes, pages/slides)
+title: Draw and Impress tools
 requires: [document, config, ai]
 
 config: {}

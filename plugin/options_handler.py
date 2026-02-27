@@ -255,15 +255,31 @@ class OptionsHandler(unohelper.Base, XContainerWindowEventHandler, XServiceInfo)
 
         manifest = self._get_manifest()
         mod_config = self._get_module_config(manifest, module_name)
-        if not mod_config:
-            return
-
         config_svc = self._get_config_service()
 
+        if mod_config:
+            self._load_module_fields(xWindow, module_name, mod_config,
+                                     config_svc, prefix="")
+
+        # Handle inline submodules (e.g. tunnel.bore, tunnel.ngrok)
+        inline_names = self._detect_inline_modules(xWindow)
+        if inline_names:
+            for child_name in inline_names:
+                child_config = self._get_module_config(manifest, child_name)
+                if not child_config:
+                    continue
+                child_safe = child_name.replace(".", "_")
+                self._load_module_fields(
+                    xWindow, child_name, child_config, config_svc,
+                    prefix=child_safe + "__")
+
+    def _load_module_fields(self, xWindow, module_name, mod_config,
+                            config_svc, prefix=""):
+        """Load config fields into controls, with optional ID prefix."""
         for field_name, schema in mod_config.items():
             widget = schema.get("widget", "text")
             if widget == "list_detail":
-                if schema.get("inline"):
+                if not prefix and schema.get("inline"):
                     self._ld_on_initialize(xWindow, module_name, field_name)
                 continue  # non-inline handled on separate page
 
@@ -276,7 +292,8 @@ class OptionsHandler(unohelper.Base, XContainerWindowEventHandler, XServiceInfo)
 
             self._cached_values[full_key] = val
 
-            ctrl = self._get_control(xWindow, field_name)
+            ctrl_id = prefix + field_name
+            ctrl = self._get_control(xWindow, ctrl_id)
             if ctrl is None:
                 continue
 
@@ -300,7 +317,7 @@ class OptionsHandler(unohelper.Base, XContainerWindowEventHandler, XServiceInfo)
 
             # Wire browse button for file/folder widgets
             if widget in ("file", "folder"):
-                btn = self._get_control(xWindow, "btn_%s" % field_name)
+                btn = self._get_control(xWindow, "btn_%s" % ctrl_id)
                 if btn and ctrl:
                     btn.addActionListener(_BrowseListener(
                         ctrl, widget, schema.get("file_filter", "")))
@@ -319,8 +336,6 @@ class OptionsHandler(unohelper.Base, XContainerWindowEventHandler, XServiceInfo)
 
         manifest = self._get_manifest()
         mod_config = self._get_module_config(manifest, module_name)
-        if not mod_config:
-            return
 
         config_svc = self._get_config_service()
         if not config_svc:
@@ -328,17 +343,46 @@ class OptionsHandler(unohelper.Base, XContainerWindowEventHandler, XServiceInfo)
             return
 
         changes = {}
+        if mod_config:
+            changes = self._save_module_fields(xWindow, module_name, mod_config,
+                                               prefix="")
+
+        # Handle inline submodules
+        inline_names = self._detect_inline_modules(xWindow)
+        if inline_names:
+            for child_name in inline_names:
+                child_config = self._get_module_config(manifest, child_name)
+                if not child_config:
+                    continue
+                child_safe = child_name.replace(".", "_")
+                child_changes = self._save_module_fields(
+                    xWindow, child_name, child_config,
+                    prefix=child_safe + "__")
+                changes.update(child_changes)
+
+        if changes:
+            diffs = config_svc.set_batch(changes, old_values=self._cached_values)
+            # Update cache with new values
+            for key, val in changes.items():
+                self._cached_values[key] = val
+            if diffs:
+                log.info("_on_ok: %d change(s) saved for %s", len(diffs), module_name)
+
+    def _save_module_fields(self, xWindow, module_name, mod_config, prefix=""):
+        """Read control values for a module's fields. Returns dict of changes."""
+        changes = {}
         for field_name, schema in mod_config.items():
             widget = schema.get("widget", "text")
             if widget == "list_detail":
-                if schema.get("inline"):
+                if not prefix and schema.get("inline"):
                     self._ld_on_ok(xWindow, module_name, field_name)
                 continue
 
             full_key = "%s.%s" % (module_name, field_name)
             field_type = schema.get("type", "string")
 
-            ctrl = self._get_control(xWindow, field_name)
+            ctrl_id = prefix + field_name
+            ctrl = self._get_control(xWindow, ctrl_id)
             if ctrl is None:
                 continue
 
@@ -348,14 +392,7 @@ class OptionsHandler(unohelper.Base, XContainerWindowEventHandler, XServiceInfo)
                 changes[full_key] = new_val
             except Exception:
                 log.exception("_on_ok: read control FAILED for %s", full_key)
-
-        if changes:
-            diffs = config_svc.set_batch(changes, old_values=self._cached_values)
-            # Update cache with new values
-            for key, val in changes.items():
-                self._cached_values[key] = val
-            if diffs:
-                log.info("_on_ok: %d change(s) saved for %s", len(diffs), module_name)
+        return changes
 
     def _on_back(self, xWindow):
         """Reload values (revert unsaved changes)."""
@@ -687,6 +724,19 @@ class OptionsHandler(unohelper.Base, XContainerWindowEventHandler, XServiceInfo)
             if ctrl:
                 model = ctrl.getModel()
                 return getattr(model, "Label", "") or getattr(model, "Text", "")
+        except Exception:
+            pass
+        return None
+
+    def _detect_inline_modules(self, xWindow):
+        """Read the hidden __inline_modules__ control. Returns list of names or None."""
+        try:
+            ctrl = xWindow.getControl("__inline_modules__")
+            if ctrl:
+                model = ctrl.getModel()
+                raw = getattr(model, "Label", "") or getattr(model, "Text", "")
+                if raw:
+                    return [n.strip() for n in raw.split(",") if n.strip()]
         except Exception:
             pass
         return None

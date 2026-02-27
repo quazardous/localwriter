@@ -54,6 +54,18 @@ class OllamaModule(ModuleBase):
 
 def _bg_warmup(provider, instance_id, events):
     """Background warmup: emit status events on the bus."""
+    # Fast connectivity check before attempting warmup
+    ok, err = provider.check()
+    if not ok:
+        log.warning("Skipping warmup for %s: %s", instance_id, err)
+        with provider._status_lock:
+            provider._status = "error"
+            provider._status_message = err
+        events.emit("ai:instance_status",
+                    instance_id=instance_id, status="error",
+                    message=err)
+        return
+
     events.emit("ai:instance_status",
                 instance_id=instance_id, status="loading",
                 message="Loading model...")

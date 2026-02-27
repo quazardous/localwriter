@@ -1,7 +1,8 @@
 name: core
-description: Core services (document, config, events, format)
+title: Core services (config, events, logging)
 provides_services: [document, config, events, format]
 requires: []
+config_inline: main
 
 config:
   log_level:

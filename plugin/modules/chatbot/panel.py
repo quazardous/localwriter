@@ -286,6 +286,18 @@ class SendButtonListener:
             self._set_status("No LLM provider configured")
             return
 
+        # Fast connectivity check before streaming
+        ok, err = provider.check()
+        if not ok:
+            self._set_status("Provider unreachable: %s" % err)
+            return
+
+        # Check provider readiness (model loaded, no warmup error)
+        st = provider.get_status()
+        if not st.get("ready"):
+            self._set_status("Provider not ready: %s" % st.get("message", "unknown"))
+            return
+
         # Inject document context
         if doc:
             from plugin.modules.chatbot.context import build_context
@@ -388,6 +400,7 @@ class SendButtonListener:
         return False
 
     def _set_status(self, text):
+        log.debug("status: %s", text)
         if self.on_status:
             try:
                 self.on_status(text)

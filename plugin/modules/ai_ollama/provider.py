@@ -46,6 +46,35 @@ class OllamaProvider(OpenAICompatProvider):
         # Some Ollama models support vision (llava, etc.)
         return False
 
+    # ── Connectivity check ──────────────────────────────────────────────
+
+    def check(self):
+        """Check Ollama is reachable and the configured model exists."""
+        parsed = urllib.parse.urlparse(self._endpoint())
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 11434
+
+        # 1. TCP probe
+        try:
+            s = socket.create_connection((host, port), timeout=5)
+            s.close()
+        except (socket.timeout, OSError) as e:
+            return (False, "Ollama unreachable at %s:%d (%s)" % (host, port, e))
+
+        # 2. Verify model exists
+        model = self._config.get("model") or ""
+        if not model:
+            return (True, "")
+        try:
+            status, raw = self._ollama_request(
+                "POST", "/api/show", body={"name": model}, timeout=5)
+            if status != 200:
+                return (False, "Model '%s' not found in Ollama" % model)
+        except Exception as e:
+            return (False, "Ollama model check failed: %s" % e)
+
+        return (True, "")
+
     # ── Warmup / status ───────────────────────────────────────────────
 
     def _ollama_request(self, method, path, body=None, timeout=30):

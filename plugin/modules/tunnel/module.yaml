@@ -1,5 +1,5 @@
 name: tunnel
-description: Tunnel providers for exposing MCP externally
+title: Tunnel providers for external MCP access
 requires: [config, events, http_routes]
 provides_services: [tunnel_manager]
 

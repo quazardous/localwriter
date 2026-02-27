@@ -30,6 +30,15 @@
 
 EXTENSION_NAME = localwriter
 
+# ── Local overrides (gitignored) ────────────────────────────────────────────
+# Create Makefile.local with e.g. USE_DOCKER = 1
+-include Makefile.local
+
+# Set USE_DOCKER=1 to build via Docker instead of local Python/PyYAML.
+# Persistent: echo "USE_DOCKER = 1" > Makefile.local
+# One-shot:   make deploy USE_DOCKER=1
+USE_DOCKER ?=
+
 # ── OS detection ─────────────────────────────────────────────────────────────
 
 ifeq ($(OS),Windows_NT)
@@ -67,8 +76,8 @@ endif
         dev-deploy dev-deploy-remove \
         lo-start lo-start-full lo-kill lo-restart \
         clean-cache nuke-cache nuke-cache-force unbundle \
-        log log-tail lo-log test check-ext deploy \
-        set-config vendor
+        log log-tail lo-log test check-ext check-setup deploy \
+        set-config vendor docker-build
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 
@@ -103,16 +112,35 @@ help:
 	@echo "  make nuke-cache             Wipe entire extension cache"
 	@echo "  make unbundle               Remove bundled dev symlink"
 	@echo ""
+	@echo "Docker:"
+	@echo "  make docker-build           Build .oxt in Docker (no local deps needed)"
+	@echo "  USE_DOCKER=1                Use Docker for all build targets (deploy, install, ...)"
+	@echo "                              Persistent: echo 'USE_DOCKER = 1' > Makefile.local"
+	@echo ""
+	@echo "Info:"
+	@echo "  make check-setup            Verify dev stack (Python, LO, make, ...)"
+	@echo "  make check-ext              Verify extension is registered"
+	@echo "  make set-config             List all config keys"
+	@echo ""
 
 # ── Build ────────────────────────────────────────────────────────────────────
 
 vendor:
 	uv pip install --target vendor -r requirements-vendor.txt
 
+docker-build:
+	UID=$$(id -u) GID=$$(id -g) docker compose -f builder/docker-compose.yml up --build
+	@echo "Done: build/localwriter.oxt"
+
+ifeq ($(USE_DOCKER),1)
+build:
+	@$(MAKE) docker-build
+else
 build: vendor manifest
 	@echo "Building $(EXTENSION_NAME).oxt..."
 	$(PYTHON) $(SCRIPTS)/build_oxt.py --output build/$(EXTENSION_NAME).oxt
 	@echo "Done: build/$(EXTENSION_NAME).oxt  (bundle in build/bundle/)"
+endif
 
 repack:
 	@echo "Re-packing from build/bundle/..."
@@ -248,6 +276,9 @@ log-tail:
 
 lo-log:
 	@cat $(HOME_DIR)/soffice-debug.log 2>/dev/null || echo "No soffice-debug.log found"
+
+check-setup:
+	$(RUN_SH) $(SCRIPTS)/check-setup$(EXT)
 
 check-ext:
 	@unopkg list 2>&1 | head -10

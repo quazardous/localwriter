@@ -4,6 +4,48 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.7.0] — 2026-02-27
+
+### Added
+
+- Inline submodule config: `config_inline: true` merges fields onto parent page with labeled separators
+- `config_inline` accepts explicit module name (e.g., `config_inline: main`) for cross-module grouping
+- Page titles (bold) and helpers on all module config pages
+- `chatbot.show_panel` option to control chat sidebar visibility (requires restart)
+- Automatic cleanup of stale XDL files during build
+
+### Changed
+
+- Tunnel submodules (bore, cloudflare, ngrok, tailscale) inlined onto parent Tunnel page
+- Core and debug modules inlined onto Main page
+- Writer and calc modules inlined onto Doc page
+- Renamed module `common` to `doc`
+- Bold title (font-weight 150) and semibold separator labels (font-weight 110) via `dlg:styles`
+
+### Fixed
+
+- `get_provider_options()` missing `services` parameter (tunnel provider dropdown was empty)
+- Options handler early return on modules with no own config but with inline children
+- Submodules with no visible config fields no longer show empty separators
+
+## [1.6.0] — 2026-02-26
+
+### Added
+
+- Tool broker: two-tier tool delivery with core tools always sent, extended tools on demand
+- Intent-based tool grouping: 78 extended tools tagged (navigate/edit/review/media)
+- Meta-tools: `request_tools(intent="...")` and `list_available_tools()`
+- Lazy probe: Enter sends without tools, auto-retries if LLM needs them
+- Chat vs Do modes: Enter=lazy, Ctrl+Enter=force tools, status label hint
+- BROKER_HINT in system prompt to guide LLM on intent activation
+- Ollama model pull/status support
+- Cross-platform Makefile, Windows dev setup scripts
+
+### Changed
+
+- OpenAI streaming improvements
+- Broker logging in streaming.py (broker vs classic mode)
+
 ## [1.5.1] — 2026-02-25
 
 ### Changed

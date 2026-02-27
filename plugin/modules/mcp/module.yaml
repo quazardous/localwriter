@@ -1,5 +1,5 @@
 name: mcp
-description: MCP JSON-RPC server for external tool access
+title: MCP protocol endpoint
 requires: [document, config, events, http_routes]
 
 config:

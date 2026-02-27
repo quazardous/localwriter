@@ -1,5 +1,6 @@
 name: tunnel.tailscale
-description: Tailscale Funnel tunnel provider
+title: Tailscale Funnel tunnel provider
 requires: [tunnel_manager]
+config_inline: true
 
 config: {}

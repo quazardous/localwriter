@@ -338,6 +338,7 @@ def bootstrap(ctx=None):
         # Pre-load icons into ImageManager so first menu display has them
         threading.Thread(target=_update_menu_icons, daemon=True).start()
 
+
         _initialized = True
         log.info("Framework bootstrap complete: %d modules, %d tools",
                  len(_modules), len(_tools))
@@ -574,6 +575,8 @@ def _update_menu_icons():
     except Exception as e:
         log.warning("Dynamic icon update failed: %s", e)
 
+
+# ── Conditional menus (visible_if) ─────────────────────────────────────
 
 # ── UNO component registration ────────────────────────────────────────
 

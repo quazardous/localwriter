@@ -150,7 +150,7 @@ def generate_manifest_py(modules, output_path):
         # Clean repr — only keep runtime-relevant keys
         entry = {
             "name": m["name"],
-            "description": m.get("description", ""),
+            "title": m.get("title", ""),
             "requires": m.get("requires", []),
             "provides_services": m.get("provides_services", []),
             "config": m.get("config", {}),
@@ -350,6 +350,56 @@ def _add_helper(board, field_name, helper_text, y):
     ET.SubElement(board, _dlg("text"), attrs)
 
 
+# Style IDs for dlg:styles block
+_STYLE_BOLD = "0"       # font-weight 150 = bold (for titles)
+_STYLE_SEMIBOLD = "1"   # font-weight 110 = semibold (for separator labels)
+
+
+def _add_styles(window):
+    """Add a dlg:styles block with bold/semibold styles to the window element.
+
+    Must be called before the bulletinboard, as LO expects styles first.
+    """
+    styles = ET.SubElement(window, _dlg("styles"))
+    ET.SubElement(styles, _dlg("style"), {
+        _dlg("style-id"): _STYLE_BOLD,
+        _dlg("font-weight"): "150",
+    })
+    ET.SubElement(styles, _dlg("style"), {
+        _dlg("style-id"): _STYLE_SEMIBOLD,
+        _dlg("font-weight"): "110",
+    })
+
+
+def _add_title(board, title_id, text, y):
+    """Add a bold title at the top of a config page. Returns new y."""
+    ET.SubElement(board, _dlg("text"), {
+        _dlg("id"): title_id,
+        _dlg("tab-index"): "0",
+        _dlg("left"): str(_MARGIN),
+        _dlg("top"): str(y),
+        _dlg("width"): str(_PAGE_WIDTH - _MARGIN * 2),
+        _dlg("height"): "8",
+        _dlg("value"): text,
+        _dlg("style-id"): _STYLE_BOLD,
+    })
+    return y + 8 + _ROW_GAP
+
+
+def _add_page_helper(board, helper_id, text, y):
+    """Add a helper text below a title or separator. Returns new y."""
+    ET.SubElement(board, _dlg("text"), {
+        _dlg("id"): helper_id,
+        _dlg("tab-index"): "0",
+        _dlg("left"): str(_MARGIN),
+        _dlg("top"): str(y),
+        _dlg("width"): str(_PAGE_WIDTH - _MARGIN * 2),
+        _dlg("height"): str(_HELPER_HEIGHT),
+        _dlg("value"): text,
+    })
+    return y + _HELPER_HEIGHT + _ROW_GAP
+
+
 def _xdl_to_string(root):
     """Serialize XDL element tree to string with XML declaration and DOCTYPE."""
     ET.indent(root, space="  ")
@@ -362,20 +412,40 @@ def _xdl_to_string(root):
 
 
 _SEPARATOR_HEIGHT = 1
+_LABELED_SEPARATOR_HEIGHT = 8  # like LO's own fixedline labels
 _SEPARATOR_GAP = 4
 
 
-def _add_separator(board, sep_id, y):
-    """Add a horizontal separator line. Returns new y after the separator."""
-    ET.SubElement(board, _dlg("fixedline"), {
-        _dlg("id"): sep_id,
-        _dlg("tab-index"): "0",
-        _dlg("left"): str(_MARGIN),
-        _dlg("top"): str(y),
-        _dlg("width"): str(_PAGE_WIDTH - _MARGIN * 2),
-        _dlg("height"): str(_SEPARATOR_HEIGHT),
-    })
-    return y + _SEPARATOR_HEIGHT + _SEPARATOR_GAP
+def _add_separator(board, sep_id, y, label=None):
+    """Add a horizontal separator line. Returns new y after the separator.
+
+    If *label* is given, the fixedline uses height 8 (standard LO convention)
+    and a semibold style so the label renders above the line.
+    """
+    if label:
+        h = _LABELED_SEPARATOR_HEIGHT
+        attrs = {
+            _dlg("id"): sep_id,
+            _dlg("tab-index"): "0",
+            _dlg("left"): str(_MARGIN),
+            _dlg("top"): str(y),
+            _dlg("width"): str(_PAGE_WIDTH - _MARGIN * 2),
+            _dlg("height"): str(h),
+            _dlg("value"): label,
+            _dlg("style-id"): _STYLE_SEMIBOLD,
+        }
+    else:
+        h = _SEPARATOR_HEIGHT
+        attrs = {
+            _dlg("id"): sep_id,
+            _dlg("tab-index"): "0",
+            _dlg("left"): str(_MARGIN),
+            _dlg("top"): str(y),
+            _dlg("width"): str(_PAGE_WIDTH - _MARGIN * 2),
+            _dlg("height"): str(h),
+        }
+    ET.SubElement(board, _dlg("fixedline"), attrs)
+    return y + h + _SEPARATOR_GAP
 
 
 def _add_inline_list_detail(board, field_name, schema, y):
@@ -480,8 +550,19 @@ def _add_inline_list_detail(board, field_name, schema, y):
     return y
 
 
-def generate_xdl(module_name, config_fields):
-    """Generate an XDL dialog page for a module's config fields."""
+def generate_xdl(module_name, config_fields, title=None,
+                  page_helper=None, inline_children=None):
+    """Generate an XDL dialog page for a module's config fields.
+
+    Args:
+        module_name: Dotted module name (e.g. "tunnel").
+        config_fields: Ordered dict of field_name -> schema.
+        title: Bold title rendered at the top (typically module description).
+        page_helper: Optional helper text below the title.
+        inline_children: Optional list of (child_manifest, child_config) tuples
+            whose fields are appended after the parent's, each preceded by a
+            labeled separator.
+    """
     page_id = "LocalWriter_%s" % module_name.replace(".", "_")
 
     window = ET.Element(_dlg("window"), {
@@ -496,6 +577,9 @@ def generate_xdl(module_name, config_fields):
     # Force namespace declarations on root
     window.set("xmlns:script", _SCRIPT_NS)
 
+    # Styles must come before bulletinboard
+    _add_styles(window)
+
     board = ET.SubElement(window, _dlg("bulletinboard"))
 
     # Hidden control to identify the module
@@ -507,7 +591,31 @@ def generate_xdl(module_name, config_fields):
         _dlg("value"): module_name,
     })
 
+    # Hidden control listing inline module names (comma-separated)
+    # Only include children that have visible config fields
+    if inline_children:
+        inline_names = ",".join(
+            child_m["name"] for child_m, child_cfg in inline_children
+            if any(not s.get("internal") and s.get("widget", "text") != "list_detail"
+                   for s in child_cfg.values()))
+        ET.SubElement(board, _dlg("text"), {
+            _dlg("id"): "__inline_modules__",
+            _dlg("tab-index"): "0",
+            _dlg("left"): "0", _dlg("top"): "0",
+            _dlg("width"): "0", _dlg("height"): "0",
+            _dlg("value"): inline_names,
+        })
+
     y = _MARGIN
+
+    # Bold title (module description)
+    safe = module_name.replace(".", "_")
+    if title:
+        y = _add_title(board, "title_%s" % safe, title, y)
+
+    # Optional page helper below title
+    if page_helper:
+        y = _add_page_helper(board, "phlp_%s" % safe, page_helper, y)
 
     # Build ordered list of (field_name, schema) for separator logic
     field_items = list(config_fields.items())
@@ -566,6 +674,73 @@ def generate_xdl(module_name, config_fields):
 
         y += _ROW_GAP
 
+    # ── Inline children sections ─────────────────────────────────────
+    if inline_children:
+        for child_m, child_config in inline_children:
+            # Skip children with no visible config fields
+            visible_fields = [
+                (fn, s) for fn, s in child_config.items()
+                if not s.get("internal") and s.get("widget", "text") != "list_detail"
+            ]
+            if not visible_fields:
+                continue
+
+            child_name = child_m["name"]
+            child_safe = child_name.replace(".", "_")
+
+            # Labeled separator (uses module title as label)
+            sep_counter[0] += 1
+            sep_label = child_m.get("title", _pretty_name(child_name))
+            y = _add_separator(
+                board, "sep_%d" % sep_counter[0], y, label=sep_label)
+
+            # Optional helper below separator
+            child_helper = child_m.get("helper")
+            if child_helper:
+                y = _add_page_helper(
+                    board, "phlp_%s" % child_safe, child_helper, y)
+
+            # Child config fields with prefixed IDs
+            for field_name, schema in child_config.items():
+                if schema.get("internal"):
+                    continue
+                widget = schema.get("widget", "text")
+                if widget == "list_detail":
+                    continue  # not supported inline-in-inline
+
+                prefixed = "%s__%s" % (child_safe, field_name)
+                label_text = schema.get("label", field_name)
+
+                _add_label(board, prefixed, label_text, y)
+
+                if widget == "checkbox":
+                    _add_checkbox(board, prefixed, schema, y)
+                elif widget == "password":
+                    _add_textfield(board, prefixed, schema, y, echo_char=42)
+                elif widget == "textarea":
+                    _add_textfield(board, prefixed, schema, y, multiline=True)
+                    y += _ROW_HEIGHT * 2
+                elif widget in ("number", "slider"):
+                    _add_numericfield(board, prefixed, schema, y)
+                elif widget == "select":
+                    _add_menulist(board, prefixed, schema, y)
+                elif widget == "combo":
+                    _add_combobox(board, prefixed, schema, y)
+                elif widget in ("file", "folder"):
+                    _add_filefield(board, prefixed, schema, y)
+                else:
+                    _add_textfield(board, prefixed, schema, y)
+
+                y += _ROW_HEIGHT
+
+                helper_text = schema.get("helper")
+                if helper_text:
+                    y += _HELPER_GAP
+                    _add_helper(board, prefixed, helper_text, y)
+                    y += _HELPER_HEIGHT
+
+                y += _ROW_GAP
+
     return _xdl_to_string(window)
 
 
@@ -588,6 +763,8 @@ def generate_list_detail_xdl(module_name, field_name, schema):
         _dlg("withtitlebar"): "false",
     })
     window.set("xmlns:script", _SCRIPT_NS)
+
+    _add_styles(window)
 
     board = ET.SubElement(window, _dlg("bulletinboard"))
 
@@ -710,19 +887,69 @@ def generate_xdl_files(modules, output_dir):
     """Generate XDL dialog files for modules with config."""
     os.makedirs(output_dir, exist_ok=True)
     count = 0
+    count_removed = 0
+    generated_paths = set()
+
+    # Build map: target_name -> [(child_manifest, child_config)] for
+    # modules that opt into config_inline.
+    # config_inline: true  -> inlined into dotted parent (tunnel.bore -> tunnel)
+    # config_inline: "foo" -> inlined into module "foo"
+    by_name = {m["name"]: m for m in modules}
+    inline_map = {}   # target_name -> list of (child_manifest, child_config)
+    inline_set = set()  # names of modules that are inlined
+
+    # First pass: collect all inline targets
+    inline_targets = {}  # name -> target
+    for m in modules:
+        inline_val = m.get("config_inline")
+        if not inline_val:
+            continue
+        name = m["name"]
+        if isinstance(inline_val, str):
+            target = inline_val
+        else:
+            if "." not in name:
+                continue
+            target = name.rsplit(".", 1)[0]
+        inline_targets[name] = target
+
+    # Second pass: build map, skip if target is itself inlined
+    for name, target in inline_targets.items():
+        if target in inline_targets:
+            continue  # target is itself inlined — ignore
+        m = by_name[name]
+        child_config = m.get("config", {})
+        inline_map.setdefault(target, []).append((m, child_config))
+        inline_set.add(name)
 
     for m in modules:
-        config = m.get("config", {})
-        if not config:
+        name = m["name"]
+
+        # Skip modules that are inlined into their parent
+        if name in inline_set:
             continue
 
-        name = m["name"]
+        config = m.get("config", {})
+
+        # Gather inline children for this module (if any)
+        children = inline_map.get(name)
+
+        # Skip if no own config AND no inline children
+        if not config and not children:
+            continue
+
         safe = name.replace(".", "_")
+        title = m.get("title")
+        page_helper = m.get("helper")
 
         # Main page (regular fields, skips list_detail)
         xdl_path = os.path.join(output_dir, "%s.xdl" % safe)
         with open(xdl_path, "w") as f:
-            f.write(generate_xdl(name, config))
+            f.write(generate_xdl(name, config,
+                                 title=title,
+                                 page_helper=page_helper,
+                                 inline_children=children))
+        generated_paths.add(xdl_path)
         count += 1
 
         # Separate pages for each non-inline list_detail field
@@ -735,10 +962,22 @@ def generate_xdl_files(modules, output_dir):
             ld_path = os.path.join(output_dir, "%s.xdl" % ld_safe)
             with open(ld_path, "w") as f:
                 f.write(generate_list_detail_xdl(name, field_name, schema))
+            generated_paths.add(ld_path)
             count += 1
 
+    # Clean stale XDL files (e.g. modules that became inlined)
+    for stale in os.listdir(output_dir):
+        if stale.endswith(".xdl"):
+            stale_path = os.path.join(output_dir, stale)
+            if stale_path not in generated_paths:
+                os.remove(stale_path)
+                count_removed += 1
+
     if count:
-        print("  Generated %d XDL dialog pages in %s" % (count, output_dir))
+        msg = "  Generated %d XDL dialog pages in %s" % (count, output_dir)
+        if count_removed:
+            msg += " (removed %d stale)" % count_removed
+        print(msg)
 
 
 # ── Addons.xcu Generation ────────────────────────────────────────────
@@ -833,6 +1072,7 @@ def _build_menu_entries(submenu_el, entries, actions, module_name, counter,
                       icon_prefix) tuples for the Images section.
     """
     for entry in entries:
+
         counter[0] += 1
         node_id = "M%d" % counter[0]
 
@@ -918,7 +1158,6 @@ def generate_addons_xcu(modules, framework_manifest, output_path):
     counter = [0]
     prev_module = False
     icon_entries = []  # (command_url, module_name, icon_prefix)
-
     # Module entries (in topo-sort order)
     for m in modules:
         menus = m.get("menus")
@@ -975,6 +1214,7 @@ def generate_addons_xcu(modules, framework_manifest, output_path):
         f.write(body)
         f.write("\n")
     print("  Generated %s" % output_path)
+
 
 
 # ── Accelerators.xcu Generation ─────────────────────────────────────
@@ -1096,6 +1336,19 @@ def generate_options_dialog_xcu(modules):
     top_level = []       # modules without dots (in order)
     children = {}        # parent_name -> [child_modules] (in order)
     has_children = set()
+    inline_set = set()       # modules inlined into another page
+    inline_target_set = set()  # modules that receive inline children
+
+    for m in modules:
+        inline_val = m.get("config_inline")
+        if not inline_val:
+            continue
+        name = m["name"]
+        inline_set.add(name)
+        if isinstance(inline_val, str):
+            inline_target_set.add(inline_val)
+        elif "." in name:
+            inline_target_set.add(name.rsplit(".", 1)[0])
 
     for m in modules:
         name = m["name"]
@@ -1115,9 +1368,9 @@ def generate_options_dialog_xcu(modules):
     # GroupIndex controls display order within the group.
     group_idx = 0
 
-    # Framework-level "Main" leaf (always first if it has config)
+    # Framework-level "Main" leaf (first if it has config or inline children)
     for m in top_level:
-        if m["name"] == "main" and m.get("config"):
+        if m["name"] == "main" and (m.get("config") or "main" in inline_target_set):
             _add_leaf(lw_leaves, "LocalWriter_main", "Main",
                       "main", "main", handler_service,
                       group_id=lw_node_name, group_index=group_idx)
@@ -1127,10 +1380,10 @@ def generate_options_dialog_xcu(modules):
     # Simple modules (no sub-modules) as leaves under LocalWriter
     for m in top_level:
         name = m["name"]
-        if name == "main" or name in has_children:
+        if name == "main" or name in has_children or name in inline_set:
             continue
         config = m.get("config", {})
-        if not config:
+        if not config and name not in inline_target_set:
             continue
         safe = name.replace(".", "_")
         _add_leaf(lw_leaves, "LocalWriter_%s" % safe, _pretty_name(name),
@@ -1164,7 +1417,7 @@ def generate_options_dialog_xcu(modules):
         config = m.get("config", {})
 
         # Parent's own config (labeled "Tunnel" not "Main" since it's flat)
-        if config:
+        if config or name in inline_target_set:
             safe = name.replace(".", "_")
             _add_leaf(lw_leaves, "LocalWriter_%s" % safe,
                       _pretty_name(name),
@@ -1173,7 +1426,10 @@ def generate_options_dialog_xcu(modules):
             group_idx += 1
 
         # Sub-module leaves (labeled "Tunnel: Ngrok" etc.)
+        # Skip children that opt into config_inline (merged onto parent page).
         for child in children.get(name, []):
+            if child.get("config_inline"):
+                continue
             child_name = child["name"]
             child_config = child.get("config", {})
             if not child_config:
@@ -1372,27 +1628,28 @@ def main():
 
     build_dir = os.path.join(PROJECT_ROOT, "build", "generated")
 
-    # 1. _manifest.py
+    # 1. Addons.xcu (menus) — run first to collect conditional menus
+    addons_xcu_path = os.path.join(build_dir, "Addons.xcu")
+    generate_addons_xcu(
+        sorted_modules, framework_manifest, addons_xcu_path)
+
+    # 2. _manifest.py
     manifest_path = os.path.join(PROJECT_ROOT, "plugin", "_manifest.py")
     generate_manifest_py(sorted_modules, manifest_path)
 
-    # 2. XCS/XCU
+    # 3. XCS/XCU
     registry_dir = os.path.join(build_dir, "registry")
     generate_xcs_xcu(sorted_modules, registry_dir)
 
-    # 3. XDL dialog pages
+    # 4. XDL dialog pages
     dialogs_dir = os.path.join(build_dir, "dialogs")
     generate_xdl_files(sorted_modules, dialogs_dir)
 
-    # 4. OptionsDialog.xcu
+    # 5. OptionsDialog.xcu
     options_xcu_path = os.path.join(build_dir, "OptionsDialog.xcu")
     with open(options_xcu_path, "w") as f:
         f.write(generate_options_dialog_xcu(sorted_modules))
     print("  Generated %s" % options_xcu_path)
-
-    # 5. Addons.xcu (menus)
-    addons_xcu_path = os.path.join(build_dir, "Addons.xcu")
-    generate_addons_xcu(sorted_modules, framework_manifest, addons_xcu_path)
 
     # 6. Accelerators.xcu (shortcuts)
     accel_xcu_path = os.path.join(build_dir, "Accelerators.xcu")

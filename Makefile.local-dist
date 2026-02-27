@@ -1,0 +1,5 @@
+# Copy this file to Makefile.local to customize your dev environment.
+# Makefile.local is gitignored — your settings won't be committed.
+
+# Uncomment to use Docker for all build targets (deploy, install, ...):
+# USE_DOCKER = 1

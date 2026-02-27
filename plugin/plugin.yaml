@@ -1,5 +1,5 @@
 name: main
-description: LocalWriter global settings
+title: LocalWriter global settings
 
 actions:
   about:
@@ -9,9 +9,9 @@ menus:
   - separator: true
   - action: about
 
-config:
-  debug:
-    type: boolean
-    default: false
-    widget: checkbox
-    label: Debug Mode
+# config:
+#   debug:
+#     type: boolean
+#     default: false
+#     widget: checkbox
+#     label: Debug Mode

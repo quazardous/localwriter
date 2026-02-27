@@ -1,3 +1,0 @@
-name: common
-description: Common tools for all document types
-requires: [document, config, events]

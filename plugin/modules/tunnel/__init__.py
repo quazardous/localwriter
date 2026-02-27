@@ -25,15 +25,13 @@ class TunnelAuthError(TunnelError):
     """Provider requires authentication credentials."""
 
 
-def get_provider_options():
+def get_provider_options(services):
     """Return available tunnel providers as option dicts.
 
     Called dynamically by the options handler to populate the provider
     select widget. Discovers registered providers from the tunnel_manager.
     """
     try:
-        from plugin.main import get_services
-        services = get_services()
         if services and hasattr(services, "tunnel_manager"):
             mgr = services.tunnel_manager
             return [

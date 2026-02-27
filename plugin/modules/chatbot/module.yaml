@@ -1,5 +1,5 @@
 name: chatbot
-description: AI chat sidebar
+title: AI chat sidebar
 requires: [document, config, events, ai]
 
 actions:
@@ -23,6 +23,14 @@ shortcuts:
     context: [writer, calc]
 
 config:
+  show_panel:
+    type: boolean
+    default: true
+    widget: checkbox
+    label: Show Chat Panel
+    helper: "Show or hide the chat sidebar panel (requires restart)"
+    public: true
+
   max_tool_rounds:
     type: int
     default: 15

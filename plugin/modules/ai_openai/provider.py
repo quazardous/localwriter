@@ -88,6 +88,20 @@ class OpenAICompatProvider(LlmProvider):
         self._conn = None
         self._conn_key = None
 
+    # ── Connectivity check ──────────────────────────────────────────────
+
+    def check(self):
+        """TCP probe to the API endpoint (5s timeout)."""
+        parsed = urllib.parse.urlparse(self._endpoint())
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or (443 if (parsed.scheme or "http") == "https" else 80)
+        try:
+            s = socket.create_connection((host, port), timeout=5)
+            s.close()
+            return (True, "")
+        except (socket.timeout, OSError) as e:
+            return (False, "Provider unreachable at %s:%d (%s)" % (host, port, e))
+
     # ── Connection management ──────────────────────────────────────────
 
     def _endpoint(self):

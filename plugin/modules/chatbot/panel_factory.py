@@ -223,23 +223,25 @@ try:
                     return  # thread running, just updated text
                 _spinner_active[0] = True
                 def _spin():
-                    frames = ["-", "\\", "|", "/"]
+                    # Bouncing ball: . · ∘ ° ● ° ∘ · .
+                    frames = [".", "\u00B7", "\u2218",
+                              "\u00B0", "\u25CF",
+                              "\u00B0", "\u2218", "\u00B7"]
                     i = 0
                     while _spinner_active[0]:
                         try:
                             if query_label and query_label.getModel():
+                                f = frames[i % len(frames)]
                                 t = _spinner_text[0]
                                 if t:
                                     query_label.getModel().Label = (
-                                        "%s %s" % (
-                                            frames[i % len(frames)], t))
+                                        "%s %s" % (f, t))
                                 else:
-                                    query_label.getModel().Label = (
-                                        " %s" % frames[i % len(frames)])
+                                    query_label.getModel().Label = f
                         except Exception:
                             break
                         i += 1
-                        threading.Event().wait(0.15)
+                        threading.Event().wait(0.12)
                 threading.Thread(
                     target=_spin, daemon=True).start()
 
@@ -249,7 +251,16 @@ try:
                     try:
                         if query_label and query_label.getModel():
                             query_label.getModel().Label = (
-                                "Enter=chat  Ctrl+Enter=do  (%s)" % text)
+                                "Chat (%s)" % text)
+                    except Exception:
+                        pass
+                elif text.startswith(("Error", "Provider ", "Model ",
+                                     "No LLM", "Not ready")):
+                    # Static error — no spinner
+                    _spinner_active[0] = False
+                    try:
+                        if query_label and query_label.getModel():
+                            query_label.getModel().Label = text
                     except Exception:
                         pass
                 else:
@@ -515,7 +526,11 @@ try:
                     if not st.get("ready", True):
                         _provider_ready[0] = False
                         set_buttons(False, False)
-                        set_status(st.get("message", "Loading..."))
+                        msg = st.get("message", "Loading...")
+                        if not msg.startswith(("Error", "Provider ",
+                                               "Model ", "Loading")):
+                            msg = "Error: %s" % msg
+                        set_status(msg)
             except Exception:
                 pass
 
@@ -538,7 +553,11 @@ try:
                         else:
                             _provider_ready[0] = False
                             set_buttons(False, False)
-                            set_status(message or status)
+                            msg = message or status
+                            if not msg.startswith(("Error", "Provider ",
+                                                   "Model ", "Loading")):
+                                msg = "Error: %s" % msg
+                            set_status(msg)
                     except Exception:
                         pass
 
@@ -721,6 +740,8 @@ try:
 
             ai = services.get("ai")
 
+            events_bus = services.get("events")
+
             def _add_dropdown(name, y, options, capability):
                 lm = smgr.createInstanceWithContext(
                     "com.sun.star.awt.UnoControlListBoxModel", self.ctx)
@@ -751,33 +772,50 @@ try:
                     lc.selectItemPos(sel, True)
 
                 class _Listener(unohelper.Base, XItemListener):
-                    def __init__(self, ai_svc, cap, ids):
+                    def __init__(self, ai_svc, cap, ids, events_bus=None):
                         self._ai = ai_svc
                         self._cap = cap
                         self._ids = ids
+                        self._events = events_bus
 
                     def itemStateChanged(self, evt):
                         pos = evt.Selected
                         if self._ai and 0 <= pos < len(self._ids):
+                            instance_id = self._ids[pos]
                             self._ai.set_active_instance(
-                                self._cap, self._ids[pos])
+                                self._cap, instance_id)
+                            # Emit status so the chat panel updates
+                            if self._events and self._cap == "text":
+                                try:
+                                    st = self._ai.get_active_status(
+                                        self._cap)
+                                    self._events.emit(
+                                        "ai:instance_status",
+                                        instance_id=instance_id,
+                                        status="ready" if st.get(
+                                            "ready", True) else "error",
+                                        message=st.get(
+                                            "message", ""))
+                                except Exception:
+                                    pass
 
                     def disposing(self, evt):
                         pass
 
                 lc.addItemListener(
-                    _Listener(ai, capability, ids))
-                return lc
+                    _Listener(ai, capability, ids,
+                              events_bus=events_bus))
+                return lc, ids
 
             # Label + dropdown on same row, 22px row height, 12px gap
             _add_label("text_label", 10, "Text AI")
-            text_dd = _add_dropdown(
+            text_dd, text_ids = _add_dropdown(
                 "text_instance", 10,
                 get_text_instance_options(services),
                 "text")
 
             _add_label("image_label", 46, "Image AI")
-            image_dd = _add_dropdown(
+            image_dd, image_ids = _add_dropdown(
                 "image_instance", 46,
                 get_image_instance_options(services),
                 "image")
@@ -785,30 +823,32 @@ try:
             # Refresh dropdowns when config changes (e.g. new AI instances)
             events = services.get("events")
             if events:
-                def _refresh_dropdown(lc, options_fn, capability):
+                def _refresh_dropdown(lc, options_fn, capability, ids_ref):
                     """Repopulate a ListBox from fresh options."""
                     lc.removeItems(0, lc.getItemCount())
-                    ids = []
+                    ids_ref.clear()
                     for opt in options_fn(services):
-                        lc.addItem(opt["label"], len(ids))
-                        ids.append(opt["value"])
+                        lc.addItem(opt["label"], len(ids_ref))
+                        ids_ref.append(opt["value"])
                     current = ""
                     if ai:
                         current = ai._get_active_instance_id(capability)
                     sel = 0
-                    for i, v in enumerate(ids):
+                    for i, v in enumerate(ids_ref):
                         if v == current:
                             sel = i
                             break
-                    if ids:
+                    if ids_ref:
                         lc.selectItemPos(sel, True)
 
                 def _on_config_changed(**data):
                     try:
                         _refresh_dropdown(
-                            text_dd, get_text_instance_options, "text")
+                            text_dd, get_text_instance_options,
+                            "text", text_ids)
                         _refresh_dropdown(
-                            image_dd, get_image_instance_options, "image")
+                            image_dd, get_image_instance_options,
+                            "image", image_ids)
                     except Exception:
                         pass
 

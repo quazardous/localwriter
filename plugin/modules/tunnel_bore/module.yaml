@@ -1,6 +1,7 @@
 name: tunnel.bore
-description: Bore tunnel provider
+title: Bore tunnel provider
 requires: [tunnel_manager]
+config_inline: true
 
 config:
   server:

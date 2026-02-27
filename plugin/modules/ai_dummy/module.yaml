@@ -1,5 +1,5 @@
 name: ai.dummy
-description: Dummy AI provider for testing (Homer Simpson mode)
+title: Dummy AI provider (Homer Simpson mode)
 requires: [config, ai]
 
 config:

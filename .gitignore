@@ -19,6 +19,11 @@ localwriter.json
 
 # Logs
 log.txt
+localwriter.log
+soffice-debug.log
+
+# Local dev config
+Makefile.local
 
 # IDE / editor
 .vscode/

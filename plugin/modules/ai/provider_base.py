@@ -38,6 +38,15 @@ class LlmProvider(ABC):
         """Whether this provider supports image inputs."""
         return False
 
+    def check(self):
+        """Fast connectivity check — is the backend reachable?
+
+        Returns:
+            (bool, str): (reachable, error_message).
+            Default: always OK (backward compat).
+        """
+        return (True, "")
+
     def warmup(self):
         """Pre-load the model. Called at startup or on instance switch.
         By default: no-op (provider is considered ready)."""
@@ -70,6 +79,15 @@ class ImageProvider(ABC):
             file_paths is a list of generated image paths.
             error is None on success.
         """
+
+    def check(self):
+        """Fast connectivity check — is the backend reachable?
+
+        Returns:
+            (bool, str): (reachable, error_message).
+            Default: always OK (backward compat).
+        """
+        return (True, "")
 
     def supports_editing(self):
         """Whether this provider supports image editing (img2img)."""

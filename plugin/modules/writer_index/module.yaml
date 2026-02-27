@@ -1,4 +1,4 @@
 name: writer.index
-description: Full-text search with stemming for Writer documents
+title: Full-text search for Writer documents
 requires: [document, config, events, writer_tree]
 provides_services: [writer_index]

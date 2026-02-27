@@ -1,5 +1,5 @@
 name: chatbot_api
-description: REST/SSE API for the chatbot (external clients)
+title: Chat REST/SSE API for external clients
 requires: [config, events, http_routes, ai, document]
 
 config:

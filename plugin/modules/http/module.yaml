@@ -1,5 +1,5 @@
 name: http
-description: HTTP server for extension endpoints
+title: Built-in HTTP server
 requires: [config, events]
 provides_services: [http_routes]
 

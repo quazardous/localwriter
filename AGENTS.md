@@ -65,5 +65,6 @@ Auto-discovered at build time by `generate_manifest.py`.
 
 - `~/localwriter.log` — plugin log (overwritten each session)
 - `~/soffice-debug.log` — LO internal errors
+- Symlinks exist in the project root (`./localwriter.log`, `./soffice-debug.log`) for convenience
 - Empty log = `main.py` never loaded = extension not installed
 - `make check-ext` — verify install + manifest

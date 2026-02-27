@@ -1,4 +1,4 @@
 name: writer.nav
-description: Writer document navigation — bookmarks, heading tree, proximity
+title: Writer navigation (bookmarks, headings, proximity)
 requires: [document, config, events]
 provides_services: [writer_bookmarks, writer_tree, writer_proximity]

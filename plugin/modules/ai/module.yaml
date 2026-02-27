@@ -1,5 +1,5 @@
 name: ai
-description: Unified AI provider registry (model catalog, instance selection)
+title: AI provider registry and model catalog
 provides_services: [ai]
 requires: [config, events]
 
