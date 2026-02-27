@@ -1,9 +1,9 @@
-# Langchain Integration Plan for LocalWriter
+# Langchain & smolagents Integration Plan for LocalWriter
 
-This document outlines a phased development plan to integrate `langchain-core` into LocalWriter, starting with basic conversation history and progressively adding more advanced memory and agentic features.
+This document outlines a phased development plan to integrate `langchain-core` and adapt code from `smolagents` into LocalWriter, starting with basic conversation history and progressively adding more advanced memory, tools, and agentic features.
 
 ## Goal Description
-Enhance LocalWriter's AI capabilities by replacing manual prompt construction with `langchain-core`'s robust memory and agent abstractions. This will allow the AI to "remember" past interactions, provide a seamless chat experience, and eventually perform complex multi-step document operations.
+Enhance LocalWriter's AI capabilities by replacing manual prompt construction with `langchain-core`'s robust memory and agent abstractions, while vendoring and adapting secure, zero-dependency code from `smolagents`. This will allow the AI to "remember" past interactions, provide a seamless chat experience, and eventually perform complex multi-step document operations autonomously.
 
 ## Proposed Changes
 
@@ -36,7 +36,7 @@ Enhance LocalWriter's AI capabilities by replacing manual prompt construction wi
   - Replace `ConversationBufferMemory` with `ConversationSummaryBufferMemory`.
   - Configure a background LLM call to summarize older messages when the token count reaches a configured threshold (e.g., 80% of `chat_context_length`).
 - **Config Updates**:
-  - Add settings for `memory_strategy` (Buffer vs. Summary) and `max_memory_tokens`.
+  - Add settings for `memory_strategy` (Buffer vs. Summary) and `max_memory_tokens`.(
 
 ### Phase 4: Long-Term Document Memory (RAG)
 **Objective**: Enable the AI to recall specific edits, user preferences, or distant sections of a very large document.
@@ -135,11 +135,11 @@ Based on a review of the `langchain-community` codebase, here are specific compo
 #### Future Possibilities (Catalog of Ideas)
 While we don't need these immediately for the core LibreOffice integration, the repository contains a massive collection of reference implementations we could vendor if users request specific features:
 - **Document Loaders (170+ integrations)**: If we ever want to allow users to load data into LibreOffice from external sources, there are ready-made classes for Cloud Drives (Google Drive, OneDrive, S3), Workspaces (Confluence, Notion, Slack), and file formats (PDFs, ePub, Dataframes).
-- **Agent Tools (Web Search & Page Reading)**: While `langchain-community` has tools (often relying on heavy dependencies like Playwright), we should prefer adapting tools from lighter frameworks like **Hugging Face `smolagents`**.
-  - **Web Search (`smolagents.DuckDuckGoSearchTool`)**: We will adapt their lightweight DuckDuckGo scraper (which hits `lite.duckduckgo.com` and parses the HTML using the standard library `html.parser`), modifying it to use `urllib.request` instead of `requests` to achieve zero added dependencies.
-  - **Page Reading (`smolagents.VisitWebpageTool`)**: We will adapt their URL fetcher to use `urllib.request`, and optionally vendor their use of the small `markdownify` module (or write a simpler HTML stripper) to convert the fetched HTML into clean Markdown for the LLM.
-  - **Secure Local Python Execution (`smolagents.local_python_executor`)**: This is a brilliant, zero-dependency gem in their codebase. It uses Python's built-in `ast` (Abstract Syntax Tree) to safely evaluate and execute Python code with strict bounds (preventing dangerous imports, locking down `os`/`sys`, limiting `while` loop iterations, and enforcing threading timeouts). We can vendor this directly to give our AI a `python_interpreter` tool, allowing it to write scripts to process LibreCalc data or analyze text *without* needing heavy sandboxes like Docker or E2B.
-  - **Note on Browser Automation**: If we ever need to execute JS or grab rendered pages, we should look into using simpler, standard protocols on the user's *existing* browser installation (e.g., **PyCDP** for Chrome or **Marionette** for Firefox), avoiding massive binaries like Playwright.
+- **Agent Orchestration and Tools (via `smolagents`)**: We have actively begun vendoring and integrating `smolagents` into LocalWriter to handle complex, multi-step sub-agent tasks. This serves as a lightweight alternative to heavier `langchain` paradigms:
+  - **ToolCallingAgent & Memory (`smolagents.agents`, `smolagents.memory`)**: We've vendored the core `ToolCallingAgent` and its associated memory structures structure (`ActionStep`). We bridged this to LocalWriter's existing `LlmClient` via a custom `LocalWriterSmolModel` wrapper, allowing for autonomous ReAct loops (like web searching) without polluting the main LangChain agent's context.
+  - **Zero-Dependency Web Tools (`smolagents/default_tools.py`)**: We adapted their `DuckDuckGoSearchTool` and `VisitWebpageTool` to use pure `urllib.request` and standard library `html.parser`, bypassing external dependencies like `requests`, `beautifulsoup4`, or `markdownify`.
+  - **Secure Local Python Execution (`smolagents.local_python_executor`)**: (Future Candidate) This zero-dependency gem uses Python's `ast` to safely evaluate Python code with strict bounds (preventing dangerous imports, limiting loops). We can vendor this to give our AI a `python_interpreter` tool for processing LibreCalc data safely without heavy sandboxes.
+  - **Web Browsing (`smolagents/vision_web_browser.py`)**: Currently uses `selenium` and `helium`. For LocalWriter, we should conceptually port the interaction logic (like `_escape_xpath_string` and semantic navigation) to a PyCDP (Chrome) or Marionette (Firefox) backend for a lightweight, dependency-free browser automation implementation.
 - **Retrievers (40+ strategies)**: Beyond standard vector search, it contains implementations for Lexical/Keyword search (BM25, TF-IDF, SVM) and Hybrid approaches, which we could adapt for local document search.
 - **Third-Party Model Integrations**: Communication plates for nearly every LLM provider, providing a solid reference if we ever need to expand our `LlmClient` to support obscure model gateways.
 

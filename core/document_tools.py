@@ -78,7 +78,32 @@ IMAGE_TOOLS = [
     }
 ]
 
-WRITER_TOOLS = list(FORMAT_TOOLS) + WRITER_OPS_TOOLS + IMAGE_TOOLS
+SEARCH_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "Perform an autonomous web search using an AI sub-agent. The sub-agent will search the web, visit pages to read their content, and return a synthesized answer.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string", 
+                        "description": "The information to search for or the question to answer."
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "Why you are requesting this information."
+                    }
+                },
+                "required": ["query"],
+                "additionalProperties": False
+            }
+        }
+    }
+]
+
+WRITER_TOOLS = list(FORMAT_TOOLS) + WRITER_OPS_TOOLS + IMAGE_TOOLS + SEARCH_TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +225,37 @@ def tool_edit_image(model, ctx, args, status_callback=None):
         return json.dumps({"status": "error", "message": str(e)})
 
 
+def tool_search_web(model, ctx, args, status_callback=None):
+    from core.config import get_api_config
+    from core.api import LlmClient
+    from core.smol_model import LocalWriterSmolModel
+    from core.smolagents_vendor.agents import ToolCallingAgent
+    from core.smolagents_vendor.default_tools import DuckDuckGoSearchTool, VisitWebpageTool
+    
+    query = args.get("query", "")
+    if not query:
+        return json.dumps({"status": "error", "message": "Query is required for web search."})
+        
+    try:
+        if status_callback:
+            status_callback("Sub-agent starting web search: " + query)
+            
+        config = get_api_config(ctx)
+        
+        max_tokens = int(config.get("chat_max_tokens", 2048))
+        
+        # Instantiate smol wrapped model using our existing LlmClient and config
+        smol_model = LocalWriterSmolModel(LlmClient(config, ctx), max_tokens=max_tokens)
+        agent = ToolCallingAgent(
+            tools=[DuckDuckGoSearchTool(), VisitWebpageTool()],
+            model=smol_model,
+        )
+        
+        answer = agent.run(f"Please find the answer to this query by searching the web and reading pages if needed: {query}")
+        return json.dumps({"status": "ok", "result": str(answer)})
+    except Exception as e:
+        return json.dumps({"status": "error", "message": f"Web search failed: {str(e)}"})
+
 # ---------------------------------------------------------------------------
 # Tool dispatch table
 # ---------------------------------------------------------------------------
@@ -232,6 +288,8 @@ TOOL_DISPATCH = {
     # Images
     "generate_image": tool_generate_image,
     "edit_image": tool_edit_image,
+    # Search
+    "search_web": tool_search_web,
 }
 
 
