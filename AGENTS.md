@@ -15,7 +15,7 @@ plugin/version.py           Version (single source of truth)
 plugin/plugin.yaml          Global config schema
 plugin/_manifest.py         Generated — do not edit
 plugin/framework/           Core engine (services, tools, events, config, http, dialogs)
-plugin/modules/<name>/      Feature modules (module.yaml + __init__.py + tools/ + services/)
+plugin/modules/<name>/      Feature modules (module.yaml + __init__.py + tools + services/)
 extension/                  Static LO files (XCU, manifest, assets)
 scripts/                    Build & deploy scripts
 tests/                      Pytest suite (tests/legacy/ = old, may not pass)
@@ -59,8 +59,8 @@ extension/ + plugin/ + vendor/ -> build_oxt.py -> .oxt
 Each module in `plugin/modules/<name>/`:
 - `module.yaml` — deps, config schema, actions, menus
 - `__init__.py` — extends `ModuleBase`
-- `tools/` — extends `ToolBase`
-- `services/` — extends `ServiceBase`
+- `tool_*.py` / `tools/` — extends `ToolBase` (auto-discovered)
+- `service_*.py` / `services/` — extends `ServiceBase` (explicit or auto-discovered)
 
 Auto-discovered at build time by `generate_manifest.py`.
 

@@ -267,15 +267,17 @@ def bootstrap(ctx=None):
                     set_log_level(level)
                     log.info("Log level set to %s", level)
 
-            # Auto-discover tools from this module's tools/ subpackage
-            # Directory convention: dots in name map to underscores
-            # e.g. "tunnel.bore" -> modules/tunnel_bore/tools
+            # Auto-discover tools from both the module root and tools/ subpackage
             dir_name = name.replace(".", "_")
-            tools_dir = os.path.join(
-                os.path.dirname(__file__), "modules", dir_name, "tools")
+            module_dir = os.path.join(os.path.dirname(__file__), "modules", dir_name)
+            
+            # 1. Look in module root (e.g. modules/writer/*.py)
+            _tools.discover(module_dir, "plugin.modules.%s" % dir_name)
+            
+            # 2. Look in tools/ subdirectory (legacy/structured approach)
+            tools_dir = os.path.join(module_dir, "tools")
             if os.path.isdir(tools_dir):
-                tools_pkg = "plugin.modules.%s.tools" % dir_name
-                _tools.discover(tools_dir, tools_pkg)
+                _tools.discover(tools_dir, "plugin.modules.%s.tools" % dir_name)
 
         # Wire event bus into config service
         if config_svc:
