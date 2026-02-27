@@ -113,6 +113,27 @@ Keeping this in mind makes it easier to choose stdlib-friendly storage (e.g. SQL
 
 ---
 
+## Research: `langchain-community`
+
+**Value it can add:**
+`langchain-community` provides a massive collection of third-party integrations. For LocalWriter, its main value would be ready-made components for Phase 2 (e.g., `SQLChatMessageHistory` to store conversations in SQLite) and Phase 4 (various document loaders, text splitters, and vector store wrappers).
+
+**Dependency weight and NumPy:**
+While it offers convenience, `langchain-community` is a very heavy package. A basic `pip install langchain-community` pulls in numerous dependencies including `SQLAlchemy`, `PyYAML`, `requests`, `aiohttp`, `dataclasses-json`, and **`numpy`**.
+Because it forces a `numpy` installation (and other heavy libraries) just for the base package, it directly conflicts with our "minimal dependencies" constraint for LibreOffice.
+
+**Conclusion: Vendoring Strategy**
+Instead of installing `langchain-community` as a dependency, we should treat its [open-source repository](https://github.com/langchain-ai/langchain) as a reference implementation library. We continue to depend strictly on `langchain-core` as planned. When we need specific functionality, we will **find the relevant code in `langchain-community`, copy it into our source tree (vendoring), and adapt it** to work within our LibreOffice constraints. This allows us to leverage community-built logic while keeping our footprint small and `numpy` cleanly optional.
+
+### Vendoring Candidates
+Based on a review of the `langchain-community` codebase, here are specific components we can vendor:
+
+- **Database Chat History (`SQLChatMessageHistory`)**: Located in `chat_message_histories/sql.py`. The upstream version is tightly coupled to `SQLAlchemy` to support multiple database engines. We can use its structural design as a reference but rewrite the database interface to use Python's built-in `sqlite3` module, avoiding the `SQLAlchemy` dependency.
+- **SQLite Vector Store (`SQLiteVec`)**: Located in `vectorstores/sqlitevec.py`. It uses the standard library `sqlite3` and `struct` for storing embeddings as raw bytes. While it relies on the `sqlite-vec` C-extension, we can take its class structure and replace the similarity search backend with our own pure-Python streaming search logic.
+- **File/Text Based Components**: Components like `FileChatMessageHistory` (`chat_message_histories/file.py`) and `TextLoader` (`document_loaders/text.py`) have zero external dependencies. They rely solely on standard Python modules like `pathlib` and `json`, and can be copy-pasted almost verbatim if needed.
+
+---
+
 ## Architecture Decision: Custom Wrapper vs. Provider Packages
 We will proceed with writing a custom LangChain wrapper (`LocalWriterLangChainModel`) around our existing `LlmClient` rather than importing heavy provider packages like `langchain-openai` or `langchain-ollama`. LocalWriter runs in LibreOffice's constrained Python environment; keeping dependencies minimal (just `langchain-core`) is critical to avoid bloat and cross-platform installation issues, while allowing us to keep our custom UI streaming loops and connection management.
 
