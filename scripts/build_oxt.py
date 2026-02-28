@@ -35,7 +35,6 @@ ALWAYS_INCLUDE_EXTENSION = [
     "extension/assets/",
 ]
 
-# Files/dirs always included from plugin/
 ALWAYS_INCLUDE_PLUGIN = [
     "plugin/__init__.py",
     "plugin/main.py",
@@ -46,6 +45,7 @@ ALWAYS_INCLUDE_PLUGIN = [
     "plugin/plugin.yaml",
     "plugin/framework/",
     "plugin/lib/",
+    "plugin/contrib/",
 ]
 
 # Auto-discover all top-level module directories
