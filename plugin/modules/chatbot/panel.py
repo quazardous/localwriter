@@ -328,33 +328,180 @@ class SendButtonListener:
         active_adapter = self._adapter if use_tools else None
         active_broker = broker if use_tools else None
 
-        for event in chat_event_stream(
-            provider, self._session, active_adapter, doc, ctx,
-            max_rounds=max_rounds,
-            stop_checker=lambda: self.stop_requested,
-            broker=active_broker,
-        ):
-            etype = event.get("type")
-            if etype == "text":
-                if self.on_append_response:
-                    self.on_append_response(
-                        event["content"], is_thinking=False)
-            elif etype == "thinking":
-                if self.on_append_response:
-                    self.on_append_response(
-                        event["content"], is_thinking=True)
-            elif etype == "tool_call":
-                if self.on_append_response:
-                    self.on_append_response(
-                        "\n[Tool: %s]\n" % event["name"],
-                        is_thinking=False)
-            elif etype == "status":
-                self._set_status(event["message"])
-            elif etype == "error":
-                self._set_status("Error: %s" % event["message"])
-                break
-            elif etype == "done":
-                break
+        try:
+            import uno
+            toolkit = ctx.getServiceManager().createInstanceWithContext(
+                "com.sun.star.awt.Toolkit", ctx)
+        except Exception:
+            toolkit = None
+
+        q = queue.Queue()
+        pending_tools = []
+        round_num = 0
+        ASYNC_TOOLS = {"web_research", "generate_image", "edit_image"}
+        show_search_thinking = config.get("show_search_thinking") or False
+
+        def spawn_worker():
+            def worker():
+                try:
+                    for event in chat_event_stream(
+                        provider, self._session, active_adapter, doc, ctx,
+                        max_rounds=1,  # Rounds managed by main thread now
+                        stop_checker=lambda: self.stop_requested,
+                        broker=active_broker,
+                    ):
+                        q.put(("event", event))
+                    q.put(("stream_done",))
+                except Exception as e:
+                    q.put(("error", str(e)))
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+
+        spawn_worker()
+
+        # --- PORTED FROM LOCALWRITER chat_panel.py _start_tool_calling_async ---
+        # This explicit queue loop prevents network and tool execution 
+        # from blocking the main thread UNO loop, while letting us run async tools.
+
+        thinking_open = False
+
+        while not self.stop_requested:
+            try:
+                item = q.get(timeout=0.1)
+                kind = item[0]
+
+                if kind == "event":
+                    event = item[1]
+                    etype = event.get("type")
+                    if etype == "text":
+                        if thinking_open:
+                            if self.on_append_response:
+                                self.on_append_response(" /thinking\n", is_thinking=True)
+                            thinking_open = False
+                        if self.on_append_response:
+                            self.on_append_response(event["content"], is_thinking=False)
+                    elif etype == "thinking":
+                        if not thinking_open:
+                            if self.on_append_response:
+                                self.on_append_response("[Thinking] ", is_thinking=True)
+                            thinking_open = True
+                        if self.on_append_response:
+                            self.on_append_response(event["content"], is_thinking=True)
+                    elif etype == "tool_thinking":
+                        if show_search_thinking and self.on_append_response:
+                            self.on_append_response(event["content"], is_thinking=False)
+                    elif etype == "status":
+                        self._set_status(event["message"])
+                    elif etype == "error":
+                        if thinking_open:
+                            if self.on_append_response:
+                                self.on_append_response(" /thinking\n", is_thinking=True)
+                            thinking_open = False
+                        self._set_status("Error: %s" % event["message"])
+                        break
+                    elif etype == "execute_tools":
+                        if thinking_open:
+                            if self.on_append_response:
+                                self.on_append_response(" /thinking\n", is_thinking=True)
+                            thinking_open = False
+                        pending_tools.extend(event.get("tool_calls", []))
+                        q.put(("next_tool",))
+                    elif etype == "done":
+                        if thinking_open:
+                            if self.on_append_response:
+                                self.on_append_response(" /thinking\n", is_thinking=True)
+                            thinking_open = False
+
+                elif kind == "stream_done":
+                    if not pending_tools:
+                        break  # Fully done
+
+                elif kind == "next_tool":
+                    if not pending_tools or self.stop_requested:
+                        round_num += 1
+                        if round_num >= max_rounds:
+                            break
+                        self._set_status("Sending results to AI...")
+                        spawn_worker()
+                        continue
+
+                    tc = pending_tools.pop(0)
+                    fn = tc.get("function", {})
+                    name = fn.get("name", "")
+                    tc_id = tc.get("id", "")
+                    try:
+                        args = json.loads(fn.get("arguments", "{}"))
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+
+                    self._set_status("Tool: %s" % name)
+                    if self.on_append_response:
+                        self.on_append_response("\n[Tool: %s]\n" % name, is_thinking=False)
+
+                    if active_adapter:
+                        def tool_status_callback(msg):
+                            q.put(("event", {"type": "status", "message": msg}))
+
+                        if name in ASYNC_TOOLS:
+                            def run_async():
+                                try:
+                                    res = active_adapter.execute_tool(
+                                        name, args, doc, ctx, status_callback=tool_status_callback)
+                                    q.put(("tool_done", tc_id, name, res))
+                                except Exception as e:
+                                    q.put(("tool_done", tc_id, name, {"status": "error", "message": str(e)}))
+                            threading.Thread(target=run_async, daemon=True).start()
+                        else:
+                            try:
+                                res = active_adapter.execute_tool(
+                                    name, args, doc, ctx, status_callback=tool_status_callback)
+                                q.put(("tool_done", tc_id, name, res))
+                            except Exception as e:
+                                q.put(("tool_done", tc_id, name, {"status": "error", "message": str(e)}))
+                    else:
+                        q.put(("tool_done", tc_id, name, {"status": "error", "message": "No adapter"}))
+
+                elif kind == "tool_done":
+                    tc_id = item[1]
+                    name = item[2]
+                    result = item[3]
+                    
+                    result_str = json.dumps(result, ensure_ascii=False, default=str)
+                    self._session.add_tool_result(tc_id, result_str)
+                    
+                    try:
+                        note = result.get("message", result.get("status", "done")) if isinstance(result, dict) else "done"
+                    except Exception:
+                        note = "done"
+
+                    if self.on_append_response:
+                        self.on_append_response("[%s: %s]\n" % (name, note), is_thinking=False)
+
+                    # Check for broker updates
+                    if (active_broker is not None and name == "request_tools" 
+                            and isinstance(result, dict) and result.get("status") == "ok"):
+                        enabled = result.get("enabled", [])
+                        if enabled:
+                            active_broker["extra_names"].update(enabled)
+                            self._set_status("Enabling %d additional tools..." % len(enabled))
+
+                    q.put(("next_tool",))
+
+                elif kind == "error":
+                    self._set_status("Error: %s" % item[1])
+                    break
+
+            except queue.Empty:
+                if toolkit:
+                    try:
+                        toolkit.processEventsToIdle()
+                    except Exception:
+                        pass
+                continue
+
+        if thinking_open:
+             if self.on_append_response:
+                 self.on_append_response(" /thinking\n", is_thinking=True)
 
         self._set_status("Ready")
         if self.on_done:

@@ -337,12 +337,8 @@ try:
                     use_tools = self._use_tools
                     self._use_tools = "lazy"  # reset for next call
 
-                    # Run in background thread to avoid UI freeze
-                    def _worker():
-                        self._listener.send(text, d, self._ctx,
-                                            use_tools=use_tools)
-                    threading.Thread(
-                        target=_worker, daemon=True).start()
+                    # Run directly on main thread; Send listener uses internal queue + pump to avoid freeze
+                    self._listener.send(text, d, self._ctx, use_tools=use_tools)
 
                 def disposing(self, evt):
                     pass

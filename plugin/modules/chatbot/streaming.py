@@ -100,47 +100,16 @@ def chat_event_stream(provider, session, adapter, doc, ctx,
             return
 
         # Process tool calls
+        # We no longer execute tools here. We simply yield them to the event loop.
+        # This prevents blocking the network stream generator with synchronous UNO calls
+        # or crashing background threads with UI edits.
         session.add_assistant_message(
             content=content or None, tool_calls=tool_calls)
+        
+        yield {"type": "execute_tools", "tool_calls": tool_calls}
+        return
 
-        for tc in tool_calls:
-            if stop_checker and stop_checker():
-                return
-            fn = tc.get("function", {})
-            name = fn.get("name", "")
-            tc_id = tc.get("id", "")
-            try:
-                args = json.loads(fn.get("arguments", "{}"))
-            except (json.JSONDecodeError, TypeError):
-                args = {}
-
-            yield {"type": "tool_call", "name": name,
-                   "arguments": args, "id": tc_id}
-            yield {"type": "status", "message": "Tool: %s" % name}
-
-            if adapter:
-                result = adapter.execute_tool(name, args, doc, ctx)
-                result_str = json.dumps(
-                    result, ensure_ascii=False, default=str)
-                session.add_tool_result(tc_id, result_str)
-                yield {"type": "tool_result", "name": name,
-                       "content": result, "id": tc_id}
-
-                # Broker: activate requested tools for next round
-                if (broker is not None and name == "request_tools"
-                        and result.get("status") == "ok"):
-                    enabled = result.get("enabled", [])
-                    if enabled:
-                        broker["extra_names"].update(enabled)
-                        try:
-                            tools = adapter.get_brokered_tools(doc, broker)
-                        except Exception:
-                            pass
-                        yield {"type": "status",
-                               "message": "Enabling %d additional tools..."
-                               % len(enabled)}
-
-    # Exhausted max rounds
+    # Exhausted max rounds (only reached if somehow looping without returning)
     yield {"type": "done", "content": "".join(content_parts)}
 
 
