@@ -3,8 +3,6 @@
 import json
 import logging
 
-from plugin.framework.module_base import ModuleBase
-
 log = logging.getLogger("localwriter.tunnel.ngrok")
 
 
@@ -31,28 +29,27 @@ class NgrokProvider:
         if authtoken:
             cmd.extend(["--authtoken", authtoken])
 
-        # No regex needed — we use custom JSON parsing
+        # No regex needed — we use custom JSON parsing in parse_line
         return cmd, None
 
     def parse_line(self, line):
-        """Parse ngrok JSON log lines for the tunnel URL."""
-        from plugin.modules.tunnel import TunnelAuthError
-
+        if not line.startswith("{"):
+            return None
         try:
             data = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            return None
+            # Check for tunnel started message
+            if data.get("msg") == "started tunnel" and "url" in data:
+                return data["url"]
 
-        # Check for auth error
-        err = str(data.get("err", ""))
-        if "ERR_NGROK_105" in err:
-            raise TunnelAuthError("ngrok requires authtoken — "
-                                  "set tunnel.ngrok.authtoken in config")
+            # Error detection: ERR_NGROK_105 (authtoken missing/invalid)
+            # This appears in 'err' or as a log message
+            err = data.get("err") or data.get("error")
+            if err and "ERR_NGROK_105" in str(err):
+                from .. import TunnelAuthError
+                raise TunnelAuthError("ngrok authtoken required")
 
-        # Check for tunnel started message
-        if data.get("msg") == "started tunnel" and "url" in data:
-            return data["url"]
-
+        except Exception:
+            pass
         return None
 
     def pre_start(self, config):
@@ -60,11 +57,3 @@ class NgrokProvider:
 
     def post_stop(self, config):
         pass
-
-
-class NgrokModule(ModuleBase):
-
-    def initialize(self, services):
-        if hasattr(services, "tunnel_manager"):
-            services.tunnel_manager.register_provider(
-                "ngrok", NgrokProvider())

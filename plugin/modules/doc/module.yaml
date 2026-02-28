@@ -1,3 +1,25 @@
 name: doc
-title: Common tools for all document types
-requires: [document, config, events]
+title: Common tools and diagnostics
+requires: [document, config, events, ai]
+
+config:
+  debug_enabled:
+    type: boolean
+    default: false
+    widget: checkbox
+    label: Enable Debug Actions
+    helper: "Debug actions appear in menus but only execute when enabled"
+    public: true
+
+actions:
+  debug_info:
+    title: "System Info"
+  test_providers:
+    title: "Test AI Providers"
+
+menus:
+  - title: "Debug"
+    context: [writer, calc, draw]
+    submenu:
+      - action: debug_info
+      - action: test_providers

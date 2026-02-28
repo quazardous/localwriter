@@ -1,4 +1,0 @@
-name: writer.nav
-title: Writer navigation (bookmarks, headings, proximity)
-requires: [document, config, events]
-provides_services: [writer_bookmarks, writer_tree, writer_proximity]

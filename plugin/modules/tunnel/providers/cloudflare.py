@@ -2,8 +2,6 @@
 
 import logging
 
-from plugin.framework.module_base import ModuleBase
-
 log = logging.getLogger("localwriter.tunnel.cloudflare")
 
 
@@ -32,24 +30,15 @@ class CloudflareProvider:
             # Named tunnels log the URL differently; may need custom regex
             url_regex = r"(https://[\w.-]+)"
         else:
-            # Quick tunnel — random trycloudflare.com URL
+            # Quick tunnel — temporary URL
             cmd = [
                 "cloudflared", "tunnel",
                 "--no-autoupdate",
-                "--url", "%s://localhost:%s" % (scheme, port),
-                "--no-tls-verify",
+                "--url", "http://localhost:%s" % port,
             ]
-            url_regex = r"(https://[\w-]+\.trycloudflare\.com)"
+            url_regex = r"(https://[\w.-]+\.trycloudflare\.com)"
 
         return cmd, url_regex
-
-    def get_known_url(self, config):
-        """For named tunnels, the public URL may be known in advance."""
-        tunnel_name = config.get("tunnel_name", "")
-        public_url = config.get("public_url", "")
-        if tunnel_name and public_url:
-            return public_url
-        return None
 
     def parse_line(self, line):
         return None
@@ -60,10 +49,6 @@ class CloudflareProvider:
     def post_stop(self, config):
         pass
 
-
-class CloudflareModule(ModuleBase):
-
-    def initialize(self, services):
-        if hasattr(services, "tunnel_manager"):
-            services.tunnel_manager.register_provider(
-                "cloudflare", CloudflareProvider())
+    def get_known_url(self, config):
+        """If tunnel_name is set, return the expected public URL if known."""
+        return config.get("public_url")

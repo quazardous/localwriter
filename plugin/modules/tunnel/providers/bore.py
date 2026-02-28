@@ -2,8 +2,6 @@
 
 import logging
 
-from plugin.framework.module_base import ModuleBase
-
 log = logging.getLogger("localwriter.tunnel.bore")
 
 
@@ -30,10 +28,3 @@ class BoreProvider:
 
     def post_stop(self, config):
         pass
-
-
-class BoreModule(ModuleBase):
-
-    def initialize(self, services):
-        if hasattr(services, "tunnel_manager"):
-            services.tunnel_manager.register_provider("bore", BoreProvider())
