@@ -1,8 +1,9 @@
 """Sidebar panel factory — UNO wiring for the chat panel.
 
 Creates the XUIElement and XToolPanel that LibreOffice needs for
-the sidebar. Loads the XDL dialog, wires controls to the framework's
-ChatSession and ChatToolAdapter, and handles streaming responses.
+the sidebar. Builds controls programmatically (no XDL), wires them
+to the framework's ChatSession and ChatToolAdapter, and handles
+streaming responses.
 
 Registered as a UNO component in META-INF/manifest.xml.
 """
@@ -22,9 +23,6 @@ if _parent not in sys.path:
     sys.path.insert(0, _parent)
 
 log = logging.getLogger("localwriter.chatbot.factory")
-
-EXTENSION_ID = "org.extension.localwriter"
-XDL_PATH = "LocalWriterDialogs/ChatPanelDialog.xdl"
 
 
 def _get_arg(args, name):
@@ -53,8 +51,6 @@ try:
         XActionListener, XItemListener, XWindowListener, XFocusListener,
         XKeyListener)
     from com.sun.star.awt.Key import UP, DOWN, RETURN
-
-    SETTINGS_XDL_PATH = "LocalWriterDialogs/ChatSettingsDialog.xdl"
 
     class ChatToolPanel(unohelper.Base, XToolPanel, XSidebarPanel):
         """Holds the panel window; implements XToolPanel + XSidebarPanel."""
@@ -117,24 +113,29 @@ try:
             return self.toolpanel
 
         def _create_panel_window(self):
-            """Load the XDL dialog as a container window."""
-            pip = self.ctx.getValueByName(
-                "/singletons/com.sun.star.deployment"
-                ".PackageInformationProvider")
-            base_url = pip.getPackageLocation(EXTENSION_ID)
-            dialog_url = base_url + "/" + XDL_PATH
+            """Build panel container and controls programmatically."""
+            from plugin.framework.panel_layout import (
+                create_panel_window, add_control)
 
-            provider = self.ctx.getServiceManager().createInstanceWithContext(
-                "com.sun.star.awt.ContainerWindowProvider", self.ctx)
-            self.m_panelRootWindow = provider.createContainerWindow(
-                dialog_url, "", self.xParentWindow, None)
+            self.m_panelRootWindow = create_panel_window(
+                self.ctx, self.xParentWindow)
 
-            if self.m_panelRootWindow:
-                self.m_panelRootWindow.setVisible(True)
-            parent_rect = self.xParentWindow.getPosSize()
-            if parent_rect.Width > 0 and parent_rect.Height > 0:
-                self.m_panelRootWindow.setPosSize(
-                    0, 0, parent_rect.Width, parent_rect.Height, 15)
+            add_control(self.ctx, self.m_panelRootWindow,
+                        "response", "Edit",
+                        {"ReadOnly": True, "MultiLine": True,
+                         "VScroll": True})
+            add_control(self.ctx, self.m_panelRootWindow,
+                        "query_label", "FixedText",
+                        {"Label": "Chat (Ready)"})
+            add_control(self.ctx, self.m_panelRootWindow,
+                        "query", "Edit",
+                        {"MultiLine": True, "VScroll": True})
+            add_control(self.ctx, self.m_panelRootWindow,
+                        "send", "Button", {"Label": "Send"})
+            add_control(self.ctx, self.m_panelRootWindow,
+                        "stop", "Button", {"Label": "Stop"})
+            add_control(self.ctx, self.m_panelRootWindow,
+                        "clear", "Button", {"Label": "Clear"})
 
             return self.m_panelRootWindow
 
@@ -596,9 +597,14 @@ try:
                 "clear": clear_btn,
             }
 
+            input_position = cfg.get("input_position") if cfg else "bottom"
+            if input_position not in ("top", "bottom"):
+                input_position = "bottom"
+
             class _ChatResize(unohelper.Base, XWindowListener):
-                def __init__(self, ctrls):
+                def __init__(self, ctrls, position):
                     self._c = ctrls
+                    self._pos = position
 
                 def windowResized(self, evt):
                     try:
@@ -628,34 +634,62 @@ try:
                     query_h = 50
                     label_h = 16
                     gap = 4
+                    cw = w - 2 * m
+                    btn_w = max(50, (cw - 2 * gap) // 3)
 
-                    # Bottom-up layout
-                    btn_y = h - m - btn_h
-                    btn_w = max(50, (w - 2 * m - 2 * gap) // 3)
-                    for i, name in enumerate(["send", "stop", "clear"]):
-                        c = self._c.get(name)
+                    if self._pos == "top":
+                        # Top-down: label, query, buttons, then response
+                        y = m
+                        c = self._c.get("query_label")
                         if c:
-                            c.setPosSize(
-                                m + i * (btn_w + gap), btn_y,
-                                btn_w, btn_h, 15)
+                            c.setPosSize(m, y, cw, label_h, 15)
+                        y += label_h
 
-                    query_y = btn_y - gap - query_h
-                    c = self._c.get("query")
-                    if c:
-                        c.setPosSize(m, query_y, w - 2 * m, query_h, 15)
+                        c = self._c.get("query")
+                        if c:
+                            c.setPosSize(m, y, cw, query_h, 15)
+                        y += query_h + gap
 
-                    qlabel_y = query_y - label_h
-                    c = self._c.get("query_label")
-                    if c:
-                        c.setPosSize(m, qlabel_y, w - 2 * m, label_h, 15)
+                        for i, name in enumerate(
+                                ["send", "stop", "clear"]):
+                            c = self._c.get(name)
+                            if c:
+                                c.setPosSize(
+                                    m + i * (btn_w + gap), y,
+                                    btn_w, btn_h, 15)
+                        y += btn_h + gap
 
-                    # Response fills remaining space from top
-                    resp_h = max(30, qlabel_y - gap - m)
-                    c = self._c.get("response")
-                    if c:
-                        c.setPosSize(m, m, w - 2 * m, resp_h, 15)
+                        resp_h = max(30, h - y - m)
+                        c = self._c.get("response")
+                        if c:
+                            c.setPosSize(m, y, cw, resp_h, 15)
+                    else:
+                        # Bottom-up: response at top, input at bottom
+                        btn_y = h - m - btn_h
+                        for i, name in enumerate(
+                                ["send", "stop", "clear"]):
+                            c = self._c.get(name)
+                            if c:
+                                c.setPosSize(
+                                    m + i * (btn_w + gap), btn_y,
+                                    btn_w, btn_h, 15)
 
-            resize_listener = _ChatResize(ctrls)
+                        query_y = btn_y - gap - query_h
+                        c = self._c.get("query")
+                        if c:
+                            c.setPosSize(m, query_y, cw, query_h, 15)
+
+                        qlabel_y = query_y - label_h
+                        c = self._c.get("query_label")
+                        if c:
+                            c.setPosSize(m, qlabel_y, cw, label_h, 15)
+
+                        resp_h = max(30, qlabel_y - gap - m)
+                        c = self._c.get("response")
+                        if c:
+                            c.setPosSize(m, m, cw, resp_h, 15)
+
+            resize_listener = _ChatResize(ctrls, input_position)
             root_window.addWindowListener(resize_listener)
             # Trigger initial layout
             resize_listener._relayout(root_window)
@@ -687,25 +721,11 @@ try:
             return self.toolpanel
 
         def _create_panel_window(self):
-            """Load XDL container, then add ListBox controls in code."""
-            pip = self.ctx.getValueByName(
-                "/singletons/com.sun.star.deployment"
-                ".PackageInformationProvider")
-            base_url = pip.getPackageLocation(EXTENSION_ID)
-            dialog_url = base_url + "/" + SETTINGS_XDL_PATH
+            """Build settings container programmatically."""
+            from plugin.framework.panel_layout import create_panel_window
 
-            provider = self.ctx.getServiceManager().createInstanceWithContext(
-                "com.sun.star.awt.ContainerWindowProvider", self.ctx)
-            self.m_panelRootWindow = provider.createContainerWindow(
-                dialog_url, "", self.xParentWindow, None)
-
-            if self.m_panelRootWindow:
-                self.m_panelRootWindow.setVisible(True)
-            parent_rect = self.xParentWindow.getPosSize()
-            if parent_rect.Width > 0 and parent_rect.Height > 0:
-                self.m_panelRootWindow.setPosSize(
-                    0, 0, parent_rect.Width, parent_rect.Height, 15)
-
+            self.m_panelRootWindow = create_panel_window(
+                self.ctx, self.xParentWindow)
             return self.m_panelRootWindow
 
         def _wire_controls(self, root_window):
